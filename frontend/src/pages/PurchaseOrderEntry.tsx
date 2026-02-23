@@ -11,6 +11,7 @@ import {
   createFilterOptions,
   FormControlLabel,
   Radio,
+  RadioGroup,
   Table,
   TableBody,
   TableCell,
@@ -1853,35 +1854,34 @@ export default function PurchaseOrderEntry() {
   return (
     <Box onClick={handlePageClick} sx={{ p: 0.5, bgcolor: '#ffffff', minHeight: '100vh', height: '100%', width: '100%', maxWidth: 1600, mx: 'auto', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', '& .MuiInputLabel-root': { fontWeight: 600, color: '#1e293b' }, ...numberInputStyle }}>
 
+      <Typography component="h1" variant="h6" sx={{ fontWeight: 700, color: '#0f766e', mb: 1, fontSize: '1.1rem' }}>
+        Purchase Order
+      </Typography>
 
-      {/* Purchase Order Entry Card */}
-      <Paper elevation={0} sx={{ p: 1, mb: 0.5, bgcolor: 'white', borderRadius: 1, border: '2px solid #000000' }}>
-        <Grid container spacing={1} alignItems="center">
-          <Grid item xs={6} sm={4} md={2}>
-            <TextField
-              label="Invoice No"
-              size="small"
-              value={invoiceNo}
-              onChange={(e) => setInvoiceNo(e.target.value)}
-              fullWidth
-              InputProps={{ readOnly: true }}
-              sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1 }, '& .MuiInputLabel-root': { fontWeight: 600 } }}
-            />
+      {/* Purchase Order Entry Card - match Purchase Entry styling */}
+      <Paper elevation={0} sx={{ px: 2, py: 1.5, mb: 1, borderRadius: 2, bgcolor: 'white', border: '1px solid #e0e7ef' }}>
+        <Grid container spacing={1.5} alignItems="center">
+          <Grid item xs={6} sm={3} md={1.8} lg={1.3}>
+            <Box sx={{ bgcolor: '#0f766e', borderRadius: 1.5, px: 1.5, py: 0.6, textAlign: 'center' }}>
+              <Typography sx={{ color: 'rgba(255,255,255,0.7)', fontSize: '0.65rem', fontWeight: 500, lineHeight: 1, letterSpacing: 0.5 }}>INVOICE NO</Typography>
+              <Typography sx={{ color: 'white', fontWeight: 800, fontSize: '0.9rem', lineHeight: 1.3 }}>{invoiceNo}</Typography>
+            </Box>
           </Grid>
-          <Grid item xs={6} sm={4} md={2}>
-            <DateInput label="Date" value={date} onChange={setDate} />
+          <Grid item xs={6} sm={3} md={2} lg={1.7}>
+            <DateInput label="Date" value={date} onChange={setDate} size="small" />
           </Grid>
-          <Grid item xs={6} sm={4} md={2}>
+          <Grid item xs={6} sm={3} md={2} lg={1.8}>
             <TextField
               label="Supplier Inv No"
               size="small"
               value={supplierInvNo}
               onChange={(e) => { setSupplierInvNo(e.target.value); setIsSaved(false); }}
               fullWidth
-              sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1 }, '& .MuiInputLabel-root': { fontWeight: 600 } }}
+              InputLabelProps={{ shrink: true }}
+              sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }}
             />
           </Grid>
-          <Grid item xs={6} sm={4} md={2}>
+          <Grid item xs={7.5} sm={7.5} md={3.125} lg={2.75}>
             <Autocomplete
               size="small"
               options={supplierCashOptions}
@@ -1893,6 +1893,11 @@ export default function PurchaseOrderEntry() {
                 setSupplierName(v?.name || '');
                 setSupplierAddress(v?.address || '');
                 setIsSaved(false);
+              }}
+              slotProps={{
+                paper: {
+                  sx: { minWidth: '150%', width: '150%', maxWidth: '90vw' },
+                },
               }}
               renderOption={(props, opt) => (
                 <li {...props} key={opt._id} style={{
@@ -1932,28 +1937,25 @@ export default function PurchaseOrderEntry() {
                 <TextField
                   {...params}
                   label="Cash/ Supplier AC"
+                  InputLabelProps={{ shrink: true }}
                   inputRef={supplierAcRef}
                   autoFocus
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
                       const typed = (e.target as HTMLInputElement).value.trim();
-                      // If a ledger is already selected (supplierId is set), move to grid
                       if (supplierId) {
                         e.preventDefault();
                         const firstLine = lines[0];
                         if (firstLine) setTimeout(() => imeiInputRefs.current[firstLine.id]?.focus(), 50);
                         return;
                       }
-                      // If field is empty and no selection, don't move
                       if (!typed) {
                         e.preventDefault();
                         return;
                       }
-                      // Check if typed name exists in suppliers or cash accounts
                       const existsInSuppliers = suppliers.find((s) => s.name.toLowerCase() === typed.toLowerCase());
                       const existsInCash = cashAccounts.find((c) => c.name.toLowerCase() === typed.toLowerCase());
                       if (existsInSuppliers || existsInCash) {
-                        // Found — select it and move to IMEI in grid
                         const match = existsInSuppliers || existsInCash;
                         if (match) {
                           setSupplierId(match._id);
@@ -1963,7 +1965,6 @@ export default function PurchaseOrderEntry() {
                         const firstLine = lines[0];
                         if (firstLine) setTimeout(() => imeiInputRefs.current[firstLine.id]?.focus(), 50);
                       } else {
-                        // Not found — navigate to create
                         e.preventDefault();
                         e.stopPropagation();
                         setPendingSupplierName(typed);
@@ -1971,55 +1972,69 @@ export default function PurchaseOrderEntry() {
                       }
                     }
                   }}
-                  sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1 }, '& .MuiInputLabel-root': { fontWeight: 600 } }}
+                  sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }}
                 />
               )}
             />
           </Grid>
-          <Grid item xs={6} sm={4} md={2}>
+          <Grid item xs={6} sm={6} md={2.5} lg={2.2}>
             <TextField
               label="Supplier Name"
               size="small"
               value={supplierAddress}
               onChange={(e) => setSupplierAddress(e.target.value)}
               fullWidth
-              sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1 }, '& .MuiInputLabel-root': { fontWeight: 600 } }}
+              InputLabelProps={{ shrink: true }}
+              sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 }, ...(supplierId ? { '& .MuiOutlinedInput-root': { bgcolor: '#f1f5f9' } } : {}) }}
             />
           </Grid>
-          <Grid item xs="auto">
-            <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', height: '100%' }}>
-              <FormControlLabel
-                value="Vat"
-                control={<Radio size="small" checked={vatType === 'Vat'} onChange={() => setVatType('Vat')} sx={{ color: '#1e293b', '&.Mui-checked': { color: '#1e293b' }, p: 0.3 }} />}
-                label="VAT"
-                sx={{ '& .MuiFormControlLabel-label': { fontSize: '0.8rem', fontWeight: 600 }, m: 0 }}
-              />
-              <FormControlLabel
-                value="NonVat"
-                control={<Radio size="small" checked={vatType === 'NonVat'} onChange={() => setVatType('NonVat')} sx={{ color: '#1e293b', '&.Mui-checked': { color: '#1e293b' }, p: 0.3 }} />}
-                label="Non-VAT"
-                sx={{ '& .MuiFormControlLabel-label': { fontSize: '0.8rem', fontWeight: 600 }, m: 0 }}
-              />
+          <Grid item xs={12} sm={6} md={3} lg={2.5}>
+            <Box sx={{ border: '1px solid #e2e8f0', borderRadius: 1.5, px: 1.2, py: 0.5, bgcolor: '#f8fafc', height: '100%' }}>
+              <Typography sx={{ fontSize: '0.7rem', fontWeight: 600, color: '#64748b', letterSpacing: 0.3, mb: 0.2 }}>VAT TYPE</Typography>
+              <RadioGroup row value={vatType} onChange={(e) => setVatType(e.target.value as 'Vat' | 'NonVat')}>
+                <FormControlLabel value="Vat" control={<Radio size="small" sx={{ p: 0.3 }} />} label="Vat" sx={{ mr: 1, '& .MuiFormControlLabel-label': { fontSize: '0.78rem' } }} />
+                <FormControlLabel value="NonVat" control={<Radio size="small" sx={{ p: 0.3 }} />} label="Non Vat" sx={{ '& .MuiFormControlLabel-label': { fontSize: '0.78rem' } }} />
+              </RadioGroup>
             </Box>
           </Grid>
-          {/* Navigation Panel - right of Non-VAT */}
           <Grid item xs="auto">
-            <Box sx={{ display: 'flex', gap: 0.3, alignItems: 'center' }}>
-              <IconButton onClick={navFirst} disabled={invoiceList.length === 0} size="medium" sx={{ border: '1px solid #e2e8f0', borderRadius: 1, p: 1, '&:hover': { bgcolor: '#f8fafc' } }}><FirstIcon sx={{ color: '#1e293b', fontSize: '3rem' }} /></IconButton>
-              <IconButton onClick={navPrev} disabled={invoiceList.length === 0 || currentNavIndex === 0} size="medium" sx={{ border: '1px solid #e2e8f0', borderRadius: 1, p: 1, '&:hover': { bgcolor: '#f8fafc' } }}><PrevIcon sx={{ color: '#1e293b', fontSize: '3rem' }} /></IconButton>
-              <IconButton onClick={navNext} disabled={invoiceList.length === 0 || currentNavIndex >= invoiceList.length - 1} size="medium" sx={{ border: '1px solid #e2e8f0', borderRadius: 1, p: 1, '&:hover': { bgcolor: '#f8fafc' } }}><NextIcon sx={{ color: '#1e293b', fontSize: '3rem' }} /></IconButton>
-              <IconButton onClick={navLast} disabled={invoiceList.length === 0} size="medium" sx={{ border: '1px solid #e2e8f0', borderRadius: 1, p: 1, '&:hover': { bgcolor: '#f8fafc' } }}><LastIcon sx={{ color: '#1e293b', fontSize: '3rem' }} /></IconButton>
+            <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
+              {[
+                { icon: <FirstIcon />, handler: navFirst, tip: 'First', disabled: invoiceList.length === 0 },
+                { icon: <PrevIcon />, handler: navPrev, tip: 'Previous', disabled: invoiceList.length === 0 || currentNavIndex === 0 },
+                { icon: <NextIcon />, handler: navNext, tip: 'Next', disabled: invoiceList.length === 0 || currentNavIndex >= invoiceList.length - 1 },
+                { icon: <LastIcon />, handler: navLast, tip: 'Last', disabled: invoiceList.length === 0 },
+              ].map((nav, i) => (
+                <Tooltip key={i} title={`${nav.tip} Order`}>
+                  <span>
+                    <Button
+                      variant="contained"
+                      size="small"
+                      onClick={nav.handler}
+                      disabled={nav.disabled}
+                      sx={{ flex: 1, py: 0.4, minWidth: 36, borderRadius: 1.5, bgcolor: '#334155', '&:hover': { bgcolor: '#1e293b' }, boxShadow: 'none', '&.Mui-disabled': { bgcolor: '#e2e8f0', color: '#94a3b8' } }}
+                    >
+                      {nav.icon}
+                    </Button>
+                  </span>
+                </Tooltip>
+              ))}
               {invoiceList.length > 0 && (
-                <Typography variant="caption" sx={{ color: '#64748b', fontWeight: 600, ml: 0.3, fontSize: '0.7rem' }}>
+                <Typography sx={{ color: '#64748b', fontWeight: 600, fontSize: '0.7rem', ml: 0.3 }}>
                   {currentNavIndex >= 0 ? `${currentNavIndex + 1}/${invoiceList.length}` : `${invoiceList.length}`}
                 </Typography>
               )}
             </Box>
           </Grid>
-          {/* Product Info - inline right side */}
-          <Grid item xs>
-            <Box sx={{ border: '1px solid #e2e8f0', borderRadius: 1, px: 1, py: 0.3, bgcolor: '#f8fafc', minHeight: 40, display: 'flex', alignItems: 'center', gap: 1 }}>
-              <Typography variant="caption" sx={{ fontWeight: 700, color: '#1e293b', fontSize: '0.7rem', whiteSpace: 'nowrap' }}>Info</Typography>
+          <Grid item xs />
+          <Grid item xs={12} md={12} lg={6}>
+            <Box sx={{
+              borderRadius: 1.5, px: 1.5, py: 0.8, minHeight: 40, display: 'flex', alignItems: 'center', gap: 1.5,
+              background: selectedProductInfo ? 'linear-gradient(135deg, #f0fdfa 0%, #ecfdf5 50%, #f0fdf4 100%)' : '#f8fafc',
+              border: selectedProductInfo ? '1px solid #99f6e4' : '1px dashed #cbd5e1',
+              transition: 'all 0.2s',
+            }}>
+              <Typography sx={{ fontSize: '0.7rem', fontWeight: 600, color: '#64748b', letterSpacing: 0.3, whiteSpace: 'nowrap' }}>Info</Typography>
               {selectedProductInfo ? (
                 <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', alignItems: 'center' }}>
                   <Box>
@@ -2091,11 +2106,10 @@ export default function PurchaseOrderEntry() {
                   )}
                 </Box>
               ) : (
-                <Typography variant="caption" sx={{ color: '#94a3b8', fontSize: '0.65rem' }}>Select a product</Typography>
+                <Typography sx={{ fontSize: '0.82rem', color: '#94a3b8', fontStyle: 'italic' }}>Select a product</Typography>
               )}
             </Box>
           </Grid>
-          {/* Tax Mode */}
           <Grid item xs="auto">
             <TextField
               size="small"
@@ -2104,13 +2118,12 @@ export default function PurchaseOrderEntry() {
               value={taxMode}
               onChange={(e) => { setTaxMode(e.target.value as 'inclusive' | 'exclusive'); setIsSaved(false); }}
               InputLabelProps={{ shrink: true }}
-              sx={{ minWidth: 130, height: 38, '& .MuiOutlinedInput-root': { borderRadius: 1, height: 38 }, '& .MuiInputLabel-root': { fontWeight: 600 } }}
+              sx={{ minWidth: 130, height: 38, '& .MuiOutlinedInput-root': { borderRadius: 1.5, height: 38 } }}
             >
-              <MenuItem value="inclusive">Include Tax</MenuItem>
-              <MenuItem value="exclusive">Exclude Tax</MenuItem>
+              <MenuItem value="inclusive">Inclusive</MenuItem>
+              <MenuItem value="exclusive">Exclusive</MenuItem>
             </TextField>
           </Grid>
-          {/* Hold & Held list buttons */}
           <Grid item xs="auto">
             <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
               <Tooltip title="Hold this purchase for later">
@@ -2131,9 +2144,8 @@ export default function PurchaseOrderEntry() {
                   <Button
                     variant="outlined"
                     size="small"
-                    color="info"
                     onClick={() => setHoldListDialogOpen(true)}
-                    sx={{ height: 36, minWidth: 0, px: 1 }}
+                    sx={{ height: 36, minWidth: 36, px: 0.8, borderRadius: 1.5, borderColor: '#cbd5e1', color: '#475569', '&:hover': { borderColor: '#94a3b8', bgcolor: '#f8fafc' } }}
                   >
                     <HoldListIcon fontSize="small" />
                   </Button>
@@ -2164,23 +2176,23 @@ export default function PurchaseOrderEntry() {
           <Table stickyHeader size="small" sx={{ minWidth: '100%', tableLayout: 'fixed', borderCollapse: 'separate', borderSpacing: 0, '& .MuiTableCell-root': { fontSize: '0.875rem' }, '& .MuiInputBase-input': { fontSize: '0.875rem' }, '& .MuiAutocomplete-input': { fontSize: '0.875rem' } }}>
             <TableHead>
               <TableRow>
-                <TableCell sx={{ background: '#C0B87A', color: 'white', fontWeight: 600, width: '2.5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Sl</TableCell>
-                <TableCell sx={{ background: '#C0B87A', color: 'white', fontWeight: 600, width: '9%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Int Barcode</TableCell>
-                <TableCell sx={{ background: '#C0B87A', color: 'white', fontWeight: 600, width: '14%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Item Name</TableCell>
-                <TableCell sx={{ background: '#C0B87A', color: 'white', fontWeight: 600, width: '6%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Unit</TableCell>
-                <TableCell sx={{ background: '#C0B87A', color: 'white', fontWeight: 600, width: '5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Qty</TableCell>
-                <TableCell sx={{ background: '#C0B87A', color: 'white', fontWeight: 600, width: '6%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>P Rate</TableCell>
-                <TableCell sx={{ background: '#C0B87A', color: 'white', fontWeight: 600, width: '6.5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Gross</TableCell>
-                <TableCell sx={{ background: '#C0B87A', color: 'white', fontWeight: 600, width: '5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>DISC%</TableCell>
-                <TableCell sx={{ background: '#C0B87A', color: 'white', fontWeight: 600, width: '5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Disc</TableCell>
-                <TableCell sx={{ background: '#C0B87A', color: 'white', fontWeight: 600, width: '5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>VAT</TableCell>
-                <TableCell sx={{ background: '#C0B87A', color: 'white', fontWeight: 600, width: '6.5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Total</TableCell>
-                <TableCell sx={{ background: '#C0B87A', color: 'white', fontWeight: 600, width: '5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Profit %</TableCell>
-                <TableCell sx={{ background: '#C0B87A', color: 'white', fontWeight: 600, width: '6%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Retail</TableCell>
-                <TableCell sx={{ background: '#C0B87A', color: 'white', fontWeight: 600, width: '6%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>WholeSale</TableCell>
-                <TableCell sx={{ background: '#C0B87A', color: 'white', fontWeight: 600, width: '6.5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>BRANCH</TableCell>
-                <TableCell sx={{ background: '#C0B87A', color: 'white', fontWeight: 600, width: '3%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>+</TableCell>
-                <TableCell sx={{ background: '#C0B87A', color: 'white', fontWeight: 600, width: '3%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>×</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '2.5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Sl</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '9%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Int Barcode</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '14%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Item Name</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '6%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Unit</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Qty</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '6%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>P Rate</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '6.5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Gross</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>DISC%</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Disc</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>VAT</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '6.5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Total</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Profit %</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '6%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Retail</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '6%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>WholeSale</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '6.5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>BRANCH</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '3%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>+</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '3%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>×</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -2251,15 +2263,15 @@ export default function PurchaseOrderEntry() {
                             fontSize: '0.875rem',
                             bgcolor: 'transparent',
                             '&[data-focus="true"]': {
-                              bgcolor: '#4fc3c5 !important',
+                              bgcolor: '#0f766e !important',
                               color: '#ffffff !important'
                             },
                             '&[aria-selected="true"]': {
-                              bgcolor: '#4fc3c5 !important',
+                              bgcolor: '#0f766e !important',
                               color: '#ffffff !important'
                             },
                             '&.Mui-focused': {
-                              bgcolor: '#4fc3c5 !important',
+                              bgcolor: '#0f766e !important',
                               color: '#ffffff !important'
                             }
                           }

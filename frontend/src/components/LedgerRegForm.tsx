@@ -16,6 +16,8 @@ import {
   DialogTitle,
   DialogContent,
   DialogActions,
+  Tabs,
+  Tab,
 } from '@mui/material';
 import {
   Save as SaveIcon,
@@ -113,6 +115,16 @@ const defaultFormValues: FormData = {
   paymentTerms: '',
 };
 
+const UAE_EMIRATES = [
+  'Abu Dhabi',
+  'Dubai',
+  'Sharjah',
+  'Ajman',
+  'Umm Al Quwain',
+  'Ras Al Khaimah',
+  'Fujairah',
+];
+
 export default function LedgerRegForm({
   ledgerType,
   title = 'Ledger Registration',
@@ -125,6 +137,7 @@ export default function LedgerRegForm({
   const routeLocation = useLocation();
   const routeNavigate = useNavigate();
   const prefillAppliedRef = useRef<string | null>(null);
+  const savedLedgerNameRef = useRef<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [ledgerOptions, setLedgerOptions] = useState<LedgerOption[]>([]);
   const [ledgerSearch, setLedgerSearch] = useState('');
@@ -139,6 +152,19 @@ export default function LedgerRegForm({
   const [errorDialogOpen, setErrorDialogOpen] = useState(false);
   const [errorDialogMessage, setErrorDialogMessage] = useState('');
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [customerTabValue, setCustomerTabValue] = useState(0);
+  const [ledgerNameDropdownOpen, setLedgerNameDropdownOpen] = useState(false);
+
+  // Refs for Customer Main tab Enter-key flow and initial focus
+  const ledgerNameInputRef = useRef<HTMLInputElement>(null);
+  const aliasNameRef = useRef<HTMLInputElement>(null);
+  const mobileRef = useRef<HTMLInputElement>(null);
+  const vatNoRef = useRef<HTMLInputElement>(null);
+  const addressRef = useRef<HTMLInputElement>(null);
+  const oldBalanceDrRef = useRef<HTMLInputElement>(null);
+  const oldBalanceCrRef = useRef<HTMLInputElement>(null);
+  const emirateSelectRef = useRef<HTMLInputElement>(null);
+  const saveButtonRef = useRef<HTMLButtonElement>(null);
 
   // Change Led Name Dialog
   const [changeNameDialogOpen, setChangeNameDialogOpen] = useState(false);
@@ -159,6 +185,14 @@ export default function LedgerRegForm({
   const isEditMode = !!selectedId;
 
   const listType = ledgerType === null ? undefined : ledgerType;
+
+  // Focus Ledger Name when Customer form Main tab is shown
+  useEffect(() => {
+    if (ledgerType === 'Customer' && customerTabValue === 0) {
+      const t = setTimeout(() => ledgerNameInputRef.current?.focus(), 100);
+      return () => clearTimeout(t);
+    }
+  }, [ledgerType, customerTabValue]);
 
   useEffect(() => {
     if (!companyId) return;
@@ -255,6 +289,7 @@ export default function LedgerRegForm({
     setSelectedId(null);
     setMessage('');
     setLedgerSearch('');
+    setCustomerTabValue(0);
     reset(defaultFormValues);
     if (ledgerType === 'Customer' && receivablesId) setValue('groupId', receivablesId);
     if (ledgerType === 'Supplier' && payablesId) setValue('groupId', payablesId);
@@ -413,6 +448,7 @@ export default function LedgerRegForm({
         });
         setPendingFormData(null);
         setPendingAction(null);
+        savedLedgerNameRef.current = data.name.trim();
         setSuccessDialog('saved');
       } catch (e: unknown) {
         const err = e as { response?: { data?: { message?: string } } };
@@ -458,11 +494,13 @@ export default function LedgerRegForm({
   const closeSuccessDialog = () => {
     const shouldClearForm = successDialog === 'saved' || successDialog === 'edited';
     setSuccessDialog(null);
-    // If we came from another page (e.g. SalesB2C) and just saved, navigate back
+    // If we came from another page (e.g. SalesB2C) and just saved, navigate back with created ledger name
     const state = routeLocation.state as { returnTo?: string } | null;
     if (successDialog === 'saved' && state?.returnTo) {
       prefillAppliedRef.current = null;
-      routeNavigate(state.returnTo);
+      const createdName = savedLedgerNameRef.current;
+      savedLedgerNameRef.current = null;
+      routeNavigate(state.returnTo, { state: createdName ? { createdLedgerName: createdName } : undefined });
       return;
     }
     if (shouldClearForm) clearForm();
@@ -507,6 +545,17 @@ export default function LedgerRegForm({
 
   if (!companyId) return <Typography color="error">Select a company first.</Typography>;
 
+  const isCustomerForm = ledgerType === 'Customer';
+
+  const actionButtons = (
+    <Box sx={{ mt: 3, display: 'flex', gap: 1.5, flexWrap: 'wrap' }}>
+      <Button ref={saveButtonRef} type="submit" variant="contained" disabled={isEditMode} startIcon={<SaveIcon />} sx={{ bgcolor: '#1976d2', '&:hover': { bgcolor: '#1565c0' }, minWidth: 110, py: 1, fontSize: '0.9rem' }}>SAVE</Button>
+      <Button type="button" variant="contained" onClick={clearForm} startIcon={<ClearIcon />} sx={{ bgcolor: '#00bcd4', '&:hover': { bgcolor: '#00acc1' }, minWidth: 110, py: 1, fontSize: '0.9rem' }}>CLEAR</Button>
+      <Button type="button" variant="contained" disabled={!isEditMode} onClick={() => handleSubmit(onEdit)()} startIcon={<EditIcon />} sx={{ bgcolor: '#607d8b', '&:hover': { bgcolor: '#546e7a' }, minWidth: 110, py: 1, fontSize: '0.9rem' }}>UPDATE</Button>
+      <Button type="button" variant="contained" disabled={!isEditMode} onClick={onDelete} startIcon={<DeleteIcon />} sx={{ bgcolor: '#f44336', '&:hover': { bgcolor: '#d32f2f' }, minWidth: 110, py: 1, fontSize: '0.9rem' }}>DELETE</Button>
+    </Box>
+  );
+
   return (
     <Box>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
@@ -522,6 +571,131 @@ export default function LedgerRegForm({
           </Typography>
         )}
         <form onSubmit={handleSubmit(isEditMode ? onEdit : onSubmit)}>
+          {isCustomerForm ? (
+            <>
+              <Tabs value={customerTabValue} onChange={(_: React.SyntheticEvent, v: number) => setCustomerTabValue(v)} sx={{ borderBottom: 1, borderColor: 'divider', mb: 2 }}>
+                <Tab label="Main" id="customer-tab-main" aria-controls="customer-tabpanel-main" />
+                <Tab label="Additional" id="customer-tab-additional" aria-controls="customer-tabpanel-additional" />
+              </Tabs>
+              <Box role="tabpanel" hidden={customerTabValue !== 0} id="customer-tabpanel-main" aria-labelledby="customer-tab-main">
+                <Grid container spacing={2}>
+                  <Grid item xs={12} sm={4} md={3}>
+                    <Controller name="regDate" control={control} render={({ field }) => <DateInput label="Date" value={field.value || ''} onChange={field.onChange} size="small" />} />
+                  </Grid>
+                  <Grid item xs={12} sm={8} md={9}>
+                    <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-start' }}>
+                      <Autocomplete
+                        size="small"
+                        freeSolo
+                        disabled={!!selectedId}
+                        options={ledgerOptions}
+                        getOptionLabel={(opt) => (typeof opt === 'string' ? opt : opt?.name ?? '')}
+                        value={selectedId ? ledgerOptions.find((o) => o._id === selectedId) ?? null : (ledgerSearch || null)}
+                        inputValue={ledgerSearch}
+                        onChange={onLedgerSelect}
+                        onOpen={() => setLedgerNameDropdownOpen(true)}
+                        onClose={() => setLedgerNameDropdownOpen(false)}
+                        onInputChange={(_, v, reason) => {
+                          setLedgerSearch(v);
+                          if (reason === 'input' && !selectedId) {
+                            setValue('name', v);
+                            setValue('aliasName', v);
+                          }
+                        }}
+                        renderInput={(params) => (
+                          <TextField
+                            {...params}
+                            inputRef={ledgerNameInputRef}
+                            label="Ledger Name"
+                            required
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' && !ledgerNameDropdownOpen) {
+                                e.preventDefault();
+                                aliasNameRef.current?.focus();
+                              }
+                            }}
+                            sx={{ '& .MuiInputBase-input': { fontSize: '0.95rem' } }}
+                            InputLabelProps={{ shrink: true }}
+                          />
+                        )}
+                        renderOption={(props, option) => (
+                          <li {...props} key={option._id} style={{ padding: '10px 14px', fontSize: '0.95rem', minHeight: 40 }}>
+                            <Box><Typography variant="body1" fontWeight={500}>{option.name}</Typography><Typography variant="body2" color="text.secondary">{option.code}</Typography></Box>
+                          </li>
+                        )}
+                        slotProps={{ paper: { sx: { fontSize: '0.95rem', '& .MuiAutocomplete-listbox': { maxHeight: 320 } } } }}
+                        sx={{ flex: 1, '& .MuiOutlinedInput-root': { fontSize: '0.95rem' } }}
+                      />
+                      <Button variant="outlined" size="small" onClick={handleOpenChangeName} disabled={!selectedId} sx={{ minWidth: 'auto', px: 1, py: 0.9, fontSize: '0.7rem', whiteSpace: 'nowrap' }}>Change Name</Button>
+                    </Box>
+                  </Grid>
+                  <Grid item xs={12}>
+                    <TextField fullWidth select size="small" label="Under" required disabled={underDisabled} {...register('groupId', { required: 'Required' })} value={groupIdValue || defaultGroupId || ''} onChange={(e) => setValue('groupId', e.target.value, { shouldValidate: true })} error={!!errors.groupId} helperText={errors.groupId?.message} InputLabelProps={{ shrink: true }}>
+                      {underOptions.map((opt) => <MenuItem key={opt._id} value={opt._id}>{opt.name}</MenuItem>)}
+                    </TextField>
+                  </Grid>
+                  <Grid item xs={12}>
+                    <TextField fullWidth size="small" label="Account Code" {...register('code')} helperText="Auto-generated when empty" InputLabelProps={{ shrink: true }} disabled />
+                  </Grid>
+                  <Grid item xs={12}>
+                    <TextField fullWidth size="small" label="Alias Name" {...register('aliasName')} inputRef={aliasNameRef} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); mobileRef.current?.focus(); } }} InputLabelProps={{ shrink: true }} />
+                  </Grid>
+                  <Grid item xs={12}>
+                    <TextField fullWidth size="small" label="Mobile" {...register('mobile')} inputRef={mobileRef} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); vatNoRef.current?.focus(); } }} InputLabelProps={{ shrink: true }} />
+                  </Grid>
+                  <Grid item xs={12}>
+                    <TextField fullWidth size="small" label="VAT No" {...register('TRN')} inputRef={vatNoRef} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addressRef.current?.focus(); } }} InputLabelProps={{ shrink: true }} />
+                  </Grid>
+                  <Grid item xs={12}>
+                    <TextField fullWidth size="small" label="Address" multiline rows={2} {...register('address')} inputRef={addressRef} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); oldBalanceDrRef.current?.focus(); } }} InputLabelProps={{ shrink: true }} />
+                  </Grid>
+                  <Grid item xs={6}>
+                    <TextField fullWidth size="small" type="number" label="Old Balance Debit" {...register('openingBalanceDr')} inputRef={oldBalanceDrRef} inputProps={{ min: 0, step: 0.01 }} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); oldBalanceCrRef.current?.focus(); } }} InputLabelProps={{ shrink: true }} />
+                  </Grid>
+                  <Grid item xs={6}>
+                    <TextField fullWidth size="small" type="number" label="Old Balance Credit" {...register('openingBalanceCr')} inputRef={oldBalanceCrRef} inputProps={{ min: 0, step: 0.01 }} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); emirateSelectRef.current?.focus(); } }} InputLabelProps={{ shrink: true }} />
+                  </Grid>
+                  <Grid item xs={12}>
+                    <TextField fullWidth select size="small" label="Emirate" {...register('state')} value={watch('state') || ''} onChange={(e) => setValue('state', e.target.value)} inputRef={emirateSelectRef} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); saveButtonRef.current?.focus(); } }} InputLabelProps={{ shrink: true }}>
+                      <MenuItem value="">— Select —</MenuItem>
+                      {UAE_EMIRATES.map((em) => <MenuItem key={em} value={em}>{em}</MenuItem>)}
+                    </TextField>
+                  </Grid>
+                </Grid>
+                {actionButtons}
+              </Box>
+              <Box role="tabpanel" hidden={customerTabValue !== 1} id="customer-tabpanel-additional" aria-labelledby="customer-tab-additional">
+                <Grid container spacing={2}>
+                  <Grid item xs={6}><TextField fullWidth size="small" label="Location" {...register('location')} InputLabelProps={{ shrink: true }} /></Grid>
+                  <Grid item xs={6}><TextField fullWidth size="small" label="Pincode" {...register('pincode')} InputLabelProps={{ shrink: true }} /></Grid>
+                  <Grid item xs={6}><TextField fullWidth size="small" label="State Code" {...register('stateCode')} InputLabelProps={{ shrink: true }} /></Grid>
+                  <Grid item xs={6}><TextField fullWidth size="small" label="SAC/HSN" {...register('sacHsn')} InputLabelProps={{ shrink: true }} /></Grid>
+                  <Grid item xs={12}><TextField fullWidth size="small" label="Cost Centre" {...register('costCentre')} InputLabelProps={{ shrink: true }} /></Grid>
+                  <Grid item xs={6}><TextField fullWidth size="small" type="number" label="Credit Limit" {...register('creditLimit')} inputProps={{ min: 0, step: 0.01 }} InputLabelProps={{ shrink: true }} /></Grid>
+                  <Grid item xs={6}><TextField fullWidth size="small" type="number" label="Days" {...register('creditDays')} inputProps={{ min: 0 }} InputLabelProps={{ shrink: true }} /></Grid>
+                  <Grid item xs={6}><TextField fullWidth size="small" label="Area" {...register('area')} InputLabelProps={{ shrink: true }} /></Grid>
+                  <Grid item xs={6}><TextField fullWidth size="small" label="Route" {...register('route')} InputLabelProps={{ shrink: true }} /></Grid>
+                  <Grid item xs={6}><TextField fullWidth size="small" label="Day" {...register('day')} InputLabelProps={{ shrink: true }} /></Grid>
+                  <Grid item xs={12}><TextField fullWidth size="small" label="District" {...register('district')} InputLabelProps={{ shrink: true }} /></Grid>
+                  <Grid item xs={12}><TextField fullWidth size="small" label="Agency" {...register('agency')} InputLabelProps={{ shrink: true }} /></Grid>
+                  <Grid item xs={6}><TextField fullWidth size="small" type="number" label="Disc %" {...register('discPercent')} inputProps={{ min: 0, max: 100, step: 0.01 }} InputLabelProps={{ shrink: true }} /></Grid>
+                  <Grid item xs={6}><TextField fullWidth size="small" label="Category" {...register('category')} InputLabelProps={{ shrink: true }} /></Grid>
+                  <Grid item xs={6}><TextField fullWidth size="small" label="Rate Type" {...register('rateType')} InputLabelProps={{ shrink: true }} /></Grid>
+                  <Grid item xs={6}><TextField fullWidth size="small" label="Rating" {...register('rating')} InputLabelProps={{ shrink: true }} /></Grid>
+                  <Grid item xs={12}><TextField fullWidth size="small" label="Remarks" {...register('remarks')} InputLabelProps={{ shrink: true }} /></Grid>
+                  <Grid item xs={12}><TextField fullWidth size="small" label="Story" {...register('story')} InputLabelProps={{ shrink: true }} /></Grid>
+                  <Grid item xs={6}><TextField fullWidth size="small" label="EmpCode" {...register('empCode')} InputLabelProps={{ shrink: true }} /></Grid>
+                  <Grid item xs={6}><TextField fullWidth size="small" label="Sales Man" {...register('salesMan')} InputLabelProps={{ shrink: true }} /></Grid>
+                  <Grid item xs={6}><TextField fullWidth size="small" label="Person" {...register('person')} InputLabelProps={{ shrink: true }} /></Grid>
+                  <Grid item xs={6}><TextField fullWidth size="small" label="Agent2" {...register('agent2')} InputLabelProps={{ shrink: true }} /></Grid>
+                  <Grid item xs={6}><TextField fullWidth size="small" label="Tel No" {...register('phone')} InputLabelProps={{ shrink: true }} /></Grid>
+                  <Grid item xs={6}><TextField fullWidth size="small" label="E Mail" type="email" {...register('email')} InputLabelProps={{ shrink: true }} /></Grid>
+                  <Grid item xs={12}><TextField fullWidth size="small" label="Payment Terms" {...register('paymentTerms')} InputLabelProps={{ shrink: true }} /></Grid>
+                </Grid>
+              </Box>
+            </>
+          ) : (
+            <>
           <Grid container spacing={2}>
             <Grid item xs={12} md={6}>
               <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>Ledger details</Typography>
@@ -728,47 +902,9 @@ export default function LedgerRegForm({
               </Grid>
             </Grid>
           </Grid>
-
-          <Box sx={{ mt: 3, display: 'flex', gap: 1.5, flexWrap: 'wrap' }}>
-            <Button
-              type="submit"
-              variant="contained"
-              disabled={isEditMode}
-              startIcon={<SaveIcon />}
-              sx={{ bgcolor: '#1976d2', '&:hover': { bgcolor: '#1565c0' }, minWidth: 110, py: 1, fontSize: '0.9rem' }}
-            >
-              SAVE
-            </Button>
-            <Button
-              type="button"
-              variant="contained"
-              onClick={clearForm}
-              startIcon={<ClearIcon />}
-              sx={{ bgcolor: '#00bcd4', '&:hover': { bgcolor: '#00acc1' }, minWidth: 110, py: 1, fontSize: '0.9rem' }}
-            >
-              CLEAR
-            </Button>
-            <Button
-              type="button"
-              variant="contained"
-              disabled={!isEditMode}
-              onClick={() => handleSubmit(onEdit)()}
-              startIcon={<EditIcon />}
-              sx={{ bgcolor: '#607d8b', '&:hover': { bgcolor: '#546e7a' }, minWidth: 110, py: 1, fontSize: '0.9rem' }}
-            >
-              EDIT
-            </Button>
-            <Button
-              type="button"
-              variant="contained"
-              disabled={!isEditMode}
-              onClick={onDelete}
-              startIcon={<DeleteIcon />}
-              sx={{ bgcolor: '#f44336', '&:hover': { bgcolor: '#d32f2f' }, minWidth: 110, py: 1, fontSize: '0.9rem' }}
-            >
-              DELETE
-            </Button>
-          </Box>
+          {actionButtons}
+          </>
+          )}
         </form>
       </Paper>
 

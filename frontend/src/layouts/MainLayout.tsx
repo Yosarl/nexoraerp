@@ -566,7 +566,7 @@ export default function MainLayout() {
           overflow: 'auto',
         }}
       >
-        <Outlet />
+        <Outlet key={loc.pathname} />
       </Box>
     </Box>
   );

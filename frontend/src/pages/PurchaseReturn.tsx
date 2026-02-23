@@ -2189,7 +2189,7 @@ export default function PurchaseReturn() {
         <Button variant="contained" size="small" startIcon={<ClearIcon />} onClick={handleClear} sx={{ bgcolor: '#16a34a', color: '#fff', borderRadius: 1, textTransform: 'none', fontWeight: 600, px: 2, fontSize: '0.85rem', boxShadow: 'none', '&:hover': { bgcolor: '#000000' } }}>
           Clear
         </Button>
-        <Button ref={saveButtonRef} variant="contained" size="small" startIcon={<SaveIcon />} onClick={handleSave} disabled={loading || !!returnId} sx={{ bgcolor: '#16a34a', color: '#fff', borderRadius: 1, textTransform: 'none', fontWeight: 600, px: 2, fontSize: '0.85rem', boxShadow: 'none', '&:hover': { bgcolor: '#000000' }, '&.Mui-disabled': { bgcolor: '#d1d5db', color: '#9ca3af' } }}>
+        <Button ref={saveButtonRef} variant="contained" size="small" startIcon={<SaveIcon />} onClick={() => handleSave()} disabled={loading || !!returnId} sx={{ bgcolor: '#16a34a', color: '#fff', borderRadius: 1, textTransform: 'none', fontWeight: 600, px: 2, fontSize: '0.85rem', boxShadow: 'none', '&:hover': { bgcolor: '#000000' }, '&.Mui-disabled': { bgcolor: '#d1d5db', color: '#9ca3af' } }}>
           Save
         </Button>
         <Button variant="contained" size="small" startIcon={<EditIcon />} onClick={() => setEditConfirmOpen(true)} disabled={!returnId || loading} sx={{ bgcolor: '#16a34a', color: '#fff', borderRadius: 1, textTransform: 'none', fontWeight: 600, px: 2, fontSize: '0.85rem', boxShadow: 'none', '&:hover': { bgcolor: '#000000' }, '&.Mui-disabled': { bgcolor: '#d1d5db', color: '#9ca3af' } }}>

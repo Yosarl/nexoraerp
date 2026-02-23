@@ -8,7 +8,7 @@ import {
   Grid,
   IconButton,
   Autocomplete,
-  createFilterOptions,
+  Divider,
   FormControlLabel,
   Radio,
   RadioGroup,
@@ -236,8 +236,20 @@ const emptyLine = (): LineItem => ({
 });
 
 export default function PurchaseEntry() {
-  // Filter for product Autocomplete — match anywhere in the name, no result limit
-  const productFilterOptions = useMemo(() => createFilterOptions<Product>({ matchFrom: 'any', stringify: (opt) => opt.name || '' }), []);
+  // Filter for product Autocomplete — sort like supplier A/C: starts with first, then contains, each sorted by name
+  const productFilterOptions = useMemo(
+    () => (options: Product[], state: { inputValue: string }) => {
+      const q = (state.inputValue || '').trim().toLowerCase();
+      const name = (p: Product) => (p.name || '').toLowerCase();
+      const sortByName = (arr: Product[]) =>
+        arr.slice().sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }));
+      if (!q) return options;
+      const startsWith = options.filter((p) => name(p).startsWith(q));
+      const containsOnly = options.filter((p) => name(p).includes(q) && !name(p).startsWith(q));
+      return [...sortByName(startsWith), ...sortByName(containsOnly)];
+    },
+    []
+  );
 
   const companyId = useSelector((s: RootState) => s.app.selectedCompanyId);
   const financialYearId = useSelector((s: RootState) => s.app.selectedFinancialYearId);
@@ -263,12 +275,21 @@ export default function PurchaseEntry() {
   const routeLocation = useLocation();
   const [pendingSupplierName, setPendingSupplierName] = useState<string | null>(null);
   const supplierAcRef = useRef<HTMLInputElement>(null);
+  const supplierNameRef = useRef<HTMLInputElement>(null);
 
   // Supplier
   const [supplierId, setSupplierId] = useState<string | null>(null);
   const [supplierName, setSupplierName] = useState('');
   const [supplierAddress, setSupplierAddress] = useState('');
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [supplierAcListboxOpen, setSupplierAcListboxOpen] = useState(false);
+  const [createSupplierConfirmOpen, setCreateSupplierConfirmOpen] = useState(false);
+  const [createSupplierConfirmName, setCreateSupplierConfirmName] = useState<string | null>(null);
+  const [createProductConfirmOpen, setCreateProductConfirmOpen] = useState(false);
+  const [createProductConfirmName, setCreateProductConfirmName] = useState<string | null>(null);
+  const [pendingProductName, setPendingProductName] = useState<string | null>(null);
+  const [pendingProductLineId, setPendingProductLineId] = useState<string | null>(null);
+  const pendingProductLineIdRef = useRef<string | null>(null);
 
   // Cash Account
   const [cashAccountId, setCashAccountId] = useState<string | null>(null);
@@ -306,6 +327,7 @@ export default function PurchaseEntry() {
   // Row edit commit/revert: snapshot stores old row data before editing
   const rowSnapshotRef = useRef<{ lineId: string; data: LineItem } | null>(null);
   const rowCommittedRef = useRef(false);
+  const itemNameListboxOpenRef = useRef(false);
 
   // Summary
   const [otherDiscPercent, setOtherDiscPercent] = useState(0);
@@ -596,26 +618,6 @@ export default function PurchaseEntry() {
     window.history.replaceState({}, '', routeLocation.pathname);
   }, [companyId, routeLocation.pathname, routeLocation.state]);
 
-  // Detect return from Supplier Create page — reload suppliers and auto-select
-  useEffect(() => {
-    if (pendingSupplierName && routeLocation.pathname === '/entry/purchase') {
-      loadSuppliers();
-    }
-  }, [routeLocation.pathname]);
-
-  // Once suppliers list is reloaded after creating a new supplier, auto-select it
-  useEffect(() => {
-    if (!pendingSupplierName) return;
-    const match = suppliers.find((s) => s.name.toLowerCase() === pendingSupplierName.toLowerCase());
-    if (match) {
-      setSupplierId(match._id);
-      setSupplierName(match.name);
-      setSupplierAddress(match.address || '');
-      setPendingSupplierName(null);
-      setTimeout(() => supplierAcRef.current?.focus(), 200);
-    }
-  }, [suppliers, pendingSupplierName]);
-
   // Load initial data
   useEffect(() => {
     if (!companyId || !financialYearId) return;
@@ -642,6 +644,24 @@ export default function PurchaseEntry() {
     }
   };
 
+  // Detect return from Supplier Create page — read created ledger from state, set pending and reload suppliers
+  const handledReturnFromCreateRef = useRef(false);
+  const handledProductReturnRef = useRef(false);
+  useEffect(() => {
+    const state = routeLocation.state as { createdLedgerName?: string } | null;
+    if (routeLocation.pathname !== '/entry/purchase' || !state?.createdLedgerName) {
+      handledReturnFromCreateRef.current = false;
+      return;
+    }
+    if (handledReturnFromCreateRef.current) return;
+    handledReturnFromCreateRef.current = true;
+    const createdName = state.createdLedgerName;
+    setPendingSupplierName(createdName);
+    loadSuppliers();
+    const path = routeLocation.pathname;
+    setTimeout(() => navigate(path, { replace: true, state: {} }), 0);
+  }, [routeLocation.pathname, routeLocation.state, loadSuppliers, navigate]);
+
   const loadCashAccounts = async () => {
     try {
       const res = await ledgerAccountApi.list(companyId!, 'Cash');
@@ -661,6 +681,22 @@ export default function PurchaseEntry() {
       // ignore
     }
   };
+
+  // Detect return from Product Create page — read created product name and line id, reload products, then auto-fill line
+  useEffect(() => {
+    const state = routeLocation.state as { createdProductName?: string; lineIdForProduct?: string } | null;
+    if (routeLocation.pathname !== '/entry/purchase' || !state?.createdProductName) {
+      handledProductReturnRef.current = false;
+      return;
+    }
+    if (handledProductReturnRef.current) return;
+    handledProductReturnRef.current = true;
+    setPendingProductName(state.createdProductName);
+    setPendingProductLineId(state.lineIdForProduct ?? null);
+    loadProducts();
+    const path = routeLocation.pathname;
+    setTimeout(() => navigate(path, { replace: true, state: {} }), 0);
+  }, [routeLocation.pathname, routeLocation.state, loadProducts, navigate]);
 
   const loadInvoiceList = async () => {
     try {
@@ -783,9 +819,9 @@ export default function PurchaseEntry() {
         return {
           id: `${Date.now()}-${idx}-${Math.random().toString(36).substr(2, 6)}`,
           productId: b.productId,
-          productCode: b.productCode,
+          productCode: product?.code ?? b.productCode ?? '',
           imei: selectedUnit?.imei || product?.imei || '',
-          name: b.productName,
+          name: product?.name ?? b.productName ?? '',
           unitId: selectedUnit?.id || '',
           unitName: selectedUnit?.name || '',
           multiUnitId: b.multiUnitId || (selectedUnit?.isMultiUnit ? selectedUnit?.multiUnitId : undefined),
@@ -867,7 +903,7 @@ export default function PurchaseEntry() {
     loadInvoiceIntoForm(invoiceList[invoiceList.length - 1]._id);
   }, [invoiceList, loadInvoiceIntoForm]);
 
-  // Combine cash accounts and suppliers into a single list
+  // Combine cash accounts and suppliers into a single list, sorted by name (same as Sales B2C)
   useEffect(() => {
     const cashOptions: SupplierCashOption[] = cashAccounts.map((c) => ({
       _id: c._id,
@@ -883,7 +919,10 @@ export default function PurchaseEntry() {
       phone: s.phone,
       type: 'supplier' as const,
     }));
-    setSupplierCashOptions([...cashOptions, ...supplierOptions]);
+    const combined = [...cashOptions, ...supplierOptions].sort((a, b) =>
+      (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' })
+    );
+    setSupplierCashOptions(combined);
   }, [cashAccounts, suppliers]);
 
   // Line item handlers
@@ -1181,6 +1220,12 @@ export default function PurchaseEntry() {
   const handleItemNameKeyDown = useCallback(
     (e: React.KeyboardEvent, line: LineItem) => {
       if (e.key !== 'Enter') return;
+      // When list is open and typed value is a prefix of some product, let Autocomplete handle Enter (arrow+Enter to select)
+      if (itemNameListboxOpenRef.current && line.name.trim()) {
+        const prefixCheck = line.name.trim().toLowerCase();
+        const isPrefixOfAny = products.some((p: Product) => (p.name && String(p.name).trim().toLowerCase().startsWith(prefixCheck)));
+        if (isPrefixOfAny) return;
+      }
 
       // If item name is blank and no product selected — check if last row, jump to save
       if (!line.productId && !line.name.trim()) {
@@ -1214,7 +1259,11 @@ export default function PurchaseEntry() {
           return;
         }
 
-        // No local match — fetch by search, then exact match or single-result fallback
+        // Typed value is a prefix of some product? Don't intercept Enter — let Autocomplete handle it (arrow+Enter to select)
+        const isPrefixOfAny = products.some((p: Product) => (p.name && String(p.name).trim().toLowerCase().startsWith(typedLower)));
+        if (isPrefixOfAny) return;
+
+        // No local match and not a prefix of any — fetch by search, then exact match or single-result or create dialog
         e.preventDefault();
         e.stopPropagation();
         const lineId = line.id;
@@ -1233,6 +1282,14 @@ export default function PurchaseEntry() {
                 qtyInputRefs.current[lineId]?.focus();
                 qtyInputRefs.current[lineId]?.select();
               }, 100);
+            } else {
+              // Only show create dialog when typed isn't a prefix of any API result (so arrow+Enter can still select)
+              const isPrefixInList = list.some((p: Product) => (p.name && String(p.name).trim().toLowerCase().startsWith(typedLower)));
+              if (!isPrefixInList) {
+                pendingProductLineIdRef.current = lineId;
+                setCreateProductConfirmName(typed);
+                setCreateProductConfirmOpen(true);
+              }
             }
           } catch {
             // Keep focus in Item Name on error
@@ -1537,6 +1594,56 @@ export default function PurchaseEntry() {
   const handleTextFieldFocus = (e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement, Element>) => {
     e.target.select();
   };
+
+  const handleSupplierSelect = useCallback((option: SupplierCashOption | null) => {
+    if (!option) {
+      setSupplierId(null);
+      setSupplierName('');
+      setSupplierAddress('');
+      return;
+    }
+    if (option.type === 'cash') {
+      setSupplierId(option._id);
+      setSupplierName(option.name);
+      setSupplierAddress('');
+    } else {
+      setSupplierId(option._id);
+      setSupplierName(option.name);
+      setSupplierAddress(option.address || '');
+    }
+  }, []);
+
+  // Once suppliers list is reloaded after creating a new supplier, auto-select it and focus the field
+  useEffect(() => {
+    if (!pendingSupplierName || !Array.isArray(supplierCashOptions)) return;
+    const match = supplierCashOptions.find((s) => (s.name || '').toLowerCase() === pendingSupplierName.toLowerCase());
+    if (match) {
+      handleSupplierSelect(match);
+      setPendingSupplierName(null);
+      setTimeout(() => supplierAcRef.current?.focus(), 200);
+    }
+  }, [supplierCashOptions, pendingSupplierName, handleSupplierSelect]);
+
+  // Once products list is reloaded after creating a new product, set it on the pending line and focus item name
+  useEffect(() => {
+    if (!pendingProductName || pendingProductLineId == null) return;
+    const lineId = pendingProductLineId;
+    const match = Array.isArray(products) && products.length > 0
+      ? products.find((p) => (p.name || '').toLowerCase() === pendingProductName.toLowerCase())
+      : null;
+    if (match) {
+      handleProductSelect(lineId, match);
+      setPendingProductName(null);
+      setPendingProductLineId(null);
+      setTimeout(() => itemNameInputRefs.current[lineId]?.focus(), 200);
+    } else if (Array.isArray(products) && products.length > 0) {
+      // List loaded but new product not in it yet — still place the created name on the field
+      updateLine(lineId, 'name', pendingProductName);
+      setPendingProductName(null);
+      setPendingProductLineId(null);
+      setTimeout(() => itemNameInputRefs.current[lineId]?.focus(), 200);
+    }
+  }, [products, pendingProductName, pendingProductLineId, handleProductSelect, updateLine]);
 
   const handleNumberKeyDown = (e: React.KeyboardEvent) => {
     if (['+', '-', 'e', 'E'].includes(e.key)) {
@@ -2059,7 +2166,124 @@ export default function PurchaseEntry() {
           <Grid item xs={6} sm={3} md={2} lg={1.7}>
             <DateInput label="Date" value={date} onChange={setDate} size="small" />
           </Grid>
-          {/* VAT Type + Payment Type - first row, together */}
+          <Grid item xs={6} sm={3} md={2} lg={1.8}>
+            <TextField
+              label="Supplier Inv No"
+              size="small"
+              value={supplierInvNo}
+              onChange={(e) => setSupplierInvNo(e.target.value)}
+              fullWidth
+              InputLabelProps={{ shrink: true }}
+              sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }}
+            />
+          </Grid>
+          <Grid item xs={7.5} sm={7.5} md={3.125} lg={2.75}>
+            <Autocomplete<SupplierCashOption>
+              size="small"
+              options={supplierCashOptions}
+              getOptionLabel={(opt) => opt.name || ''}
+              filterOptions={(options, state) => {
+                const q = (state.inputValue || '').trim().toLowerCase();
+                const name = (o: SupplierCashOption) => (o.name || '').toLowerCase();
+                const sortByName = (arr: SupplierCashOption[]) => arr.slice().sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }));
+                if (!q) return options;
+                const startsWith = options.filter((o) => name(o).startsWith(q));
+                const containsOnly = options.filter((o) => name(o).includes(q) && !name(o).startsWith(q));
+                return [...sortByName(startsWith), ...sortByName(containsOnly)];
+              }}
+              value={supplierCashOptions.find((s) => s.name === supplierName) || null}
+              onChange={(_, v) => handleSupplierSelect(v)}
+              onOpen={() => setSupplierAcListboxOpen(true)}
+              onClose={() => setSupplierAcListboxOpen(false)}
+              autoHighlight
+              autoSelect
+              isOptionEqualToValue={(opt, val) => opt._id === val._id}
+              slotProps={{
+                paper: {
+                  sx: { minWidth: '150%', width: '150%', maxWidth: '90vw' },
+                },
+              }}
+              ListboxProps={{
+                sx: {
+                  '& .MuiAutocomplete-option': {
+                    '&[data-focus="true"]': { bgcolor: '#4fc3c5 !important', color: '#ffffff !important' },
+                    '&[aria-selected="true"]': { bgcolor: '#4fc3c5 !important', color: '#ffffff !important' },
+                    '&:hover': { bgcolor: 'rgba(79, 195, 197, 0.25)' },
+                  },
+                },
+              }}
+              renderInput={(params) => (
+                <TextField
+                  {...params}
+                  label="Cash / Supplier A/C"
+                  InputLabelProps={{ shrink: true }}
+                  inputRef={supplierAcRef}
+                  autoFocus
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      const typed = (e.target as HTMLInputElement).value.trim();
+                      if (!typed) {
+                        e.preventDefault();
+                        setTimeout(() => supplierNameRef.current?.focus(), 50);
+                        return;
+                      }
+                      const exists = supplierCashOptions.find((s) => (s.name || '').toLowerCase() === typed.toLowerCase());
+                      if (exists) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        handleSupplierSelect(exists);
+                        setTimeout(() => supplierNameRef.current?.focus(), 50);
+                        return;
+                      }
+                      if (supplierAcListboxOpen) {
+                        const isPrefixOfSome = supplierCashOptions.some((s) => (s.name || '').toLowerCase().startsWith(typed.toLowerCase()));
+                        if (isPrefixOfSome) return;
+                      }
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setCreateSupplierConfirmName(typed);
+                      setCreateSupplierConfirmOpen(true);
+                    }
+                  }}
+                  sx={{
+                    '& .MuiOutlinedInput-root': { borderRadius: 1.5 },
+                    '& .MuiInputBase-input': { fontSize: '0.75rem' },
+                    '& .MuiInputLabel-root': { fontSize: '0.75rem' },
+                  }}
+                />
+              )}
+            />
+          </Grid>
+          <Grid item xs={6} sm={3.75} md={3.125} lg={3.125}>
+            <TextField
+              size="small"
+              label="Supplier Name"
+              fullWidth
+              value={supplierName}
+              onChange={(e) => setSupplierName(e.target.value)}
+              onFocus={handleTextFieldFocus}
+              inputRef={supplierNameRef}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  const firstLine = lines[0];
+                  if (firstLine) setTimeout(() => imeiInputRefs.current[firstLine.id]?.focus(), 50);
+                }
+              }}
+              InputLabelProps={{ shrink: true }}
+              InputProps={{ readOnly: !!supplierId }}
+              sx={{
+                '& .MuiOutlinedInput-root': { borderRadius: 1.5 },
+                '& .MuiInputBase-input': { fontSize: '0.75rem' },
+                '& .MuiInputLabel-root': { fontSize: '0.75rem' },
+                ...(supplierId ? { '& .MuiOutlinedInput-root': { bgcolor: '#f1f5f9', borderRadius: 1.5 } } : {}),
+              }}
+            />
+          </Grid>
+          {/* Second row: VAT Type + Payment Type */}
+          <Grid item xs={12}>
+            <Divider sx={{ my: 1.2 }} />
+          </Grid>
           <Grid item xs={12} sm={6} md={3} lg={2.5}>
             <Box sx={{ display: 'flex', gap: 1, flexWrap: 'nowrap', alignItems: 'stretch' }}>
               <Box sx={{ border: '1px solid #e2e8f0', borderRadius: 1.5, px: 1.2, py: 0.5, bgcolor: '#f8fafc', height: '100%' }}>
@@ -2077,118 +2301,6 @@ export default function PurchaseEntry() {
                 </RadioGroup>
               </Box>
             </Box>
-          </Grid>
-          <Grid item xs={6} sm={3} md={2} lg={1.8}>
-            <TextField
-              label="Supplier Inv No"
-              size="small"
-              value={supplierInvNo}
-              onChange={(e) => setSupplierInvNo(e.target.value)}
-              fullWidth
-              InputLabelProps={{ shrink: true }}
-              sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }}
-            />
-          </Grid>
-          <Grid item xs={6} sm={6} md={2.5} lg={2.2}>
-            <Autocomplete
-              size="small"
-              options={supplierCashOptions}
-              groupBy={(opt) => opt.type === 'cash' ? 'Cash Accounts' : 'Suppliers'}
-              getOptionLabel={(opt) => opt.name || ''}
-              value={supplierCashOptions.find((s) => s._id === supplierId) || null}
-              onChange={(_, v) => {
-                setSupplierId(v?._id || null);
-                setSupplierName(v?.name || '');
-                setSupplierAddress(v?.address || '');
-              }}
-              renderOption={(props, opt) => (
-                <li {...props} key={opt._id} style={{
-                  fontSize: '0.85rem',
-                  fontWeight: 400,
-                  padding: '6px 14px',
-                  background: '#ffffff',
-                  color: opt.type === 'cash' ? '#0ea5e9' : '#334155',
-                  cursor: 'pointer'
-                }}>
-                  {opt.name}
-                </li>
-              )}
-              ListboxProps={{
-                sx: {
-                  p: 0,
-                  maxHeight: 250,
-                  overflowY: 'auto',
-                  '& .MuiAutocomplete-groupLabel': {
-                    bgcolor: '#f1f5f9',
-                    color: '#1e293b',
-                    fontWeight: 600,
-                    fontSize: '0.75rem',
-                    py: 0.5,
-                    px: 2,
-                  },
-                  '& .MuiAutocomplete-option': {
-                    minHeight: 'auto', py: 0.75, px: 2, fontSize: '0.85rem', bgcolor: 'transparent',
-                    '&[data-focus="true"]': { bgcolor: '#0f766e !important', color: '#ffffff !important' },
-                    '&[aria-selected="true"]': { bgcolor: '#0f766e !important', color: '#ffffff !important' },
-                    '&.Mui-focused': { bgcolor: '#0f766e !important', color: '#ffffff !important' }
-                  }
-                }
-              }}
-              isOptionEqualToValue={(opt, val) => opt._id === val._id}
-              renderInput={(params) => (
-                <TextField
-                  {...params}
-                  label="Cash/ Supplier AC"
-                  InputLabelProps={{ shrink: true }}
-                  inputRef={supplierAcRef}
-                  autoFocus
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      const typed = (e.target as HTMLInputElement).value.trim();
-                      if (supplierId) {
-                        e.preventDefault();
-                        const firstLine = lines[0];
-                        if (firstLine) setTimeout(() => imeiInputRefs.current[firstLine.id]?.focus(), 50);
-                        return;
-                      }
-                      if (!typed) {
-                        e.preventDefault();
-                        return;
-                      }
-                      const existsInSuppliers = suppliers.find((s) => s.name.toLowerCase() === typed.toLowerCase());
-                      const existsInCash = cashAccounts.find((c) => c.name.toLowerCase() === typed.toLowerCase());
-                      if (existsInSuppliers || existsInCash) {
-                        const match = existsInSuppliers || existsInCash;
-                        if (match) {
-                          setSupplierId(match._id);
-                          setSupplierName(match.name);
-                          setSupplierAddress((match as any).address || '');
-                        }
-                        const firstLine = lines[0];
-                        if (firstLine) setTimeout(() => imeiInputRefs.current[firstLine.id]?.focus(), 50);
-                      } else {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        setPendingSupplierName(typed);
-                        navigate('/master/supplier-create', { state: { prefillName: typed, returnTo: '/entry/purchase' } });
-                      }
-                    }
-                  }}
-                  sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }}
-                />
-              )}
-            />
-          </Grid>
-          <Grid item xs={6} sm={6} md={2.5} lg={2.2}>
-            <TextField
-              label="Supplier Name"
-              size="small"
-              value={supplierAddress}
-              onChange={(e) => setSupplierAddress(e.target.value)}
-              fullWidth
-              InputLabelProps={{ shrink: true }}
-              sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 }, ...(supplierId ? { '& .MuiOutlinedInput-root': { bgcolor: '#f1f5f9' } } : {}) }}
-            />
           </Grid>
           {/* Navigation - B2C style buttons */}
           <Grid item xs="auto">
@@ -2375,11 +2487,11 @@ export default function PurchaseEntry() {
             <TableHead>
               <TableRow>
                 <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '2.5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Sl</TableCell>
-                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '9%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Int Barcode</TableCell>
-                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '14%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Item Name</TableCell>
-                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '6%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Unit</TableCell>
-                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Qty</TableCell>
-                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '6%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>P Rate</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '11.7%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Int Barcode</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '21.875%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Item Name</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '7.2%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Unit</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '6.5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Qty</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '7.8%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>P Rate</TableCell>
                 <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '6.5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Gross</TableCell>
                 <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>DISC%</TableCell>
                 <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Disc</TableCell>
@@ -2411,7 +2523,7 @@ export default function PurchaseEntry() {
                       onKeyDown={(e) => handleImeiKeyDown(e, line.id, line.imei)}
                       fullWidth
                       inputRef={(el) => { imeiInputRefs.current[line.id] = el; }}
-                      sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.75, fontSize: '0.875rem' } }}
+                      sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.75, fontSize: '0.74375rem' } }}
                     />
                   </TableCell>
                   <TableCell sx={{ p: 0.5, borderBottom: '1px solid #e2e8f0' }} onClick={(e) => e.stopPropagation()}>
@@ -2423,21 +2535,30 @@ export default function PurchaseEntry() {
                       isOptionEqualToValue={(opt, val) => opt._id === val._id}
                       getOptionLabel={(opt) => (typeof opt === 'string' ? opt : opt.name || '')}
                       inputValue={line.name}
-                      onInputChange={(_, v) => updateLine(line.id, 'name', v)}
+                      onInputChange={(_, v) => {
+                        updateLine(line.id, 'name', v);
+                        if (!(v && v.trim())) {
+                          updateLine(line.id, 'productId', '');
+                          updateLine(line.id, 'productCode', '');
+                          updateLine(line.id, 'imei', '');
+                        }
+                      }}
                       onChange={(_, v) => {
                         if (v && typeof v !== 'string') {
                           handleProductSelect(line.id, v);
                         }
                       }}
+                      onOpen={() => { itemNameListboxOpenRef.current = true; }}
+                      onClose={() => { itemNameListboxOpenRef.current = false; }}
                       onHighlightChange={handleProductHighlight}
+                      autoSelect
+                      autoHighlight
                       renderInput={(params) => <TextField {...params} size="small" variant="outlined" inputRef={(el) => { itemNameInputRefs.current[line.id] = el; }} onKeyDownCapture={(e) => { if (e.key === 'Enter') handleItemNameKeyDown(e, line); }} sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.75, fontSize: '0.875rem' } }} />}
                       renderOption={(props, opt) => (
                         <li {...props} key={opt._id} style={{
-                          fontSize: '0.875rem',
+                          fontSize: '1.09375rem',
                           fontWeight: 400,
                           padding: '6px 16px',
-                          background: '#ffffff',
-                          color: '#555555',
                           cursor: 'pointer'
                         }}>
                           {opt.name}
@@ -2458,8 +2579,12 @@ export default function PurchaseEntry() {
                             minHeight: 'auto',
                             py: 0.75,
                             px: 2,
-                            fontSize: '0.875rem',
+                            fontSize: '1.09375rem',
                             bgcolor: 'transparent',
+                            '&:hover': {
+                              bgcolor: 'rgba(79, 195, 197, 0.25) !important',
+                              color: '#1e293b'
+                            },
                             '&[data-focus="true"]': {
                               bgcolor: '#4fc3c5 !important',
                               color: '#ffffff !important'
@@ -2491,7 +2616,8 @@ export default function PurchaseEntry() {
                         },
                         paper: {
                           sx: {
-                            width: '300px',
+                            width: '450px',
+                            minWidth: '450px',
                             boxShadow: '0 4px 15px rgba(79,195,197,0.3)',
                             borderRadius: '10px',
                             border: '2px solid #4fc3c5',
@@ -2515,13 +2641,13 @@ export default function PurchaseEntry() {
                       fullWidth
                       disabled={line.availableUnits.length === 0}
                       inputRef={(el) => { unitInputRefs.current[line.id] = el; }}
-                      sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.75, fontSize: '0.875rem' } }}
+                      sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.75, fontSize: '0.546875rem' } }}
                     >
                       {line.availableUnits.length === 0 ? (
-                        <MenuItem value="" sx={{ fontSize: '0.875rem' }}>-</MenuItem>
+                        <MenuItem value="" sx={{ fontSize: '0.546875rem' }}>-</MenuItem>
                       ) : (
                         line.availableUnits.map((u) => (
-                          <MenuItem key={u.id} value={u.id} sx={{ fontSize: '0.875rem' }}>{u.name}</MenuItem>
+                          <MenuItem key={u.id} value={u.id} sx={{ fontSize: '0.546875rem' }}>{u.name}</MenuItem>
                         ))
                       )}
                     </TextField>
@@ -2536,10 +2662,10 @@ export default function PurchaseEntry() {
                       onChange={(e) => setEditingNumericCell((prev) => prev && prev.lineId === line.id && prev.field === 'quantity' ? { ...prev, value: e.target.value } : prev)}
                       onBlur={() => { const raw = editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'quantity' ? editingNumericCell.value : ''; updateLine(line.id, 'quantity', parseNumericInput(raw)); setEditingNumericCell((prev) => prev && prev.lineId === line.id && prev.field === 'quantity' ? null : prev); }}
                       onKeyDown={(e) => { handleNumberKeyDown(e); handleQtyKeyDown(e, line.id); }}
-                      inputProps={{ min: 0, style: { textAlign: 'center', fontSize: '0.875rem' } }}
+                      inputProps={{ min: 0, style: { textAlign: 'center', fontSize: '0.7875rem' } }}
                       fullWidth
                       inputRef={(el) => { qtyInputRefs.current[line.id] = el; }}
-                      sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.75 } }}
+                      sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.75, fontSize: '0.7875rem' } }}
                     />
                   </TableCell>
                   <TableCell align="right" sx={{ p: 0.5, borderBottom: '1px solid #e2e8f0' }}>
@@ -2552,10 +2678,10 @@ export default function PurchaseEntry() {
                       onChange={(e) => setEditingNumericCell((prev) => prev && prev.lineId === line.id && prev.field === 'pRate' ? { ...prev, value: e.target.value } : prev)}
                       onBlur={() => { const raw = editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'pRate' ? editingNumericCell.value : ''; updateLine(line.id, 'pRate', parseNumericInput(raw)); setEditingNumericCell((prev) => prev && prev.lineId === line.id && prev.field === 'pRate' ? null : prev); }}
                       onKeyDown={(e) => { handleNumberKeyDown(e); handlePriceKeyDown(e, line.id); }}
-                      inputProps={{ min: 0, style: { textAlign: 'right', fontSize: '0.875rem' } }}
+                      inputProps={{ min: 0, style: { textAlign: 'right', fontSize: '0.7875rem' } }}
                       fullWidth
                       inputRef={(el) => { priceInputRefs.current[line.id] = el; }}
-                      sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.75 } }}
+                      sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.75, fontSize: '0.7875rem' } }}
                     />
                   </TableCell>
                   <TableCell align="right" sx={{ p: 0.5, borderBottom: '1px solid #e2e8f0', fontWeight: 500, color: '#475569', fontSize: '0.875rem' }}>{line.gross.toFixed(2)}</TableCell>
@@ -2946,6 +3072,91 @@ export default function PurchaseEntry() {
         </DialogContent>
         <DialogActions sx={{ p: 2, pt: 0 }}>
           <Button onClick={() => setErrorDialogOpen(false)} variant="contained" autoFocus sx={{ bgcolor: '#dc2626', borderRadius: 2, textTransform: 'none', '&:hover': { bgcolor: '#b91c1c' } }}>OK</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Create supplier confirm: account doesn't exist, do you want to create? (same as Sales B2C) */}
+      <Dialog
+        open={createSupplierConfirmOpen}
+        onClose={() => { setCreateSupplierConfirmOpen(false); setCreateSupplierConfirmName(null); }}
+        PaperProps={{ sx: { borderRadius: 2, minWidth: 360 } }}
+        TransitionProps={{
+          onEntered: (node) => {
+            const yesBtn = (node as HTMLElement).querySelector<HTMLButtonElement>('[data-create-supplier-yes]');
+            yesBtn?.focus();
+          },
+        }}
+      >
+        <DialogTitle sx={{ fontWeight: 700, fontSize: '1rem', color: '#0f766e' }}>Create account?</DialogTitle>
+        <DialogContent>
+          <Typography sx={{ fontSize: '0.9rem', color: '#475569' }}>
+            This account doesn&apos;t exist. Do you want to create it{createSupplierConfirmName ? ` for "${createSupplierConfirmName}"` : ''}?
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 2, pb: 2 }}>
+          <Button onClick={() => { setCreateSupplierConfirmOpen(false); setCreateSupplierConfirmName(null); }} sx={{ textTransform: 'none', borderRadius: 1.5, color: '#64748b' }}>
+            No
+          </Button>
+          <Button
+            variant="contained"
+            data-create-supplier-yes
+            autoFocus
+            onClick={() => {
+              const name = createSupplierConfirmName;
+              setCreateSupplierConfirmOpen(false);
+              setCreateSupplierConfirmName(null);
+              if (name) {
+                setPendingSupplierName(name);
+                navigate('/master/supplier-create', { state: { prefillName: name, returnTo: '/entry/purchase' } });
+              }
+            }}
+            sx={{ textTransform: 'none', borderRadius: 1.5, bgcolor: '#0f766e', '&:hover': { bgcolor: '#0d6561' }, boxShadow: 'none' }}
+          >
+            Yes
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Create product confirm: product doesn't exist, do you want to create? (same pattern as supplier A/C) */}
+      <Dialog
+        open={createProductConfirmOpen}
+        onClose={() => { setCreateProductConfirmOpen(false); setCreateProductConfirmName(null); pendingProductLineIdRef.current = null; }}
+        PaperProps={{ sx: { borderRadius: 2, minWidth: 360 } }}
+        TransitionProps={{
+          onEntered: (node) => {
+            const yesBtn = (node as HTMLElement).querySelector<HTMLButtonElement>('[data-create-product-yes]');
+            yesBtn?.focus();
+          },
+        }}
+      >
+        <DialogTitle sx={{ fontWeight: 700, fontSize: '1rem', color: '#0f766e' }}>Create product?</DialogTitle>
+        <DialogContent>
+          <Typography sx={{ fontSize: '0.9rem', color: '#475569' }}>
+            This product doesn&apos;t exist. Do you want to create it{createProductConfirmName ? ` for "${createProductConfirmName}"` : ''}?
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 2, pb: 2 }}>
+          <Button onClick={() => { setCreateProductConfirmOpen(false); setCreateProductConfirmName(null); pendingProductLineIdRef.current = null; }} sx={{ textTransform: 'none', borderRadius: 1.5, color: '#64748b' }}>
+            No
+          </Button>
+          <Button
+            variant="contained"
+            data-create-product-yes
+            autoFocus
+            onClick={() => {
+              const name = createProductConfirmName;
+              const lineId = pendingProductLineIdRef.current;
+              setCreateProductConfirmOpen(false);
+              setCreateProductConfirmName(null);
+              pendingProductLineIdRef.current = null;
+              if (name) {
+                navigate('/master/products/create', { state: { prefillName: name, returnTo: '/entry/purchase', lineIdForProduct: lineId ?? undefined } });
+              }
+            }}
+            sx={{ textTransform: 'none', borderRadius: 1.5, bgcolor: '#0f766e', '&:hover': { bgcolor: '#0d6561' }, boxShadow: 'none' }}
+          >
+            Yes
+          </Button>
         </DialogActions>
       </Dialog>
 

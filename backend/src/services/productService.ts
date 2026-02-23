@@ -6,9 +6,36 @@ import { SalesInvoiceItem } from '../models/SalesInvoiceItem';
 import { InventoryTransaction } from '../models/InventoryTransaction';
 import { AppError } from '../middlewares/errorHandler';
 
+const AUTO_IMEI_START = 501; // Auto IMEI sequence starts at 000501
+
 // Generate unique multiUnitId
 function generateMultiUnitId(): string {
   return `MU-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+}
+
+/**
+ * Get next unique auto IMEI for the company, starting at 000501 and incrementing.
+ * Checks both main imei and multiUnits.imei across all products.
+ */
+export async function getNextAutoImei(companyId: string): Promise<string> {
+  const products = await Product.find({ companyId }).select('imei multiUnits.imei').lean();
+  const used = new Set<number>();
+  for (const p of products) {
+    const main = (p.imei || '').toString().trim();
+    const mainNum = parseInt(main, 10);
+    if (!isNaN(mainNum) && mainNum >= AUTO_IMEI_START) used.add(mainNum);
+    const mus = (p as any).multiUnits as Array<{ imei?: string }> | undefined;
+    if (mus) {
+      for (const mu of mus) {
+        const v = (mu.imei || '').toString().trim();
+        const n = parseInt(v, 10);
+        if (!isNaN(n) && n >= AUTO_IMEI_START) used.add(n);
+      }
+    }
+  }
+  let next = AUTO_IMEI_START;
+  while (used.has(next)) next += 1;
+  return next.toString().padStart(6, '0');
 }
 
 // Check if a multi-unit is used in any transaction
@@ -90,8 +117,12 @@ export async function createProduct(input: CreateProductInput): Promise<IProduct
   if (existingCode) throw new AppError('Product code already in use', 400);
   const existingName = await Product.findOne({ companyId, name: new RegExp(`^${escapeRegex(input.name.trim())}$`, 'i') });
   if (existingName) throw new AppError('Product name already in use', 400);
-  if (input.imei && input.imei.trim()) {
-    const usedByProduct = await findProductNameByImei(companyId, input.imei.trim());
+  // Auto-generate IMEI if user didn't provide one
+  const imeiProvided = input.imei && input.imei.trim();
+  const mainImeiToUse = imeiProvided ? input.imei!.trim() : await getNextAutoImei(companyId);
+
+  if (imeiProvided) {
+    const usedByProduct = await findProductNameByImei(companyId, mainImeiToUse);
     if (usedByProduct) throw new AppError(`IMEI number already present. This IMEI is used by product: ${usedByProduct}. Main IMEI and Multi Unit IMEI must be unique across all products.`, 400);
   }
   const multiUnits = (input.multiUnits || []).map((u) => ({
@@ -122,9 +153,8 @@ export async function createProduct(input: CreateProductInput): Promise<IProduct
     seenUnits.add(unitId);
   }
   
-  const mainImei = input.imei?.trim() || '';
   const multiImeis = multiUnits.map((u) => u.imei).filter(Boolean);
-  if (mainImei && multiImeis.includes(mainImei)) throw new AppError('IMEI number already present in Multi Unit. Use a different IMEI for main or remove it from Multi Unit.', 400);
+  if (mainImeiToUse && multiImeis.includes(mainImeiToUse)) throw new AppError('IMEI number already present in Multi Unit. Use a different IMEI for main or remove it from Multi Unit.', 400);
   const seen = new Set<string>();
   for (const im of multiImeis) {
     if (seen.has(im)) throw new AppError(`Duplicate IMEI in Multi Unit: ${im}`, 400);
@@ -138,13 +168,13 @@ export async function createProduct(input: CreateProductInput): Promise<IProduct
   }
 
   const sku = input.sku || codeToUse;
-  const systemBarcode = input.imei?.trim() || `SYS-${Date.now()}`;
+  const systemBarcode = mainImeiToUse || `SYS-${Date.now()}`;
 
   const product = await Product.create({
     companyId,
     code: codeToUse,
     name: input.name.trim(),
-    imei: input.imei?.trim(),
+    imei: mainImeiToUse,
     sku,
     internationalBarcode: input.internationalBarcode,
     systemBarcode,
@@ -481,10 +511,16 @@ export async function updateProduct(
     }
   }
 
+  let imeiForUpdate: string | null | undefined = undefined;
+  if (input.imei !== undefined) {
+    if (input.imei?.trim()) imeiForUpdate = input.imei.trim();
+    else imeiForUpdate = await getNextAutoImei(companyId);
+  }
+
   const set: Record<string, unknown> = {
     ...(input.code !== undefined && { code: input.code.trim() }),
     ...(input.name !== undefined && { name: input.name.trim() }),
-    ...(input.imei !== undefined && { imei: input.imei?.trim() || null }),
+    ...(imeiForUpdate !== undefined && { imei: imeiForUpdate }),
     ...(input.itemGroup !== undefined && { itemGroup: input.itemGroup?.trim() }),
     ...(input.brand !== undefined && { brand: input.brand?.trim() }),
     ...(input.categoryId !== undefined && { categoryId: input.categoryId || null }),

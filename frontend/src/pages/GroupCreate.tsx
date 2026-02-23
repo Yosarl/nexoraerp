@@ -35,14 +35,13 @@ export default function GroupCreate() {
 
   // UI state
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // Dialogs
   const [saveConfirmOpen, setSaveConfirmOpen] = useState(false);
   const [savedDialogOpen, setSavedDialogOpen] = useState(false);
   const [editConfirmOpen, setEditConfirmOpen] = useState(false);
   const [editedDialogOpen, setEditedDialogOpen] = useState(false);
-  const [errorDialogOpen, setErrorDialogOpen] = useState(false);
-  const [errorDialogMessage, setErrorDialogMessage] = useState('');
 
   // Change Group Name Dialog
   const [changeNameDialogOpen, setChangeNameDialogOpen] = useState(false);
@@ -113,15 +112,14 @@ export default function GroupCreate() {
     setGroupSearch('');
     setName('');
     setType('Asset');
-    setErrorDialogOpen(false);
+    setError(null);
     await loadNextCode();
   };
 
   // Save new group
   const handleSaveClick = () => {
     if (!name.trim()) {
-      setErrorDialogMessage('Group name is required');
-      setErrorDialogOpen(true);
+      setError('Group name is required');
       return;
     }
     setSaveConfirmOpen(true);
@@ -131,7 +129,7 @@ export default function GroupCreate() {
     if (!companyId) return;
     setSaveConfirmOpen(false);
     setSaving(true);
-    setErrorDialogOpen(false);
+    setError(null);
     try {
       await ledgerGroupApi.create({
         companyId,
@@ -141,8 +139,7 @@ export default function GroupCreate() {
       setSavedDialogOpen(true);
     } catch (e: unknown) {
       const err = e as { response?: { data?: { message?: string } } };
-      setErrorDialogMessage(err?.response?.data?.message ?? 'Save failed');
-      setErrorDialogOpen(true);
+      setError(err?.response?.data?.message ?? 'Save failed');
     } finally {
       setSaving(false);
     }
@@ -152,8 +149,7 @@ export default function GroupCreate() {
   const handleEditClick = () => {
     if (!editingId) return;
     if (!name.trim()) {
-      setErrorDialogMessage('Group name is required');
-      setErrorDialogOpen(true);
+      setError('Group name is required');
       return;
     }
     setEditConfirmOpen(true);
@@ -163,7 +159,7 @@ export default function GroupCreate() {
     if (!companyId || !editingId) return;
     setEditConfirmOpen(false);
     setSaving(true);
-    setErrorDialogOpen(false);
+    setError(null);
     try {
       await ledgerGroupApi.update(editingId, companyId, {
         name: name.trim(),
@@ -172,8 +168,7 @@ export default function GroupCreate() {
       setEditedDialogOpen(true);
     } catch (e: unknown) {
       const err = e as { response?: { data?: { message?: string } } };
-      setErrorDialogMessage(err?.response?.data?.message ?? 'Update failed');
-      setErrorDialogOpen(true);
+      setError(err?.response?.data?.message ?? 'Update failed');
     } finally {
       setSaving(false);
     }
@@ -191,7 +186,7 @@ export default function GroupCreate() {
     if (!companyId || !selectedGroup || !changeNameValue.trim()) return;
     const groupId = selectedGroup._id;
     setChangeNameSaving(true);
-    setErrorDialogOpen(false);
+    setError(null);
     try {
       await ledgerGroupApi.update(groupId, companyId, {
         name: changeNameValue.trim(),
@@ -207,8 +202,7 @@ export default function GroupCreate() {
       setChangeNameDialogOpen(false);
     } catch (e: unknown) {
       const err = e as { response?: { data?: { message?: string } } };
-      setErrorDialogMessage(err?.response?.data?.message ?? 'Failed to update name');
-      setErrorDialogOpen(true);
+      setError(err?.response?.data?.message ?? 'Failed to update name');
     } finally {
       setChangeNameSaving(false);
     }
@@ -219,6 +213,7 @@ export default function GroupCreate() {
   return (
     <Box>
       <Typography variant="h5" gutterBottom>Group Reg</Typography>
+      {error && <Typography color="error" sx={{ mb: 2 }}>{error}</Typography>}
       
       <Paper sx={{ p: 3, maxWidth: 500 }}>
         {/* Group Name (Autocomplete) with Change Name Button */}
@@ -323,7 +318,7 @@ export default function GroupCreate() {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setSaveConfirmOpen(false)}>Cancel</Button>
-          <Button variant="contained" onClick={handleSaveConfirm} autoFocus>OK</Button>
+          <Button variant="contained" onClick={handleSaveConfirm}>OK</Button>
         </DialogActions>
       </Dialog>
 
@@ -348,7 +343,7 @@ export default function GroupCreate() {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setEditConfirmOpen(false)}>Cancel</Button>
-          <Button variant="contained" onClick={handleEditConfirm} autoFocus>OK</Button>
+          <Button variant="contained" onClick={handleEditConfirm}>OK</Button>
         </DialogActions>
       </Dialog>
 
@@ -396,21 +391,9 @@ export default function GroupCreate() {
             variant="contained" 
             onClick={handleChangeNameSave}
             disabled={changeNameSaving || !changeNameValue.trim()}
-            autoFocus
           >
             {changeNameSaving ? 'Updating...' : 'Update'}
           </Button>
-        </DialogActions>
-      </Dialog>
-
-      {/* Error Dialog */}
-      <Dialog open={errorDialogOpen} onClose={() => setErrorDialogOpen(false)} PaperProps={{ sx: { borderRadius: 2, minWidth: 350 } }}>
-        <DialogTitle sx={{ fontWeight: 700, fontSize: '1rem', color: '#dc2626' }}>Error</DialogTitle>
-        <DialogContent>
-          <Typography sx={{ fontSize: '0.9rem', color: '#475569' }}>{errorDialogMessage}</Typography>
-        </DialogContent>
-        <DialogActions sx={{ px: 2, pb: 2 }}>
-          <Button variant="contained" onClick={() => setErrorDialogOpen(false)} autoFocus sx={{ textTransform: 'none', borderRadius: 1.5, bgcolor: '#dc2626', '&:hover': { bgcolor: '#b91c1c' }, boxShadow: 'none' }}>OK</Button>
         </DialogActions>
       </Dialog>
     </Box>

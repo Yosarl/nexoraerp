@@ -39,6 +39,7 @@ import {
   productApi,
   purchaseApi,
   openingStockApi,
+  stockApi,
   type OpeningStockEntryData,
   type OpeningStockListItem,
 } from '../services/api';
@@ -196,7 +197,32 @@ export default function OpeningStock() {
     field: string;
     value: string;
   } | null>(null);
-  const [, setActiveLineId] = useState<string | null>(null);
+
+  // Selected Product Info (mirrors Purchase Entry)
+  const [selectedProductInfo, setSelectedProductInfo] = useState<{
+    stock: number;
+    lastVendor: string;
+    purchaseRate: number;
+    retailPrice: number;
+    wholesalePrice: number;
+  } | null>(null);
+  const [activeLineId, setActiveLineId] = useState<string | null>(null);
+
+  // Derive multi-unit info for active line (for Info panel)
+  const activeMultiUnitInfo = useMemo(() => {
+    if (!activeLineId) return null;
+    const line = lines.find((l) => l.id === activeLineId);
+    if (!line?.unitId) return null;
+    const unit = line.availableUnits?.find((u) => u.id === line.unitId);
+    if (!unit?.isMultiUnit) return null;
+    return {
+      pcsInside: unit.conversion ?? 0,
+      wholesale: unit.wholesale,
+      retail: unit.retail,
+      specialPrice1: unit.specialPrice1,
+      specialPrice2: unit.specialPrice2,
+    };
+  }, [activeLineId, lines]);
 
   const VAT_RATE = 5;
   const parseNumericInput = (raw: string): number => {
@@ -418,9 +444,9 @@ export default function OpeningStock() {
           return {
             id: `${Date.now()}-${idx}-${Math.random().toString(36).substr(2, 6)}`,
             productId: b.productId,
-            productCode: b.productCode,
+            productCode: product?.code ?? b.productCode ?? '',
             imei: '',
-            name: b.productName,
+            name: product?.name ?? b.productName ?? '',
             unitId: availableUnits[0]?.id || '',
             unitName: availableUnits[0]?.name || '',
             multiUnitId: b.multiUnitId,
@@ -447,6 +473,8 @@ export default function OpeningStock() {
         setLines(newLines.length > 0 ? newLines : [emptyLine()]);
         rowSnapshotRef.current = null;
         rowCommittedRef.current = false;
+        setSelectedProductInfo(null);
+        setActiveLineId(null);
 
         const idx = entryList.findIndex((e) => e._id === id);
         if (idx >= 0) setCurrentNavIndex(idx);
@@ -484,6 +512,7 @@ export default function OpeningStock() {
         updateLine(lineId, 'name', '');
         updateLine(lineId, 'imei', '');
         updateLine(lineId, 'pRate', 0);
+        setSelectedProductInfo(null);
         return;
       }
 
@@ -608,6 +637,25 @@ export default function OpeningStock() {
       setActiveLineId(lineId);
       rowCommittedRef.current = true;
       rowSnapshotRef.current = null;
+
+      let actualStock = 0;
+      try {
+        if (companyId && product._id) {
+          const stockRes = await stockApi.getProductStock(companyId, product._id);
+          actualStock = stockRes.data.data?.stock ?? 0;
+        }
+      } catch {
+        const p = product as Product & { stock?: number; quantity?: number };
+        actualStock = p.stock ?? p.quantity ?? 0;
+      }
+      const pExt = product as Product & { lastVendor?: string; lastSupplier?: string };
+      setSelectedProductInfo({
+        stock: actualStock,
+        lastVendor: pExt.lastVendor ?? pExt.lastSupplier ?? 'N/A',
+        purchaseRate: usePrice,
+        retailPrice: useRetail,
+        wholesalePrice: useWholesale,
+      });
       setTimeout(() => focusQtyForLine(lineId), 100);
     },
     [
@@ -785,9 +833,36 @@ export default function OpeningStock() {
     if (['+', '-', 'e', 'E'].includes(e.key)) e.preventDefault();
   };
 
-  const handleRowClick = useCallback((line: LineItem) => {
-    setActiveLineId(line.id);
-  }, []);
+  const handleRowClick = useCallback(
+    async (line: LineItem) => {
+      enterRow(line);
+      setActiveLineId(line.id);
+      if (!line.productId) {
+        setSelectedProductInfo(null);
+        return;
+      }
+      const product = products.find((p) => p._id === line.productId);
+      let actualStock = 0;
+      try {
+        if (companyId && line.productId) {
+          const stockRes = await stockApi.getProductStock(companyId, line.productId);
+          actualStock = stockRes.data.data?.stock ?? 0;
+        }
+      } catch {
+        const p = product as (Product & { stock?: number; quantity?: number }) | undefined;
+        actualStock = p?.stock ?? p?.quantity ?? 0;
+      }
+      const pExt = product as (Product & { lastVendor?: string; lastSupplier?: string }) | undefined;
+      setSelectedProductInfo({
+        stock: actualStock,
+        lastVendor: pExt?.lastVendor ?? pExt?.lastSupplier ?? 'N/A',
+        purchaseRate: product?.purchasePrice ?? line.pRate,
+        retailPrice: product?.retailPrice ?? line.retail,
+        wholesalePrice: product?.wholesalePrice ?? line.wholesale,
+      });
+    },
+    [companyId, products, enterRow]
+  );
 
   const removeLine = useCallback((id: string) => {
     setLines((prev) => {
@@ -798,7 +873,109 @@ export default function OpeningStock() {
       }
       return filtered.length === 0 ? [emptyLine()] : filtered;
     });
+    setSelectedProductInfo(null);
+    setActiveLineId(null);
   }, []);
+
+  const handleProductHighlight = useCallback(
+    async (_e: React.SyntheticEvent, option: unknown) => {
+      if (!option || typeof option === 'string') return;
+      const product = option as Product;
+      let actualStock = 0;
+      try {
+        if (companyId && product._id) {
+          const stockRes = await stockApi.getProductStock(companyId, product._id);
+          actualStock = stockRes.data.data?.stock ?? 0;
+        }
+      } catch {
+        const p = product as Product & { stock?: number; quantity?: number };
+        actualStock = p.stock ?? p.quantity ?? 0;
+      }
+      const pExt = product as Product & { lastVendor?: string; lastSupplier?: string };
+      setSelectedProductInfo({
+        stock: actualStock,
+        lastVendor: pExt.lastVendor ?? pExt.lastSupplier ?? 'N/A',
+        purchaseRate: product.purchasePrice ?? 0,
+        retailPrice: product.retailPrice ?? 0,
+        wholesalePrice: product.wholesalePrice ?? 0,
+      });
+    },
+    [companyId]
+  );
+
+  const handleUnitChange = useCallback(
+    (lineId: string, unitId: string) => {
+      const currentLine = lines.find((l) => l.id === lineId);
+      const selectedUnit = currentLine?.availableUnits?.find((u) => u.id === unitId);
+      if (!currentLine || !selectedUnit) return;
+
+      const product = products.find((p) => p._id === currentLine.productId);
+      const basePurchasePrice = product?.purchasePrice ?? 0;
+      const baseRetailPrice = product?.retailPrice ?? 0;
+      const baseWholesalePrice = product?.wholesalePrice ?? 0;
+      const isMultiUnit = selectedUnit.isMultiUnit && selectedUnit.conversion;
+      const newPrice = parseFloat(
+        (
+          isMultiUnit
+            ? basePurchasePrice * (selectedUnit.conversion!)
+            : selectedUnit.price ?? basePurchasePrice
+        ).toFixed(2)
+      );
+      const newRetail =
+        isMultiUnit && selectedUnit.retail ? selectedUnit.retail : baseRetailPrice;
+      const newWholesale =
+        isMultiUnit && selectedUnit.wholesale ? selectedUnit.wholesale : baseWholesalePrice;
+      const newSpecialPrice1 =
+        isMultiUnit && selectedUnit.specialPrice1 ? selectedUnit.specialPrice1 : 0;
+      const newSpecialPrice2 =
+        isMultiUnit && selectedUnit.specialPrice2 ? selectedUnit.specialPrice2 : 0;
+      const newQuantity = 1;
+      const newProfitPercent =
+        newPrice > 0 && newRetail > 0 ? ((newRetail - newPrice) / newPrice) * 100 : 0;
+
+      setLines((prev) =>
+        prev.map((line) => {
+          if (line.id !== lineId) return line;
+          const updated = {
+            ...line,
+            unitId: selectedUnit.id,
+            unitName: selectedUnit.name,
+            multiUnitId: selectedUnit.isMultiUnit ? selectedUnit.multiUnitId : undefined,
+            imei: selectedUnit.imei || '',
+            pRate: newPrice,
+            quantity: newQuantity,
+            retail: newRetail,
+            wholesale: newWholesale,
+            specialPrice1: newSpecialPrice1,
+            specialPrice2: newSpecialPrice2,
+            profitPercent: parseFloat(newProfitPercent.toFixed(2)),
+            discPercent: 0,
+            discAmount: 0,
+          };
+          updated.gross = parseFloat((updated.quantity * updated.pRate).toFixed(2));
+          const net = parseFloat((updated.gross - updated.discAmount).toFixed(2));
+          const vt = calcVatAndTotal(net, vatType === 'Vat');
+          updated.vatAmount = vt.vatAmount;
+          updated.total = vt.total;
+          return updated;
+        })
+      );
+
+      if (activeLineId === lineId) {
+        setSelectedProductInfo((prev) =>
+          prev
+            ? {
+                ...prev,
+                purchaseRate: newPrice,
+                retailPrice: newRetail,
+                wholesalePrice: newWholesale,
+              }
+            : null
+        );
+      }
+    },
+    [lines, products, vatType, calcVatAndTotal, activeLineId]
+  );
 
   const groupIntoBatches = useCallback(
     (items: LineItem[]) => {
@@ -868,19 +1045,42 @@ export default function OpeningStock() {
       return;
     }
 
-    const rowsWithItemCode = lines.filter((l) => l.productCode || l.productId);
-    const rowsWithoutItemCode = lines.filter((l) => !l.productCode && !l.productId);
+    // Before save: validate only the last row. If it's a trailing draft (incomplete), auto-remove it.
+    let linesToSave = lines;
+    const lastRow = lines.length > 0 ? lines[lines.length - 1] : null;
+    if (lastRow) {
+      const nameEmpty = !(lastRow.name || '').trim();
+      const product = products.find((p) => p._id === lastRow.productId);
+      const productRequiresImei =
+        product &&
+        ((product.imei && String(product.imei).trim()) ||
+          (product.multiUnits && product.multiUnits.some((mu) => mu.imei && String(mu.imei).trim())));
+      const imeiInvalidOrEmpty = productRequiresImei ? !(lastRow.imei || '').trim() : false;
+      const qtyBlankOrZero = lastRow.quantity == null || lastRow.quantity === 0;
+      const pRateBlankOrZero = lastRow.pRate == null || lastRow.pRate === 0;
+      const isLastRowIncomplete =
+        (nameEmpty || imeiInvalidOrEmpty) && (qtyBlankOrZero || pRateBlankOrZero);
+      if (isLastRowIncomplete) {
+        linesToSave = lines.slice(0, -1);
+      }
+    }
 
-    if (rowsWithoutItemCode.length > 1) {
-      showErrorDialog('Multiple rows without product code found.');
+    const rowsWithProductId = linesToSave.filter((l) => l.productId);
+    const rowsWithNameOrCodeButNoId = linesToSave.filter(
+      (l) => (l.name?.trim() || l.productCode?.trim()) && !l.productId
+    );
+    if (rowsWithNameOrCodeButNoId.length > 0) {
+      showErrorDialog(
+        'One or more rows have a product name/code but no product selected. Please select the product from the list so the correct product ID is saved.'
+      );
       return;
     }
-    if (rowsWithItemCode.length === 0) {
-      showErrorDialog('At least one product is required');
+    if (rowsWithProductId.length === 0) {
+      showErrorDialog('At least one product is required. Select the product from the list for each row.');
       return;
     }
 
-    const batches = groupIntoBatches(rowsWithItemCode).map((b) => ({
+    const batches = groupIntoBatches(rowsWithProductId).map((b) => ({
       productId: b.productId,
       productCode: b.productCode,
       productName: b.productName,
@@ -917,6 +1117,9 @@ export default function OpeningStock() {
         setEntryNo(res.data.data.entryNo);
         setSuccessMessage('Opening stock entry saved successfully.');
       }
+      if (linesToSave.length < lines.length) {
+        setLines(linesToSave.length > 0 ? linesToSave : [emptyLine()]);
+      }
       setIsSaved(true);
       setSavedDialogOpen(true);
       await loadEntryList();
@@ -932,6 +1135,7 @@ export default function OpeningStock() {
     companyId,
     financialYearId,
     lines,
+    products,
     date,
     vatType,
     taxMode,
@@ -952,6 +1156,7 @@ export default function OpeningStock() {
     setSuccessMessage('');
     setCurrentNavIndex(-1);
     setActiveLineId(null);
+    setSelectedProductInfo(null);
     setEditingNumericCell(null);
     rowSnapshotRef.current = null;
     rowCommittedRef.current = false;
@@ -1171,6 +1376,232 @@ export default function OpeningStock() {
               sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }}
             />
           </Grid>
+          <Grid item xs={12}>
+            <Box
+              sx={{
+                borderRadius: 1.5,
+                px: 1.5,
+                py: 0.8,
+                minHeight: 40,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1.5,
+                background: selectedProductInfo
+                  ? 'linear-gradient(135deg, #f0fdfa 0%, #ccfbf1 50%, #99f6e4 100%)'
+                  : '#f8fafc',
+                border: selectedProductInfo ? '1px solid #5eead4' : '1px dashed #cbd5e1',
+                transition: 'all 0.2s',
+              }}
+            >
+              <Typography
+                sx={{
+                  fontSize: '0.7rem',
+                  fontWeight: 600,
+                  color: '#64748b',
+                  letterSpacing: 0.3,
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                Info
+              </Typography>
+              {selectedProductInfo ? (
+                <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <Box>
+                    <Typography
+                      variant="caption"
+                      sx={{
+                        color: '#dc2626',
+                        fontSize: '0.65rem',
+                        lineHeight: 1,
+                        fontWeight: 600,
+                      }}
+                    >
+                      Stock
+                    </Typography>
+                    <Typography
+                      variant="body2"
+                      sx={{
+                        fontWeight: 800,
+                        color: '#dc2626',
+                        fontSize: '0.8rem',
+                        lineHeight: 1.2,
+                      }}
+                    >
+                      {activeMultiUnitInfo?.pcsInside
+                        ? (selectedProductInfo.stock / activeMultiUnitInfo.pcsInside).toFixed(2)
+                        : selectedProductInfo.stock}
+                    </Typography>
+                  </Box>
+                  <Box>
+                    <Typography
+                      variant="caption"
+                      sx={{ color: '#64748b', fontSize: '0.65rem', lineHeight: 1 }}
+                    >
+                      P.Rate
+                    </Typography>
+                    <Typography
+                      variant="body2"
+                      sx={{
+                        fontWeight: 700,
+                        color: '#1e293b',
+                        fontSize: '0.78rem',
+                        lineHeight: 1.2,
+                      }}
+                    >
+                      {activeMultiUnitInfo?.pcsInside
+                        ? (
+                            selectedProductInfo.purchaseRate * activeMultiUnitInfo.pcsInside
+                          ).toFixed(2)
+                        : selectedProductInfo.purchaseRate.toFixed(2)}
+                    </Typography>
+                  </Box>
+                  {!activeMultiUnitInfo && (
+                    <>
+                      <Box>
+                        <Typography
+                          variant="caption"
+                          sx={{ color: '#64748b', fontSize: '0.65rem', lineHeight: 1 }}
+                        >
+                          Retail
+                        </Typography>
+                        <Typography
+                          variant="body2"
+                          sx={{
+                            fontWeight: 700,
+                            color: '#1e293b',
+                            fontSize: '0.78rem',
+                            lineHeight: 1.2,
+                          }}
+                        >
+                          {selectedProductInfo.retailPrice.toFixed(2)}
+                        </Typography>
+                      </Box>
+                      <Box>
+                        <Typography
+                          variant="caption"
+                          sx={{ color: '#64748b', fontSize: '0.65rem', lineHeight: 1 }}
+                        >
+                          WSale
+                        </Typography>
+                        <Typography
+                          variant="body2"
+                          sx={{
+                            fontWeight: 700,
+                            color: '#1e293b',
+                            fontSize: '0.78rem',
+                            lineHeight: 1.2,
+                          }}
+                        >
+                          {selectedProductInfo.wholesalePrice.toFixed(2)}
+                        </Typography>
+                      </Box>
+                    </>
+                  )}
+                  <Box>
+                    <Typography
+                      variant="caption"
+                      sx={{ color: '#64748b', fontSize: '0.65rem', lineHeight: 1 }}
+                    >
+                      Vendor
+                    </Typography>
+                    <Typography
+                      variant="body2"
+                      sx={{
+                        fontWeight: 700,
+                        color: '#1e293b',
+                        fontSize: '0.78rem',
+                        lineHeight: 1.2,
+                      }}
+                    >
+                      {selectedProductInfo.lastVendor}
+                    </Typography>
+                  </Box>
+                  {activeMultiUnitInfo && (
+                    <>
+                      <Box
+                        sx={{
+                          width: '1px',
+                          height: 24,
+                          bgcolor: '#cbd5e1',
+                          flexShrink: 0,
+                        }}
+                      />
+                      {activeMultiUnitInfo.pcsInside != null && activeMultiUnitInfo.pcsInside > 0 && (
+                        <Box>
+                          <Typography
+                            variant="caption"
+                            sx={{ color: '#64748b', fontSize: '0.65rem', lineHeight: 1 }}
+                          >
+                            Pcs
+                          </Typography>
+                          <Typography
+                            variant="body2"
+                            sx={{
+                              fontWeight: 700,
+                              color: '#0f766e',
+                              fontSize: '0.78rem',
+                              lineHeight: 1.2,
+                            }}
+                          >
+                            {activeMultiUnitInfo.pcsInside}
+                          </Typography>
+                        </Box>
+                      )}
+                      {activeMultiUnitInfo.wholesale != null &&
+                        activeMultiUnitInfo.wholesale > 0 && (
+                          <Box>
+                            <Typography
+                              variant="caption"
+                              sx={{ color: '#64748b', fontSize: '0.65rem', lineHeight: 1 }}
+                            >
+                              M.WS
+                            </Typography>
+                            <Typography
+                              variant="body2"
+                              sx={{
+                                fontWeight: 700,
+                                color: '#0f766e',
+                                fontSize: '0.78rem',
+                                lineHeight: 1.2,
+                              }}
+                            >
+                              {activeMultiUnitInfo.wholesale.toFixed(2)}
+                            </Typography>
+                          </Box>
+                        )}
+                      {activeMultiUnitInfo.retail != null && activeMultiUnitInfo.retail > 0 && (
+                        <Box>
+                          <Typography
+                            variant="caption"
+                            sx={{ color: '#64748b', fontSize: '0.65rem', lineHeight: 1 }}
+                          >
+                            M.Ret
+                          </Typography>
+                          <Typography
+                            variant="body2"
+                            sx={{
+                              fontWeight: 700,
+                              color: '#0f766e',
+                              fontSize: '0.78rem',
+                              lineHeight: 1.2,
+                            }}
+                          >
+                            {activeMultiUnitInfo.retail.toFixed(2)}
+                          </Typography>
+                        </Box>
+                      )}
+                    </>
+                  )}
+                </Box>
+              ) : (
+                <Typography
+                  sx={{ fontSize: '0.82rem', color: '#94a3b8', fontStyle: 'italic' }}
+                >
+                  Select a product
+                </Typography>
+              )}
+            </Box>
+          </Grid>
         </Grid>
       </Paper>
 
@@ -1283,6 +1714,7 @@ export default function OpeningStock() {
                         handleProductSelect(line.id, v || null);
                         if (v) setTimeout(() => focusQtyForLine(line.id), 100);
                       }}
+                      onHighlightChange={handleProductHighlight}
                       openOnFocus
                       renderInput={(params) => (
                         <TextField
@@ -1320,7 +1752,7 @@ export default function OpeningStock() {
                       select
                       fullWidth
                       value={line.unitId}
-                      onChange={(e) => updateLine(line.id, 'unitId', e.target.value)}
+                      onChange={(e) => handleUnitChange(line.id, e.target.value)}
                       onKeyDown={(e) => handleUnitKeyDown(e, line.id)}
                       disabled={(line.availableUnits || []).length === 0}
                       inputRef={(el) => {

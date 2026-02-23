@@ -9,7 +9,6 @@ import {
   Grid,
   IconButton,
   Autocomplete,
-  createFilterOptions,
   RadioGroup,
   FormControlLabel,
   Radio,
@@ -84,6 +83,8 @@ interface LineItem {
   baseStockPieces: number;
   /** When set, user can only enter up to this many pieces (selected batch qty); caps quantity to this batch */
   batchMaxPieces?: number;
+  /** Batch number selected for this line (used for cross-row batch cap checks) */
+  batchNumber?: string;
   price: number;
   purchasePrice: number;
   gross: number;
@@ -206,7 +207,19 @@ const emptyLine = (): LineItem => ({
 
 export default function SalesB2C() {
   // Filter for product Autocomplete — match anywhere in the name, no result limit
-  const productFilterOptions = useMemo(() => createFilterOptions<Product>({ matchFrom: 'any', stringify: (opt) => opt.name || '' }), []);
+  const productFilterOptions = useMemo(
+    () => (options: Product[], state: { inputValue: string }) => {
+      const q = (state.inputValue || '').trim().toLowerCase();
+      const name = (p: Product) => (p.name || '').toLowerCase();
+      const sortByName = (arr: Product[]) =>
+        arr.slice().sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }));
+      if (!q) return options;
+      const startsWith = options.filter((p) => name(p).startsWith(q));
+      const containsOnly = options.filter((p) => name(p).includes(q) && !name(p).startsWith(q));
+      return [...sortByName(startsWith), ...sortByName(containsOnly)];
+    },
+    []
+  );
 
   const companyId = useSelector((s: RootState) => s.app.selectedCompanyId);
   const financialYearId = useSelector((s: RootState) => s.app.selectedFinancialYearId);
@@ -235,7 +248,11 @@ export default function SalesB2C() {
   const [customerAddress, setCustomerAddress] = useState('');
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [pendingCustomerName, setPendingCustomerName] = useState<string | null>(null);
+  const [customerAcListboxOpen, setCustomerAcListboxOpen] = useState(false);
+  const [createCustomerConfirmOpen, setCreateCustomerConfirmOpen] = useState(false);
+  const [createCustomerConfirmName, setCreateCustomerConfirmName] = useState<string | null>(null);
   const customerAcRef = useRef<HTMLInputElement>(null);
+  const customerNameRef = useRef<HTMLInputElement>(null);
   const rateTypeRef = useRef<HTMLInputElement>(null);
 
   // Address Details Dialog
@@ -264,10 +281,11 @@ export default function SalesB2C() {
   const [products, setProducts] = useState<Product[]>([]);
   // Line items
   const [lines, setLines] = useState<LineItem[]>([emptyLine()]);
-  
+
   // Refs for input fields to enable focus navigation
   const imeiInputRefs = useRef<{ [key: string]: HTMLInputElement | null }>({});
   const itemNameInputRefs = useRef<{ [key: string]: HTMLInputElement | null }>({});
+  const itemNameListboxOpenRef = useRef(false);
   const unitInputRefs = useRef<{ [key: string]: HTMLInputElement | null }>({});
   const qtyInputRefs = useRef<{ [key: string]: HTMLInputElement | null }>({});
   const priceInputRefs = useRef<{ [key: string]: HTMLInputElement | null }>({});
@@ -414,6 +432,7 @@ export default function SalesB2C() {
     const unit = line.availableUnits.find((u) => u.id === line.unitId);
     if (!unit?.isMultiUnit) return null;
     return {
+      name: unit.name,
       pcsInside: unit.conversion,
       multiUnitPrice: unit.price,
       wholesale: unit.wholesale,
@@ -506,6 +525,39 @@ export default function SalesB2C() {
     setOtherDiscount(parseFloat(discountAmount.toFixed(2)));
   }, [calculations.subTotal]);
 
+  // Customer handlers
+  const handleCustomerSelect = (customer: Customer | null) => {
+    if (!customer) {
+      setCustomerId(null);
+      setCustomerName('');
+      setCustomerAddress('');
+      setBillingAddress('');
+      setBillingPhone('');
+      setPaymentType('Cash'); // Revert to Cash when no customer selected
+      return;
+    }
+    const isCash = customer._id === 'cash';
+    setCustomerId(isCash ? null : customer._id);
+    setCustomerName(customer.name);
+    setCustomerAddress(customer.address || '');
+    // Auto-fill billing address from customer ledger account
+    setBillingAddress(customer.address || '');
+    setBillingPhone(customer.phone || '');
+    if (isCash) setPaymentType('Cash'); // Revert to Cash when CASH selected
+  };
+
+  const loadCustomers = useCallback(() => {
+    if (!companyId) return;
+    const cashOption = { _id: 'cash', code: 'CASH', name: 'CASH', address: '' };
+    ledgerAccountApi.list(companyId, 'Customer').then((res) => {
+      const list = (res.data.data ?? []) as Customer[];
+      const all = [cashOption, ...(Array.isArray(list) ? list : [])].sort((a, b) =>
+        (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' })
+      );
+      setCustomers(all);
+    }).catch(() => setCustomers([cashOption]));
+  }, [companyId, handleCustomerSelect]);
+
   // Load initial data
   useEffect(() => {
     if (!companyId || !financialYearId) return;
@@ -525,24 +577,26 @@ export default function SalesB2C() {
     }
   }, [routeLocation.pathname]);
 
-  // Detect return from Customer Create page — reload customers and auto-select
+  // Detect return from Customer Create page — read created ledger from state, set pending and reload customers
   useEffect(() => {
-    if (pendingCustomerName && routeLocation.pathname === '/entry/sales-b2c') {
+    const state = routeLocation.state as { createdLedgerName?: string } | null;
+    if (routeLocation.pathname === '/entry/sales-b2c' && state?.createdLedgerName) {
+      setPendingCustomerName(state.createdLedgerName);
       loadCustomers();
+      navigate(routeLocation.pathname, { replace: true, state: {} });
     }
-  }, [routeLocation.pathname]);
+  }, [routeLocation.pathname, routeLocation.state, loadCustomers, navigate]);
 
-  // Once customers list is reloaded after creating a new customer, auto-select it
+  // Once customers list is reloaded after creating a new customer, auto-select it by name
   useEffect(() => {
-    if (pendingCustomerName && customers.length > 1) {
-      const found = customers.find((c) => c.name.toLowerCase() === pendingCustomerName.toLowerCase());
-      if (found) {
-        handleCustomerSelect(found);
-        setPendingCustomerName(null);
-        setTimeout(() => customerAcRef.current?.focus(), 200);
-      }
+    if (!pendingCustomerName) return;
+    const found = customers.find((c) => (c.name || '').toLowerCase() === pendingCustomerName.toLowerCase());
+    if (found) {
+      handleCustomerSelect(found);
+      setPendingCustomerName(null);
+      setTimeout(() => customerAcRef.current?.focus(), 200);
     }
-  }, [customers, pendingCustomerName]);
+  }, [customers, pendingCustomerName, handleCustomerSelect]);
 
   // Pre-fill from Sales Order (Quotation) when navigated via "Post to Sales"
   useEffect(() => {
@@ -707,16 +761,6 @@ export default function SalesB2C() {
     }
   };
 
-  const loadCustomers = async () => {
-    try {
-      const res = await ledgerAccountApi.list(companyId!, 'Customer');
-      const cashCustomer = { _id: 'cash', code: 'CASH', name: 'CASH', address: '' };
-      setCustomers([cashCustomer, ...(res.data.data as Customer[])]);
-    } catch {
-      setCustomers([{ _id: 'cash', code: 'CASH', name: 'CASH', address: '' }]);
-    }
-  };
-
   const loadCashAccounts = async () => {
     try {
       const res = await ledgerAccountApi.list(companyId!, 'Cash');
@@ -808,9 +852,18 @@ export default function SalesB2C() {
             const currentUnit = updated.availableUnits.find((u) => u.id === updated.unitId);
             const conv = (currentUnit?.isMultiUnit && currentUnit?.conversion) ? currentUnit.conversion : 1;
             let maxQtyForThisRow = 0;
+            let stockCheckActive = false;
             if (updated.batchMaxPieces != null && updated.batchMaxPieces > 0) {
-              // User selected a batch — cap to that batch's quantity only
-              maxQtyForThisRow = updated.batchMaxPieces / conv;
+              // User selected a batch — cap to that batch's quantity minus usage by other rows with same batch
+              const usedByOtherBatchRows = prev.reduce((sum, l) => {
+                if (l.id === id || l.productId !== updated.productId) return sum;
+                if (l.batchNumber !== updated.batchNumber) return sum;
+                const u = l.availableUnits.find((au) => au.id === l.unitId);
+                const c = (u?.isMultiUnit && u?.conversion) ? u.conversion : 1;
+                return sum + (l.quantity * c);
+              }, 0);
+              maxQtyForThisRow = (updated.batchMaxPieces - usedByOtherBatchRows) / conv;
+              stockCheckActive = true;
             } else if (updated.baseStockPieces > 0) {
               const usedByOtherRows = prev.reduce((sum, l) => {
                 if (l.id === id || l.productId !== updated.productId) return sum;
@@ -820,9 +873,10 @@ export default function SalesB2C() {
               }, 0);
               const remainingPieces = updated.baseStockPieces - usedByOtherRows;
               maxQtyForThisRow = remainingPieces / conv;
+              stockCheckActive = true;
             }
-            if (maxQtyForThisRow > 0 && updated.quantity > maxQtyForThisRow) {
-              updated.quantity = Math.max(parseFloat(maxQtyForThisRow.toFixed(4)), 0);
+            if (stockCheckActive && updated.quantity > Math.max(maxQtyForThisRow, 0)) {
+              updated.quantity = 0;
             }
           }
 
@@ -877,20 +931,28 @@ export default function SalesB2C() {
       }
       // Always use per-piece purchase rate from the product (backend keeps this updated to per-piece)
       const purchaseRate = (product as any).purchasePrice ?? selectedBatch?.purchasePrice ?? 0;
-      
+
       // Fetch actual net stock from backend (or use batch quantity when a batch is selected)
       let totalStock = 0;
-      if (selectedBatch) {
+      if (selectedBatch && selectedBatch.batchNumber !== 'MERGED') {
+        // Real batch — use batch-level quantity
         totalStock = selectedBatch.quantity;
       } else {
+        // No batch or merged batch — fetch real-time stock from InventoryTransaction
+        let apiStock = 0;
         try {
           if (companyId) {
             const stockRes = await stockApi.getProductStock(companyId, product._id);
-            totalStock = stockRes.data.data?.stock ?? 0;
+            apiStock = stockRes.data.data?.stock ?? 0;
           }
         } catch {
-          totalStock = (product as any).stock ?? (product as any).quantity ?? 0;
+          apiStock = 0;
         }
+        // For merged batches: if API returns 0 but batch records have stock,
+        // the stock data may only live in batch records (no InventoryTransaction).
+        // Use whichever is higher to avoid false out-of-stock blocks.
+        const batchStock = selectedBatch ? selectedBatch.quantity : 0;
+        totalStock = Math.max(apiStock, batchStock);
       }
 
       // When editing an existing invoice, add back the original quantities for this product
@@ -902,9 +964,9 @@ export default function SalesB2C() {
         totalStock += originalPieces;
       }
 
-      // Subtract quantities already used by other rows (only when not batch — batch caps per line only)
+      // Subtract quantities already used by other rows (only when not a real batch — real batch caps per line only)
       let remainingStock = totalStock;
-      if (!selectedBatch) {
+      if (!selectedBatch || selectedBatch.batchNumber === 'MERGED') {
         const usedInGrid = lines.reduce((sum, l) => {
           if (l.productId === product._id && l.id !== lineId) {
             const unit = l.availableUnits.find((u) => u.id === l.unitId);
@@ -922,10 +984,10 @@ export default function SalesB2C() {
         setStockAlertOpen(true);
         return false;
       }
-      
+
       // Build available units list
       const availableUnits: UnitOption[] = [];
-      
+
       // Add main unit
       const mainUnit = product.unitOfMeasureId;
       if (mainUnit) {
@@ -939,7 +1001,7 @@ export default function SalesB2C() {
           price: mainPrice,
         });
       }
-      
+
       // Add multi-units (only if allowBatches is disabled)
       if (product.allowBatches === false && product.multiUnits && product.multiUnits.length > 0) {
         product.multiUnits.forEach((mu) => {
@@ -972,14 +1034,14 @@ export default function SalesB2C() {
           }
         });
       }
-      
+
       // Determine which unit to use
       let selectedUnit: UnitOption | null = null;
-      
+
       if (matchedMultiUnitId) {
         selectedUnit = availableUnits.find((u) => u.multiUnitId === matchedMultiUnitId) || null;
       }
-      
+
       if (!selectedUnit && searchedImei) {
         const searchImeiStr = String(searchedImei).trim();
         const mainImeiStr = product.imei ? String(product.imei).trim() : '';
@@ -994,11 +1056,11 @@ export default function SalesB2C() {
           }) || null;
         }
       }
-      
+
       if (!selectedUnit) {
         selectedUnit = availableUnits.length > 0 ? availableUnits[0] : null;
       }
-      
+
       const usePrice = parseFloat((selectedUnit?.price ?? mainPrice).toFixed(2));
       const useImei = selectedUnit?.imei || product.imei || '';
 
@@ -1051,7 +1113,10 @@ export default function SalesB2C() {
             availableUnits,
             quantity: defaultQty,
             baseStockPieces: totalStock,
-            batchMaxPieces: selectedBatch ? selectedBatch.quantity : undefined,
+            // Only cap by batch quantity for REAL batches — MERGED batch qty is unreliable;
+            // baseStockPieces (from API) should be the stock cap for merged/non-batch products
+            batchMaxPieces: (selectedBatch && selectedBatch.batchNumber !== 'MERGED') ? selectedBatch.quantity : undefined,
+            batchNumber: selectedBatch?.batchNumber,
             price: usePrice,
             purchasePrice: purchaseRate,
             gross: parseFloat((defaultQty * usePrice).toFixed(2)),
@@ -1275,14 +1340,14 @@ export default function SalesB2C() {
         const res = await productApi.getByImei(companyId, searchImei);
         if (res.data.data) {
           const data = res.data.data as { product?: Product; matchedMultiUnitId?: string } | Product;
-          
+
           // Get the product from either response structure
           const product = 'product' in data && data.product ? data.product : data as Product;
           const matchedMultiUnitId = 'matchedMultiUnitId' in data ? data.matchedMultiUnitId : undefined;
-          
+
           // Pass matched multi-unit ID and searched IMEI to handleProductSelect
           const added = await handleProductSelect(lineId, product, matchedMultiUnitId, searchImei);
-          
+
           // Only add a new row if product was successfully added (not blocked by stock)
           if (!added) return;
 
@@ -1291,11 +1356,11 @@ export default function SalesB2C() {
           if (otherRowsMissingItemCode) {
             return; // Don't create new row if any other row is missing Item Code
           }
-          
+
           // Add a new row and focus on its IMEI field
           const newLine = emptyLine();
           setLines((prev) => [...prev, newLine]);
-          
+
           // Focus on the new row's IMEI field after a short delay
           setTimeout(() => {
             const imeiInput = imeiInputRefs.current[newLine.id];
@@ -1390,6 +1455,13 @@ export default function SalesB2C() {
   // Handle Enter key on Item Name field - auto-select matching product or verify name; Enter on batched product opens batch dialog
   const handleItemNameKeyDown = useCallback((e: React.KeyboardEvent, line: LineItem) => {
     if (e.key === 'Enter') {
+      // When list is open and typed value is a prefix of some product, let Autocomplete handle Enter (arrow+Enter to select)
+      if (itemNameListboxOpenRef.current && line.name.trim()) {
+        const typed = line.name.trim().toLowerCase();
+        const isPrefixOfAny = products.some((p) => (p.name && String(p.name).trim().toLowerCase().startsWith(typed)));
+        if (isPrefixOfAny) return;
+      }
+
       // Use current input value from DOM so we don't rely on state (user may have just typed and state not yet updated)
       const inputEl = (e.target as HTMLElement)?.closest?.('input') || (e.target as HTMLInputElement) || itemNameInputRefs.current[line.id];
       const currentTyped = (inputEl && 'value' in inputEl ? (inputEl as HTMLInputElement).value : line.name) ?? '';
@@ -1426,16 +1498,6 @@ export default function SalesB2C() {
             }, 50);
           }
         });
-        return;
-      }
-
-      // Check if the Autocomplete dropdown is open — if so, let the Autocomplete handle the selection
-      const input = itemNameInputRefs.current[line.id];
-      if (input?.getAttribute('aria-expanded') === 'true') {
-        setTimeout(() => {
-          qtyInputRefs.current[line.id]?.focus();
-          qtyInputRefs.current[line.id]?.select();
-        }, 150);
         return;
       }
 
@@ -1535,7 +1597,7 @@ export default function SalesB2C() {
       // Last row: create a new row if current line is valid
       const newLine = emptyLine();
       setLines((prev) => [...prev, newLine]);
-      
+
       // Focus on new row's Item Name field
       setTimeout(() => {
         const itemNameInput = itemNameInputRefs.current[newLine.id];
@@ -1560,8 +1622,18 @@ export default function SalesB2C() {
     const currentUnit = line.availableUnits.find((u) => u.id === line.unitId);
     const conv = (currentUnit?.isMultiUnit && currentUnit?.conversion) ? currentUnit.conversion : 1;
     let maxQtyForThisRow = 0;
+    let stockCheckActive = false;
     if (line.batchMaxPieces != null && line.batchMaxPieces > 0) {
-      maxQtyForThisRow = line.batchMaxPieces / conv;
+      // Batch cap: subtract qty used by other rows with same product AND same batch
+      const usedByOtherBatchRows = lines.reduce((sum, l) => {
+        if (l.id === line.id || l.productId !== line.productId) return sum;
+        if (l.batchNumber !== line.batchNumber) return sum;
+        const u = l.availableUnits.find((au) => au.id === l.unitId);
+        const c = (u?.isMultiUnit && u?.conversion) ? u.conversion : 1;
+        return sum + (l.quantity * c);
+      }, 0);
+      maxQtyForThisRow = (line.batchMaxPieces - usedByOtherBatchRows) / conv;
+      stockCheckActive = true;
     } else if (line.baseStockPieces > 0) {
       const usedByOtherRows = lines.reduce((sum, l) => {
         if (l.id === line.id || l.productId !== line.productId) return sum;
@@ -1571,14 +1643,24 @@ export default function SalesB2C() {
       }, 0);
       const remainingPieces = line.baseStockPieces - usedByOtherRows;
       maxQtyForThisRow = remainingPieces / conv;
+      stockCheckActive = true;
     }
 
     const cappedQty = Math.max(parseFloat((maxQtyForThisRow || 0).toFixed(4)), 0);
-    if (maxQtyForThisRow > 0 && parsedQty > cappedQty) {
+    if (stockCheckActive && parsedQty > cappedQty) {
       setStockAlertMessage('Qty not available');
       setStockAlertOpen(true);
       qtyOverflowLineIdRef.current = line.id;
-      updateLine(line.id, 'quantity', cappedQty);
+      updateLine(line.id, 'quantity', 0);
+
+      // Update the snapshot so that reverting the row doesn't bring back the original 1
+      if (rowSnapshotRef.current?.lineId === line.id) {
+        rowSnapshotRef.current.data.quantity = 0;
+        rowSnapshotRef.current.data.gross = 0;
+        rowSnapshotRef.current.data.discAmount = 0;
+        rowSnapshotRef.current.data.vatAmount = 0;
+        rowSnapshotRef.current.data.total = 0;
+      }
     } else {
       updateLine(line.id, 'quantity', parsedQty);
     }
@@ -1638,33 +1720,54 @@ export default function SalesB2C() {
 
     // Show info immediately with cached stock, update async
     const cachedEntry = stockCacheRef.current.get(line.productId);
+    let initialStock = cachedEntry?.stock ?? 0;
+    if (invoiceId && originalInvoiceItemsRef.current.length > 0) {
+      const originalPieces = originalInvoiceItemsRef.current
+        .filter((o) => o.productId === line.productId)
+        .reduce((sum, o) => sum + (o.quantity * o.unitConversion), 0);
+      initialStock += originalPieces;
+    }
     setSelectedProductInfo({
       profit,
       purchaseRate: line.purchasePrice,
       lastVendor: product ? ((product as any).lastVendor ?? '-') : '-',
-      totalStock: cachedEntry?.stock ?? (product as any)?.stock ?? 0,
+      totalStock: initialStock,
       previousPrice: product ? ((product as any).previousPrice ?? 0) : 0,
     });
 
     // Fetch actual stock in background (uses cache with TTL)
-    const actualStock = await getStockCached(line.productId);
+    let actualStock = await getStockCached(line.productId);
+    if (invoiceId && originalInvoiceItemsRef.current.length > 0) {
+      const originalPieces = originalInvoiceItemsRef.current
+        .filter((o) => o.productId === line.productId)
+        .reduce((sum, o) => sum + (o.quantity * o.unitConversion), 0);
+      actualStock += originalPieces;
+    }
     setSelectedProductInfo((prev) => prev ? { ...prev, totalStock: actualStock } : null);
   };
 
   // Debounce timer for stock API calls
   const stockDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Update Product Info when scrolling through product dropdown (debounced to avoid API flooding)
   const handleProductHighlight = useCallback((_e: React.SyntheticEvent, option: unknown) => {
     if (!option || typeof option === 'string') return;
     const product = option as Product;
 
-    // Show instantly available info first (no API call)
+    // Show instantly available info first (use cache if available to prevent flickering)
+    const cachedEntry = stockCacheRef.current.get(product._id);
+    let initialStock = cachedEntry?.stock ?? 0;
+    if (invoiceId && originalInvoiceItemsRef.current.length > 0) {
+      const originalPieces = originalInvoiceItemsRef.current
+        .filter((o) => o.productId === product._id)
+        .reduce((sum, o) => sum + (o.quantity * o.unitConversion), 0);
+      initialStock += originalPieces;
+    }
+
     setSelectedProductInfo({
       profit: 0,
       purchaseRate: product.purchasePrice ?? 0,
       lastVendor: (product as any).lastVendor ?? (product as any).lastSupplier ?? '-',
-      totalStock: (product as any).stock ?? 0,
+      totalStock: initialStock,
       previousPrice: (product as any).previousPrice ?? 0,
       retailPrice: product.retailPrice ?? 0,
       wholesalePrice: product.wholesalePrice ?? 0,
@@ -1676,35 +1779,20 @@ export default function SalesB2C() {
       try {
         if (companyId && product._id) {
           const stockRes = await stockApi.getProductStock(companyId, product._id);
-          const actualStock = stockRes.data.data?.stock ?? 0;
+          let actualStock = stockRes.data.data?.stock ?? 0;
+          if (invoiceId && originalInvoiceItemsRef.current.length > 0) {
+            const originalPieces = originalInvoiceItemsRef.current
+              .filter((o) => o.productId === product._id)
+              .reduce((sum, o) => sum + (o.quantity * o.unitConversion), 0);
+            actualStock += originalPieces;
+          }
           setSelectedProductInfo((prev) => prev ? { ...prev, totalStock: actualStock } : null);
         }
       } catch {
         // keep the previously shown stock value
       }
     }, 300);
-  }, [companyId]);
-
-  // Customer handlers
-  const handleCustomerSelect = (customer: Customer | null) => {
-    if (!customer) {
-      setCustomerId(null);
-      setCustomerName('CASH');
-      setCustomerAddress('');
-      setBillingAddress('');
-      setBillingPhone('');
-      setPaymentType('Cash'); // Revert to Cash when no customer selected
-      return;
-    }
-    const isCash = customer._id === 'cash';
-    setCustomerId(isCash ? null : customer._id);
-    setCustomerName(customer.name);
-    setCustomerAddress(customer.address || '');
-    // Auto-fill billing address from customer ledger account
-    setBillingAddress(customer.address || '');
-    setBillingPhone(customer.phone || '');
-    if (isCash) setPaymentType('Cash'); // Revert to Cash when CASH selected
-  };
+  }, [companyId, invoiceId]);
 
   // Clear form
   // ── Hold / Restore invoice ─────────────────────────────────────────
@@ -2170,10 +2258,10 @@ export default function SalesB2C() {
           const savedMultiUnitId = (item.multiUnitId as string) || '';
           const savedUnitId = (item.unitId as string) || '';
           const savedUnitName = (item.unitName as string) || '';
-          
+
           // Look up current product by product code from loaded products list
           const currentProduct = products.find((p) => p.code === savedProductCode);
-          
+
           const qty = (item.quantity as number) || 0;
           const price = (item.unitPrice as number) || 0;
           const gross = (item.grossAmount as number) || qty * price;
@@ -2181,25 +2269,25 @@ export default function SalesB2C() {
           const disc = (item.discount as number) || 0;
           const vat = (item.vatAmount as number) || 0;
           const total = (item.totalAmount as number) || 0;
-          
+
           // Build available units from current product
           const availableUnits: UnitOption[] = [];
-          
+
           if (currentProduct) {
             // Use current product's unit data
             const mainUnit = currentProduct.unitOfMeasureId;
             if (mainUnit) {
               const mainUnitId = typeof mainUnit === 'object' ? mainUnit._id : mainUnit;
               const mainUnitName = typeof mainUnit === 'object' ? (mainUnit.shortCode || mainUnit.name || 'Main') : 'Main';
-              availableUnits.push({ 
-                id: mainUnitId, 
-                name: mainUnitName, 
+              availableUnits.push({
+                id: mainUnitId,
+                name: mainUnitName,
                 isMultiUnit: false,
                 imei: currentProduct.imei,
                 price: currentProduct.retailPrice ?? 0
               });
             }
-            
+
             // Add multi-units from current product (only if allowBatches is disabled)
             if ((currentProduct as any).allowBatches === false && currentProduct.multiUnits && currentProduct.multiUnits.length > 0) {
               currentProduct.multiUnits.forEach((mu) => {
@@ -2240,7 +2328,7 @@ export default function SalesB2C() {
             if (mainUnitId) {
               availableUnits.push({ id: mainUnitId, name: mainUnitName, isMultiUnit: false });
             }
-            
+
             const savedAllowBatches = (savedProduct as any)?.allowBatches;
             const multiUnits = savedProduct?.multiUnits as Array<{
               multiUnitId?: string;
@@ -2285,11 +2373,11 @@ export default function SalesB2C() {
               });
             }
           }
-          
+
           // Find the correct unit based on saved data
           let unitId = '';
           let unitName = '';
-          
+
           // Try 1: Match by multiUnitId (new format)
           if (savedMultiUnitId) {
             const matchedUnit = availableUnits.find((u) => u.multiUnitId === savedMultiUnitId);
@@ -2298,7 +2386,7 @@ export default function SalesB2C() {
               unitName = matchedUnit.name;
             }
           }
-          
+
           // Try 2: Match by unitId (if saved)
           if (!unitId && savedUnitId) {
             const matchedUnit = availableUnits.find((u) => u.id === savedUnitId || u.multiUnitId === savedUnitId);
@@ -2307,10 +2395,10 @@ export default function SalesB2C() {
               unitName = matchedUnit.name;
             }
           }
-          
+
           // Try 3: Match by unit name (for older invoices)
           if (!unitId && savedUnitName) {
-            const matchedUnit = availableUnits.find((u) => 
+            const matchedUnit = availableUnits.find((u) =>
               u.name.toLowerCase() === savedUnitName.toLowerCase()
             );
             if (matchedUnit) {
@@ -2318,18 +2406,18 @@ export default function SalesB2C() {
               unitName = matchedUnit.name;
             }
           }
-          
+
           // Fall back to main unit if no match found
           if (!unitId && availableUnits.length > 0) {
             const mainUnit = availableUnits.find((u) => !u.isMultiUnit) || availableUnits[0];
             unitId = mainUnit.id;
             unitName = mainUnit.name;
           }
-          
+
           // Get current product name (prefer current product, fall back to saved)
           const productName = currentProduct?.name || (item.description as string) || (savedProduct?.name as string) || '';
           const purchasePrice = currentProduct?.purchasePrice ?? (savedProduct?.purchasePrice as number) ?? 0;
-          
+
           return {
             id: Date.now().toString() + Math.random().toString(36).substring(2, 11),
             productId: currentProduct?._id || (savedProduct?._id as string) || '',
@@ -2407,14 +2495,14 @@ export default function SalesB2C() {
       e.preventDefault();
       const currentIndex = lines.findIndex((l) => l.id === lineId);
       if (currentIndex === -1) return;
-      
+
       let targetIndex: number;
       if (e.key === 'ArrowUp') {
         targetIndex = currentIndex > 0 ? currentIndex - 1 : currentIndex;
       } else {
         targetIndex = currentIndex < lines.length - 1 ? currentIndex + 1 : currentIndex;
       }
-      
+
       if (targetIndex !== currentIndex) {
         const targetLine = lines[targetIndex];
         // Revert current row if uncommitted, snapshot the target row
@@ -2444,24 +2532,24 @@ export default function SalesB2C() {
     const input = e.target as HTMLInputElement;
     const value = input.value;
     const selStart = input.selectionStart ?? value.length;
-      const selEnd = input.selectionEnd ?? value.length;
-      // Allow decimal point only if not already present
-      if (e.key === '.') {
-        if (value.includes('.')) { e.preventDefault(); }
-        return;
+    const selEnd = input.selectionEnd ?? value.length;
+    // Allow decimal point only if not already present
+    if (e.key === '.') {
+      if (value.includes('.')) { e.preventDefault(); }
+      return;
     }
     // Block if not a number
-      if (!/^[0-9]$/.test(e.key)) {
+    if (!/^[0-9]$/.test(e.key)) {
+      e.preventDefault();
+      return;
+    }
+    const dotIndex = value.indexOf('.');
+    // Restrict to 2 decimal places: if there's a decimal and already 2 digits after it, block further digits (unless text is selected)
+    if (dotIndex !== -1 && selStart === selEnd) {
+      const decimals = value.substring(dotIndex + 1);
+      if (decimals.length >= 2 && selStart > dotIndex) {
         e.preventDefault();
-        return;
       }
-      const dotIndex = value.indexOf('.');
-      // Restrict to 2 decimal places: if there's a decimal and already 2 digits after it, block further digits (unless text is selected)
-      if (dotIndex !== -1 && selStart === selEnd) {
-        const decimals = value.substring(dotIndex + 1);
-        if (decimals.length >= 2 && selStart > dotIndex) {
-          e.preventDefault();
-        }
     }
   };
 
@@ -2589,13 +2677,31 @@ export default function SalesB2C() {
           <Grid item xs={6} sm={3} md={2} lg={1.7}>
             <DateInput label="Date" value={date} onChange={setDate} size="small" />
           </Grid>
-          <Grid item xs={6} sm={3} md={2.5} lg={2.2}>
+          <Grid item xs={7.5} sm={4.6875} md={3.90625} lg={3.4375}>
             <Autocomplete
               size="small"
               options={customers}
-              getOptionLabel={(opt) => opt.name}
+              getOptionLabel={(opt) => opt.name || ''}
+              filterOptions={(options, state) => {
+                const q = (state.inputValue || '').trim().toLowerCase();
+                const name = (c: Customer) => (c.name || '').toLowerCase();
+                const sortByName = (arr: Customer[]) => arr.slice().sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }));
+                if (!q) return options;
+                const startsWith = options.filter((c) => name(c).startsWith(q));
+                const containsOnly = options.filter((c) => name(c).includes(q) && !name(c).startsWith(q));
+                return [...sortByName(startsWith), ...sortByName(containsOnly)];
+              }}
               value={customers.find((c) => c.name === customerName) || null}
               onChange={(_, v) => handleCustomerSelect(v)}
+              onOpen={() => setCustomerAcListboxOpen(true)}
+              onClose={() => setCustomerAcListboxOpen(false)}
+              autoHighlight
+              isOptionEqualToValue={(opt, val) => opt._id === val._id}
+              slotProps={{
+                paper: {
+                  sx: { minWidth: '150%', width: '150%', maxWidth: '90vw' },
+                },
+              }}
               renderInput={(params) => (
                 <TextField
                   {...params}
@@ -2606,42 +2712,58 @@ export default function SalesB2C() {
                     if (e.key === 'Enter') {
                       const typed = (e.target as HTMLInputElement).value.trim();
                       if (!typed) {
-                        // Empty or already selected — move to Rate Type
                         e.preventDefault();
                         setTimeout(() => rateTypeRef.current?.focus(), 50);
                         return;
                       }
-                      const exists = customers.find((c) => c.name.toLowerCase() === typed.toLowerCase());
+                      const exists = customers.find((c) => (c.name || '').toLowerCase() === typed.toLowerCase());
                       if (exists) {
-                        // Customer found — move to Rate Type
-                        setTimeout(() => rateTypeRef.current?.focus(), 50);
-                      } else {
-                        // Customer not found — navigate to create
                         e.preventDefault();
                         e.stopPropagation();
-                        setPendingCustomerName(typed);
-                        navigate('/master/customer-create', { state: { prefillName: typed, returnTo: '/entry/sales-b2c' } });
+                        handleCustomerSelect(exists);
+                        setTimeout(() => rateTypeRef.current?.focus(), 50);
+                        return;
                       }
+                      if (customerAcListboxOpen) {
+                        const isPrefixOfSome = customers.some((c) => (c.name || '').toLowerCase().startsWith(typed.toLowerCase()));
+                        if (isPrefixOfSome) return;
+                      }
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setCreateCustomerConfirmName(typed);
+                      setCreateCustomerConfirmOpen(true);
                     }
                   }}
-                  sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }}
+                  sx={{
+                    '& .MuiOutlinedInput-root': { borderRadius: 1.5 },
+                    '& .MuiInputBase-input': { fontSize: '0.75rem' },
+                    '& .MuiInputLabel-root': { fontSize: '0.75rem' },
+                  }}
                 />
               )}
-              isOptionEqualToValue={(opt, val) => opt._id === val._id}
             />
           </Grid>
-          <Grid item xs={6} sm={3} md={2.5} lg={2.5}>
+          <Grid item xs={6} sm={3.75} md={3.125} lg={3.125}>
             <TextField
               size="small"
               label="Customer Name"
               value={customerName}
               onChange={(e) => setCustomerName(e.target.value)}
               onFocus={handleTextFieldFocus}
+              inputRef={customerNameRef}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  setTimeout(() => rateTypeRef.current?.focus(), 50);
+                }
+              }}
               InputLabelProps={{ shrink: true }}
               InputProps={{ readOnly: !!customerId }}
               fullWidth
               sx={{
                 '& .MuiOutlinedInput-root': { borderRadius: 1.5 },
+                '& .MuiInputBase-input': { fontSize: '0.75rem' },
+                '& .MuiInputLabel-root': { fontSize: '0.75rem' },
                 ...(customerId ? { '& .MuiOutlinedInput-root': { bgcolor: '#f1f5f9', borderRadius: 1.5 } } : {}),
               }}
             />
@@ -2834,9 +2956,17 @@ export default function SalesB2C() {
                   <Box sx={{ minWidth: 0, px: 1, py: 0.3, bgcolor: '#fef2f2', borderRadius: 1 }}>
                     <Typography sx={{ fontSize: '0.62rem', lineHeight: 1, color: '#dc2626', fontWeight: 600 }}>Stock</Typography>
                     <Typography sx={{ fontSize: '1rem', fontWeight: 800, lineHeight: 1.3, color: '#dc2626' }}>
-                      {activeMultiUnitInfo && activeMultiUnitInfo.pcsInside
-                        ? ((selectedProductInfo.totalStock ?? selectedProductInfo.stock ?? 0) / activeMultiUnitInfo.pcsInside).toFixed(2)
-                        : (selectedProductInfo.totalStock ?? selectedProductInfo.stock ?? '-')}
+                      {(() => {
+                        const basePieces = selectedProductInfo.totalStock ?? selectedProductInfo.stock;
+                        const isNum = typeof basePieces === 'number';
+                        const pcsInside = activeMultiUnitInfo?.pcsInside;
+                        if (isNum && pcsInside && pcsInside > 0) {
+                          const inUnit = basePieces / pcsInside;
+                          const unitName = activeMultiUnitInfo?.name ?? '';
+                          return `${basePieces} pcs${unitName ? ` (${inUnit.toFixed(2)} ${unitName})` : ''}`;
+                        }
+                        return isNum ? `${basePieces} pcs` : (basePieces ?? '-');
+                      })()}
                     </Typography>
                   </Box>
                   <Box sx={{ minWidth: 0 }}>
@@ -2949,8 +3079,8 @@ export default function SalesB2C() {
             </TableHead>
             <TableBody>
               {lines.map((line, idx) => (
-                <TableRow 
-                  key={line.id} 
+                <TableRow
+                  key={line.id}
                   sx={{
                     bgcolor: idx === 0 && !line.productId ? '#fffbeb' : (idx % 2 === 0 ? '#f8fafb' : 'white'),
                     cursor: 'pointer',
@@ -3018,7 +3148,11 @@ export default function SalesB2C() {
                           handleProductSelect(line.id, v);
                         }
                       }}
+                      onOpen={() => { itemNameListboxOpenRef.current = true; }}
+                      onClose={() => { itemNameListboxOpenRef.current = false; }}
                       onHighlightChange={handleProductHighlight}
+                      autoSelect
+                      autoHighlight
                       renderInput={(params) => (
                         <TextField
                           {...params}
@@ -3032,12 +3166,10 @@ export default function SalesB2C() {
                         />
                       )}
                       renderOption={(props, opt) => (
-                        <li {...props} key={opt._id} style={{ 
-                          fontSize: '0.82rem', 
-                          fontWeight: 400, 
+                        <li {...props} key={opt._id} style={{
+                          fontSize: '0.82rem',
+                          fontWeight: 400,
                           padding: '6px 14px',
-                          background: '#ffffff',
-                          color: '#334155',
                           cursor: 'pointer'
                         }}>
                           {opt.name}
@@ -3056,7 +3188,8 @@ export default function SalesB2C() {
                             minHeight: 'auto', py: 0.75, px: 2, fontSize: '0.82rem', bgcolor: 'transparent',
                             '&[data-focus="true"]': { bgcolor: '#0f766e !important', color: '#ffffff !important' },
                             '&[aria-selected="true"]': { bgcolor: '#0f766e !important', color: '#ffffff !important' },
-                            '&.Mui-focused': { bgcolor: '#0f766e !important', color: '#ffffff !important' }
+                            '&.Mui-focused': { bgcolor: '#0f766e !important', color: '#ffffff !important' },
+                            '&:hover': { bgcolor: 'rgba(15, 118, 110, 0.15) !important', color: '#0f766e' }
                           }
                         }
                       }}
@@ -3527,6 +3660,48 @@ export default function SalesB2C() {
         </DialogActions>
       </Dialog>
 
+      {/* Create customer confirm: account doesn't exist, do you want to create? */}
+      <Dialog
+        open={createCustomerConfirmOpen}
+        onClose={() => { setCreateCustomerConfirmOpen(false); setCreateCustomerConfirmName(null); }}
+        PaperProps={{ sx: { borderRadius: 2, minWidth: 360 } }}
+        TransitionProps={{
+          onEntered: (node) => {
+            const yesBtn = (node as HTMLElement).querySelector<HTMLButtonElement>('[data-create-customer-yes]');
+            yesBtn?.focus();
+          },
+        }}
+      >
+        <DialogTitle sx={{ fontWeight: 700, fontSize: '1rem', color: '#0f766e' }}>Create account?</DialogTitle>
+        <DialogContent>
+          <Typography sx={{ fontSize: '0.9rem', color: '#475569' }}>
+            This account doesn&apos;t exist. Do you want to create it{createCustomerConfirmName ? ` for "${createCustomerConfirmName}"` : ''}?
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 2, pb: 2 }}>
+          <Button onClick={() => { setCreateCustomerConfirmOpen(false); setCreateCustomerConfirmName(null); }} sx={{ textTransform: 'none', borderRadius: 1.5, color: '#64748b' }}>
+            No
+          </Button>
+          <Button
+            variant="contained"
+            data-create-customer-yes
+            autoFocus
+            onClick={() => {
+              const name = createCustomerConfirmName;
+              setCreateCustomerConfirmOpen(false);
+              setCreateCustomerConfirmName(null);
+              if (name) {
+                setPendingCustomerName(name);
+                navigate('/master/customer-create', { state: { prefillName: name, returnTo: '/entry/sales-b2c' } });
+              }
+            }}
+            sx={{ textTransform: 'none', borderRadius: 1.5, bgcolor: '#0f766e', '&:hover': { bgcolor: '#0d6561' }, boxShadow: 'none' }}
+          >
+            Yes
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       {/* Success Dialog */}
       <Dialog open={successDialogOpen} onClose={() => setSuccessDialogOpen(false)} disableRestoreFocus PaperProps={{ sx: { borderRadius: 2 } }}
         TransitionProps={{ onEntered: (node) => { const btn = (node as HTMLElement).querySelector<HTMLButtonElement>('[data-confirm-btn]'); btn?.focus(); } }}>
@@ -3612,8 +3787,8 @@ export default function SalesB2C() {
       </Dialog>
 
       {/* Batch Selection Dialog */}
-      <Dialog 
-        open={batchDialogOpen} 
+      <Dialog
+        open={batchDialogOpen}
         onClose={handleBatchDialogClose}
         onKeyDown={handleBatchDialogKeyDown}
         maxWidth="sm"
@@ -3641,11 +3816,11 @@ export default function SalesB2C() {
               </TableHead>
               <TableBody>
                 {availableBatches.map((batch, index) => (
-                  <TableRow 
+                  <TableRow
                     key={batch.batchNumber}
                     ref={(el) => { batchRowRefs.current[index] = el; }}
                     hover
-                    sx={{ 
+                    sx={{
                       cursor: 'pointer',
                       '&:hover': { bgcolor: '#f0fdfa' },
                       bgcolor: index === focusedBatchIndex ? '#ccfbf1 !important' : (index % 2 === 0 ? '#ffffff' : '#fafafa'),

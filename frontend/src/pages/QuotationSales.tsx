@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
   Box, Paper, Typography, TextField, Button, Grid, IconButton,
-  Autocomplete, createFilterOptions, RadioGroup, FormControlLabel, Radio,
+  Autocomplete, RadioGroup, FormControlLabel, Radio,
   Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
   Divider, Dialog, DialogTitle, DialogContent, DialogActions,
   Chip, MenuItem,
@@ -36,6 +36,8 @@ interface LineItem {
   baseStockPieces: number;
   /** When set, user can only enter up to this many pieces (selected batch qty) */
   batchMaxPieces?: number;
+  /** Batch number selected for this line (used for cross-row batch cap checks) */
+  batchNumber?: string;
 }
 
 interface MultiUnit {
@@ -66,7 +68,21 @@ const emptyLine = (): LineItem => ({
 
 /* ════════════════════════════════════════════════════════════ */
 export default function QuotationSales() {
-  const productFilterOptions = useMemo(() => createFilterOptions<Product>({ matchFrom: 'any', stringify: (opt) => opt.name || '' }), []);
+  // Item Name list: same sort/filter logic as Cash/Customer A/C field
+  const productFilterOptions = useMemo(
+    () => (options: Product[], state: { inputValue: string }) => {
+      const q = (state.inputValue || '').trim().toLowerCase();
+      const name = (p: Product) => (p.name || '').toLowerCase();
+      const sortByName = (arr: Product[]) =>
+        arr.slice().sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }));
+      // When no search: show full list sorted alphabetically (like Cash/Customer A/C)
+      if (!q) return sortByName(options);
+      const startsWith = options.filter((p) => name(p).startsWith(q));
+      const containsOnly = options.filter((p) => name(p).includes(q) && !name(p).startsWith(q));
+      return [...sortByName(startsWith), ...sortByName(containsOnly)];
+    },
+    []
+  );
 
   const companyId = useSelector((s: RootState) => s.app.selectedCompanyId);
   const financialYearId = useSelector((s: RootState) => s.app.selectedFinancialYearId);
@@ -185,11 +201,15 @@ export default function QuotationSales() {
 
   /* ──── Refs ──── */
   const customerAcRef = useRef<HTMLInputElement>(null);
+  const customerNameRef = useRef<HTMLInputElement>(null);
+  const taxModeRef = useRef<HTMLInputElement>(null);
   const rateTypeRef = useRef<HTMLInputElement>(null);
   const saveButtonRef = useRef<HTMLButtonElement>(null);
   const narrationRef = useRef<HTMLInputElement>(null);
   const imeiInputRefs = useRef<{ [key: string]: HTMLInputElement | null }>({});
   const itemNameInputRefs = useRef<{ [key: string]: HTMLInputElement | null }>({});
+  const itemNameListboxOpenRef = useRef(false);
+
   const unitInputRefs = useRef<{ [key: string]: HTMLInputElement | null }>({});
   const qtyInputRefs = useRef<{ [key: string]: HTMLInputElement | null }>({});
   const priceInputRefs = useRef<{ [key: string]: HTMLInputElement | null }>({});
@@ -361,8 +381,18 @@ export default function QuotationSales() {
             const currentUnit = updated.availableUnits.find((u) => u.id === updated.unitId);
             const conv = (currentUnit?.isMultiUnit && currentUnit?.conversion) ? currentUnit.conversion : 1;
             let maxQtyForThisRow = 0;
+            let stockCheckActive = false;
             if (updated.batchMaxPieces != null && updated.batchMaxPieces > 0) {
-              maxQtyForThisRow = updated.batchMaxPieces / conv;
+              // Batch cap: subtract qty used by other rows with same product AND same batch
+              const usedByOtherBatchRows = prev.reduce((sum, l) => {
+                if (l.id === id || l.productId !== updated.productId) return sum;
+                if (l.batchNumber !== updated.batchNumber) return sum;
+                const u = l.availableUnits.find((au) => au.id === l.unitId);
+                const c = (u?.isMultiUnit && u?.conversion) ? u.conversion : 1;
+                return sum + (l.quantity * c);
+              }, 0);
+              maxQtyForThisRow = (updated.batchMaxPieces - usedByOtherBatchRows) / conv;
+              stockCheckActive = true;
             } else if (updated.baseStockPieces > 0) {
               const usedByOtherRows = prev.reduce((sum, l) => {
                 if (l.id === id || l.productId !== updated.productId) return sum;
@@ -372,9 +402,10 @@ export default function QuotationSales() {
               }, 0);
               const remainingPieces = updated.baseStockPieces - usedByOtherRows;
               maxQtyForThisRow = remainingPieces / conv;
+              stockCheckActive = true;
             }
-            if (maxQtyForThisRow > 0 && updated.quantity > maxQtyForThisRow) {
-              updated.quantity = Math.max(parseFloat(maxQtyForThisRow.toFixed(4)), 0);
+            if (stockCheckActive && updated.quantity > Math.max(maxQtyForThisRow, 0)) {
+              updated.quantity = 0;
             }
           }
 
@@ -497,21 +528,27 @@ export default function QuotationSales() {
       }
 
       let totalStock = 0;
-      if (selectedBatch) {
+      if (selectedBatch && selectedBatch.batchNumber !== 'MERGED') {
+        // Real batch — use batch-level quantity
         totalStock = selectedBatch.quantity;
       } else {
+        // No batch or merged batch — fetch real-time stock from InventoryTransaction
+        let apiStock = 0;
         try {
           if (companyId) {
             const stockRes = await stockApi.getProductStock(companyId, product._id);
-            totalStock = stockRes.data.data?.stock ?? 0;
+            apiStock = stockRes.data.data?.stock ?? 0;
           }
         } catch {
-          totalStock = (product as any).stock ?? 0;
+          apiStock = 0;
         }
+        // For merged batches: use whichever is higher to avoid false out-of-stock blocks
+        const batchStock = selectedBatch ? selectedBatch.quantity : 0;
+        totalStock = Math.max(apiStock, batchStock);
       }
 
       let remainingStock = totalStock;
-      if (!selectedBatch) {
+      if (!selectedBatch || selectedBatch.batchNumber === 'MERGED') {
         const usedInGrid = lines.reduce((sum, l) => {
           if (l.productId === product._id && l.id !== lineId) {
             const unit = l.availableUnits.find((u) => u.id === l.unitId);
@@ -568,7 +605,9 @@ export default function QuotationSales() {
             availableUnits,
             quantity: defaultQty,
             baseStockPieces: totalStock,
-            batchMaxPieces: selectedBatch ? selectedBatch.quantity : undefined,
+            // Only cap by batch quantity for REAL batches — MERGED batch qty is unreliable
+            batchMaxPieces: (selectedBatch && selectedBatch.batchNumber !== 'MERGED') ? selectedBatch.quantity : undefined,
+            batchNumber: selectedBatch?.batchNumber,
             price: usePrice,
             purchasePrice: purchaseRate,
             gross: parseFloat((defaultQty * usePrice).toFixed(2)),
@@ -988,42 +1027,72 @@ export default function QuotationSales() {
   }, []);
 
   // Open batch dialog for a line that has a batched product (called only on Enter key in item field)
-  const openBatchDialogForLine = useCallback(async (line: LineItem) => {
-    if (!line.productId) return;
+  const openBatchDialogForLine = useCallback(async (line: LineItem): Promise<boolean> => {
+    if (!line.productId) return false;
     const product = products.find((p) => p._id === line.productId);
-    if (!product || product.allowBatches !== true) return;
+    if (!product || product.allowBatches !== true) return false;
     const batches = await getBatchesForProduct(product._id);
     if (batches.length > 1) {
       setAvailableBatches(batches);
       setPendingProductSelection({ lineId: line.id, product });
       setFocusedBatchIndex(0);
       setBatchDialogOpen(true);
+      return true;
     }
+    return false;
   }, [products, getBatchesForProduct]);
 
   // Handle Enter key on Item Name field; Enter on batched product opens batch dialog
   const handleItemNameKeyDown = useCallback((e: React.KeyboardEvent, line: LineItem) => {
     if (e.key === 'Enter') {
-      // If row already has a batched product, Enter always opens batch dialog (e.g. return to item field and press Enter)
-      if (line.productId) {
-        const product = products.find((p) => p._id === line.productId);
-        if (product?.allowBatches === true) {
+      // Use current input value from DOM so we don't rely on state (user may have just typed and state not yet updated)
+      const inputEl = (e.target as HTMLElement)?.closest?.('input') || (e.target as HTMLInputElement) || itemNameInputRefs.current[line.id];
+      const currentTyped = (inputEl && 'value' in inputEl ? (inputEl as HTMLInputElement).value : line.name) ?? '';
+      const typed = currentTyped.trim();
+
+      // If list is open, let Autocomplete handle the Enter key to select the highlighted item
+      if (itemNameListboxOpenRef.current) {
+        if (!typed) return; // Full list open, user selecting an option
+
+        const isPrefixOfAny = products.some((p) => (p.name && String(p.name).toLowerCase().includes(typed.toLowerCase())));
+        if (isPrefixOfAny) return;
+      }
+
+      // If user typed an exact product name (match by name), select that product immediately without waiting for list selection
+      if (typed) {
+        const exactMatch = products.find((p) => p.name.trim().toLowerCase() === typed.toLowerCase());
+        const currentProduct = line.productId ? products.find((p) => p._id === line.productId) : null;
+        const isDifferentProduct = !currentProduct || currentProduct.name.trim().toLowerCase() !== typed.toLowerCase();
+        if (exactMatch && isDifferentProduct) {
           e.preventDefault();
           e.stopPropagation();
-          openBatchDialogForLine(line);
+          handleProductSelect(line.id, exactMatch).then(() => {
+            setTimeout(() => {
+              qtyInputRefs.current[line.id]?.focus();
+              qtyInputRefs.current[line.id]?.select();
+            }, 100);
+          });
           return;
         }
       }
 
-      if (itemNameInputRefs.current[line.id]?.getAttribute('aria-expanded') === 'true') {
-        setTimeout(() => {
-          qtyInputRefs.current[line.id]?.focus();
-          qtyInputRefs.current[line.id]?.select();
-        }, 150);
+      // If row already has a batched product, Enter always opens batch dialog (e.g. return to item field and press Enter)
+      if (line.productId) {
+        e.preventDefault();
+        e.stopPropagation();
+        openBatchDialogForLine(line).then((opened) => {
+          if (!opened) {
+            setTimeout(() => {
+              qtyInputRefs.current[line.id]?.focus();
+              qtyInputRefs.current[line.id]?.select();
+            }, 50);
+          }
+        });
         return;
       }
 
-      if (!line.productId && !line.name.trim()) {
+      // If item name is blank and no product selected
+      if (!line.productId && !typed && !itemNameListboxOpenRef.current) {
         const currentIndex = lines.findIndex((l) => l.id === line.id);
         if (currentIndex === lines.length - 1) {
           e.preventDefault();
@@ -1032,37 +1101,13 @@ export default function QuotationSales() {
           return;
         }
       }
-      if (!line.productId && line.name.trim()) {
-        const typed = line.name.trim().toLowerCase();
-        const match = products.find((p) => p.name.toLowerCase() === typed);
-        if (match) {
-          e.preventDefault();
-          e.stopPropagation();
-          handleProductSelect(line.id, match);
-          setTimeout(() => {
-            qtyInputRefs.current[line.id]?.focus();
-            qtyInputRefs.current[line.id]?.select();
-          }, 100);
-          return;
-        }
-      }
+      // If the row already has a product but name was edited to another exact match (handled above); otherwise restore/correct name
       if (line.productId) {
         const product = products.find((p) => p._id === line.productId);
         if (product && line.name !== product.name) {
-          const typed = line.name.trim().toLowerCase();
-          const newMatch = products.find((p) => p.name.toLowerCase() === typed);
-          if (newMatch) {
-            e.preventDefault();
-            e.stopPropagation();
-            handleProductSelect(line.id, newMatch);
-            setTimeout(() => {
-              qtyInputRefs.current[line.id]?.focus();
-              qtyInputRefs.current[line.id]?.select();
-            }, 100);
-            return;
-          }
           updateLine(line.id, 'name', product.name);
         }
+        // Move focus to qty field (batched product case already handled above)
         setTimeout(() => {
           qtyInputRefs.current[line.id]?.focus();
           qtyInputRefs.current[line.id]?.select();
@@ -1177,8 +1222,18 @@ export default function QuotationSales() {
     const currentUnit = line.availableUnits.find((u) => u.id === line.unitId);
     const conv = (currentUnit?.isMultiUnit && currentUnit?.conversion) ? currentUnit.conversion : 1;
     let maxQtyForThisRow = 0;
+    let stockCheckActive = false;
     if (line.batchMaxPieces != null && line.batchMaxPieces > 0) {
-      maxQtyForThisRow = line.batchMaxPieces / conv;
+      // Batch cap: subtract qty used by other rows with same product AND same batch
+      const usedByOtherBatchRows = lines.reduce((sum, l) => {
+        if (l.id === line.id || l.productId !== line.productId) return sum;
+        if (l.batchNumber !== line.batchNumber) return sum;
+        const u = l.availableUnits.find((au) => au.id === l.unitId);
+        const c = (u?.isMultiUnit && u?.conversion) ? u.conversion : 1;
+        return sum + (l.quantity * c);
+      }, 0);
+      maxQtyForThisRow = (line.batchMaxPieces - usedByOtherBatchRows) / conv;
+      stockCheckActive = true;
     } else if (line.baseStockPieces > 0) {
       const usedByOtherRows = lines.reduce((sum, l) => {
         if (l.id === line.id || l.productId !== line.productId) return sum;
@@ -1188,14 +1243,24 @@ export default function QuotationSales() {
       }, 0);
       const remainingPieces = line.baseStockPieces - usedByOtherRows;
       maxQtyForThisRow = remainingPieces / conv;
+      stockCheckActive = true;
     }
 
     const cappedQty = Math.max(parseFloat((maxQtyForThisRow || 0).toFixed(4)), 0);
-    if (maxQtyForThisRow > 0 && parsedQty > cappedQty) {
+    if (stockCheckActive && parsedQty > cappedQty) {
       setStockAlertMessage('Qty not available');
       setStockAlertOpen(true);
       qtyOverflowLineIdRef.current = line.id;
-      updateLine(line.id, 'quantity', cappedQty);
+      updateLine(line.id, 'quantity', 0);
+
+      // Update the snapshot so that reverting the row doesn't bring back the original 1
+      if (rowSnapshotRef.current?.lineId === line.id) {
+        rowSnapshotRef.current.data.quantity = 0;
+        rowSnapshotRef.current.data.gross = 0;
+        rowSnapshotRef.current.data.discAmount = 0;
+        rowSnapshotRef.current.data.vatAmount = 0;
+        rowSnapshotRef.current.data.total = 0;
+      }
     } else {
       updateLine(line.id, 'quantity', parsedQty);
     }
@@ -1371,8 +1436,63 @@ export default function QuotationSales() {
     setSaveDialogOpen(false);
     if (!companyId || !financialYearId) { showErrorDialog('Please select a company and financial year'); return; }
 
-    const validLines = lines.filter((l) => l.productId && l.quantity > 0 && l.price >= 0);
-    if (validLines.length === 0) { showErrorDialog('Add at least one item with valid data'); return; }
+    // Auto-remove empty or incomplete last row before saving
+    let linesToProcess = [...lines];
+    if (linesToProcess.length > 1) {
+      const last = linesToProcess[linesToProcess.length - 1];
+      const isBlankOrInvalid =
+        !last.productId ||
+        !last.productCode ||
+        last.quantity <= 0 ||
+        last.price <= 0 ||
+        !last.name;
+
+      if (isBlankOrInvalid) {
+        linesToProcess.pop();
+        setLines([...linesToProcess]);
+      }
+    }
+
+    // Validate rows - same logic as SalesB2C
+    const rowsWithItemCode = linesToProcess.filter((l) => l.productCode);
+    const rowsWithoutItemCode = linesToProcess.filter((l) => !l.productCode);
+
+    // Check for multiple blank rows
+    if (rowsWithoutItemCode.length > 1) {
+      showErrorDialog('Enter data correctly. Multiple rows without product code found.');
+      return;
+    }
+
+    // At least one product required
+    if (rowsWithItemCode.length === 0) {
+      showErrorDialog('At least one product with Item Code is required');
+      return;
+    }
+
+    // Check for invalid quantity or price
+    const invalidRows = rowsWithItemCode.filter((l) => l.quantity <= 0 || l.price <= 0);
+    if (invalidRows.length > 0) {
+      const invalidRowNumbers = invalidRows.map((l) => {
+        const idx = linesToProcess.findIndex((line) => line.id === l.id);
+        return idx + 1;
+      });
+      showErrorDialog(`Row(s) ${invalidRowNumbers.join(', ')} have invalid Quantity or Price. Quantity and Price must be greater than 0.`);
+      return;
+    }
+
+    // Filter valid lines - exclude blank rows (same as SalesB2C)
+    // A valid line must have: productId, productCode, quantity > 0, and price > 0
+    const validLines = linesToProcess.filter((l) =>
+      l.productId &&
+      l.productCode &&
+      l.quantity > 0 &&
+      l.price > 0
+    );
+
+    if (validLines.length === 0) {
+      showErrorDialog('At least one product is required');
+      return;
+    }
 
     setLoading(true);
     try {
@@ -1521,38 +1641,75 @@ export default function QuotationSales() {
     setIsSaved(true);
 
     if (inv.items?.length) {
-      const newLines: LineItem[] = inv.items.map((item: any, idx: number) => ({
-        id: `${Date.now()}-${idx}-${Math.random().toString(36).substr(2, 6)}`,
-        productId: item.productId || '',
-        productCode: item.productCode || '',
-        imei: item.imei || '',
-        name: item.product?.name || '',
-        unitId: item.unitId || '',
-        unitName: item.unitName || '',
-        availableUnits: [],
-        quantity: item.quantity,
-        price: item.unitPrice,
-        purchasePrice: item.product?.purchasePrice ?? 0,
-        gross: item.grossAmount || item.quantity * item.unitPrice,
-        discPercent: item.discountPercent || 0,
-        discAmount: item.discount || 0,
-        vatAmount: item.vatAmount || 0,
-        total: item.totalAmount || 0,
-      }));
-      newLines.push(emptyLine());
+      const newLines: LineItem[] = inv.items.map((item: any, idx: number) => {
+        const availableUnits: any[] = [];
+        if (item.product) {
+          const product = item.product;
+          const mainUnit = product.unitOfMeasureId;
+          if (mainUnit) {
+            const mainUnitId = typeof mainUnit === 'object' ? mainUnit._id : mainUnit;
+            const mainUnitName = typeof mainUnit === 'object' ? (mainUnit.shortCode || mainUnit.name || 'Main') : 'Main';
+            availableUnits.push({ id: mainUnitId, name: mainUnitName, isMultiUnit: false, imei: product.imei, price: product.retailPrice || 0 });
+          }
+          if (product.allowBatches === false && product.multiUnits?.length) {
+            product.multiUnits.forEach((mu: any) => {
+              const muUnitId = typeof mu.unitId === 'object' ? mu.unitId?._id : mu.unitId;
+              const muUnitName = typeof mu.unitId === 'object' ? (mu.unitId?.shortCode || mu.unitId?.name || 'Unit') : 'Unit';
+              if (muUnitId) {
+                availableUnits.push({ id: muUnitId, name: muUnitName, isMultiUnit: true, multiUnitId: mu.multiUnitId, imei: mu.imei, price: mu.retail || 0, conversion: mu.conversion, retail: mu.retail, wholesale: mu.wholesale, specialPrice1: mu.specialPrice1, specialPrice2: mu.specialPrice2 });
+              }
+            });
+          }
+        }
+        if (availableUnits.length === 0 && item.unitId) {
+          availableUnits.push({ id: item.unitId, name: item.unitName || 'Unit', isMultiUnit: false, price: item.unitPrice });
+        }
+
+        return {
+          id: `${Date.now()}-${idx}-${Math.random().toString(36).substr(2, 6)}`,
+          productId: item.productId || '',
+          productCode: item.productCode || '',
+          imei: item.imei || '',
+          name: item.product?.name || '',
+          unitId: item.unitId || '',
+          unitName: item.unitName || '',
+          availableUnits,
+          quantity: item.quantity,
+          price: item.unitPrice,
+          purchasePrice: item.product?.purchasePrice ?? 0,
+          gross: item.grossAmount || item.quantity * item.unitPrice,
+          discPercent: item.discountPercent || 0,
+          discAmount: item.discount || 0,
+          vatAmount: item.vatAmount || 0,
+          total: item.totalAmount || 0,
+        };
+      });
       setLines(newLines);
     }
   }, []);
 
-  // Invoice navigation
+  // Invoice navigation (same as SalesB2C)
   const handleNavInvoice = async (direction: 'first' | 'prev' | 'next' | 'last') => {
     if (invoiceIds.length === 0) return;
     let targetId: string | undefined;
     const curIdx = invoiceId ? invoiceIds.indexOf(invoiceId) : -1;
-    if (direction === 'first') targetId = invoiceIds[0];
-    else if (direction === 'last') targetId = invoiceIds[invoiceIds.length - 1];
-    else if (direction === 'prev') targetId = curIdx > 0 ? invoiceIds[curIdx - 1] : invoiceIds[0];
-    else if (direction === 'next') targetId = curIdx < invoiceIds.length - 1 ? invoiceIds[curIdx + 1] : invoiceIds[invoiceIds.length - 1];
+    if (direction === 'first') {
+      targetId = invoiceIds[invoiceIds.length - 1]; // First invoice (oldest)
+    } else if (direction === 'last') {
+      targetId = invoiceIds[0]; // Last invoice (newest)
+    } else if (direction === 'prev') {
+      if (curIdx < invoiceIds.length - 1) {
+        targetId = invoiceIds[curIdx + 1];
+      } else if (curIdx === -1) {
+        targetId = invoiceIds[invoiceIds.length - 1];
+      }
+    } else if (direction === 'next') {
+      if (curIdx > 0) {
+        targetId = invoiceIds[curIdx - 1];
+      } else if (curIdx === -1) {
+        targetId = invoiceIds[0];
+      }
+    }
     if (!targetId || !companyId) return;
     try {
       const res = await quotationApi.getById(targetId, companyId);
@@ -1581,20 +1738,72 @@ export default function QuotationSales() {
           <Grid item xs={6} sm={3} md={2} lg={1.7}>
             <DateInput label="Date" value={date} onChange={setDate} size="small" />
           </Grid>
-          <Grid item xs={6} sm={3} md={2.5} lg={2.2}>
+          <Grid item xs={7.5} sm={4.6875} md={3.90625} lg={3.4375}>
             <Autocomplete
-              size="small" options={customers}
-              getOptionLabel={(o) => typeof o === 'string' ? o : o.name || ''}
-              isOptionEqualToValue={(o, v) => typeof o !== 'string' && typeof v !== 'string' && o._id === v._id}
+              size="small"
+              options={customers}
+              getOptionLabel={(opt) => opt.name || ''}
+              filterOptions={(options, state) => {
+                const q = (state.inputValue || '').trim().toLowerCase();
+                const name = (c: Customer) => (c.name || '').toLowerCase();
+                const sortByName = (arr: Customer[]) => arr.slice().sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }));
+                if (!q) return options;
+                const startsWith = options.filter((c) => name(c).startsWith(q));
+                const containsOnly = options.filter((c) => name(c).includes(q) && !name(c).startsWith(q));
+                return [...sortByName(startsWith), ...sortByName(containsOnly)];
+              }}
               value={customers.find((c) => c.name === customerName) || null}
               onChange={(_, v) => handleCustomerSelect(v && typeof v !== 'string' ? v : null)}
-              renderInput={(params) => <TextField {...params} label="Cash / Customer A/C" InputLabelProps={{ shrink: true }} inputRef={customerAcRef} autoFocus onKeyDown={handleCustomerAcKeyDown} sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />}
+              onOpen={() => { }}
+              onClose={() => { }}
+              autoHighlight
+              isOptionEqualToValue={(opt, val) => opt._id === val._id}
+              slotProps={{
+                paper: {
+                  sx: { minWidth: '150%', width: '150%', maxWidth: '90vw' },
+                },
+              }}
+              renderInput={(params) => (
+                <TextField
+                  {...params}
+                  label="Cash / Customer A/C"
+                  InputLabelProps={{ shrink: true }}
+                  inputRef={customerAcRef}
+                  autoFocus
+                  onKeyDown={handleCustomerAcKeyDown}
+                  sx={{
+                    '& .MuiOutlinedInput-root': { borderRadius: 1.5 },
+                    '& .MuiInputBase-input': { fontSize: '0.75rem' },
+                    '& .MuiInputLabel-root': { fontSize: '0.75rem' },
+                  }}
+                />
+              )}
             />
           </Grid>
-          <Grid item xs={6} sm={3} md={2.5} lg={2.5}>
-            <TextField size="small" label="Customer Name" value={customerName} onChange={(e) => setCustomerName(e.target.value)}
-              onFocus={handleTextFieldFocus} InputLabelProps={{ shrink: true }} InputProps={{ readOnly: !!customerId }} fullWidth
-              sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5, ...(customerId ? { bgcolor: '#f1f5f9' } : {}) } }} />
+          <Grid item xs={6} sm={3.75} md={3.125} lg={3.125}>
+            <TextField
+              size="small"
+              label="Customer Name"
+              value={customerName}
+              onChange={(e) => setCustomerName(e.target.value)}
+              onFocus={handleTextFieldFocus}
+              inputRef={customerNameRef}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  setTimeout(() => taxModeRef.current?.focus(), 50);
+                }
+              }}
+              InputLabelProps={{ shrink: true }}
+              InputProps={{ readOnly: !!customerId }}
+              fullWidth
+              sx={{
+                '& .MuiOutlinedInput-root': { borderRadius: 1.5 },
+                '& .MuiInputBase-input': { fontSize: '0.75rem' },
+                '& .MuiInputLabel-root': { fontSize: '0.75rem' },
+                ...(customerId ? { '& .MuiOutlinedInput-root': { bgcolor: '#f1f5f9', borderRadius: 1.5 } } : {}),
+              }}
+            />
           </Grid>
           <Grid item xs="auto">
             <Button variant="outlined" size="small" onClick={() => setAddressDialogOpen(true)}
@@ -1805,22 +2014,56 @@ export default function QuotationSales() {
                   {/* Item Name */}
                   <TableCell sx={{ p: '3px', borderRight: '1px solid #f0f0f0', borderBottom: '1px solid #eef2f6' }}>
                     <Autocomplete
-                      size="small" freeSolo options={products}
+                      size="small"
+                      freeSolo
+                      options={products}
                       filterOptions={productFilterOptions}
                       getOptionLabel={(o) => typeof o === 'string' ? o : o.name || ''}
                       isOptionEqualToValue={(o, v) => o._id === v._id}
                       value={products.find((p) => p._id === line.productId) || null}
-                      inputValue={line.name} onInputChange={(_, v) => updateLine(line.id, 'name', v)}
+                      inputValue={line.name}
+                      onInputChange={(_, v) => updateLine(line.id, 'name', v)}
                       onChange={(_, v) => { if (v && typeof v !== 'string') handleProductSelect(line.id, v); }}
+                      onOpen={() => { itemNameListboxOpenRef.current = true; }}
+                      onClose={() => {
+                        itemNameListboxOpenRef.current = false;
+                      }}
+                      autoSelect
+                      autoHighlight
                       renderInput={(params) => (
-                        <TextField {...params} variant="outlined"
+                        <TextField
+                          {...params}
+                          variant="outlined"
                           inputRef={(el) => { itemNameInputRefs.current[line.id] = el; }}
                           onKeyDown={(e) => handleItemNameKeyDown(e, line)}
                           inputProps={{ ...params.inputProps, style: { fontSize: '0.82rem' } }}
-                          sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, py: 0, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: '3px !important' } }} />
+                          sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, py: 0, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: '3px !important' } }}
+                        />
                       )}
                       onHighlightChange={handleProductHighlight}
-                      sx={{ '& .MuiAutocomplete-listbox': { fontSize: '0.82rem' } }}
+                      ListboxProps={{
+                        sx: {
+                          p: 0,
+                          maxHeight: 250,
+                          overflowX: 'hidden',
+                          overflowY: 'auto',
+                          '&::-webkit-scrollbar': { display: 'none' },
+                          msOverflowStyle: 'none',
+                          scrollbarWidth: 'none',
+                          '& .MuiAutocomplete-option': {
+                            minHeight: 'auto', py: 0.75, px: 2, fontSize: '0.82rem', bgcolor: 'transparent',
+                            '&[data-focus="true"]': { bgcolor: '#0f766e !important', color: '#ffffff !important' },
+                            '&[aria-selected="true"]': { bgcolor: '#0f766e !important', color: '#ffffff !important' },
+                            '&.Mui-focused': { bgcolor: '#0f766e !important', color: '#ffffff !important' },
+                            '&:hover': { bgcolor: 'rgba(15, 118, 110, 0.15) !important', color: '#0f766e' }
+                          }
+                        }
+                      }}
+                      componentsProps={{
+                        popper: { placement: 'bottom-start', modifiers: [{ name: 'flip', enabled: false }, { name: 'preventOverflow', enabled: false }] },
+                        paper: { sx: { width: '300px', boxShadow: '0 8px 24px rgba(15,118,110,0.15)', borderRadius: '8px', border: '1px solid #99f6e4', bgcolor: '#ffffff', overflow: 'hidden', mt: 0.5 } }
+                      }}
+                      sx={{ width: '100%' }}
                     />
                   </TableCell>
                   {/* Unit */}

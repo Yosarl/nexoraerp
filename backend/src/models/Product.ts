@@ -108,7 +108,11 @@ const ProductSchema = new Schema<IProduct>(
 
 ProductSchema.index({ companyId: 1, code: 1 }, { unique: true });
 ProductSchema.index({ companyId: 1, name: 1 }, { unique: true });
-ProductSchema.index({ companyId: 1, imei: 1 }, { unique: true, sparse: true });
+// Unique on (companyId, imei) only when imei is a non-empty string — allows multiple products with null/empty imei
+ProductSchema.index(
+  { companyId: 1, imei: 1 },
+  { unique: true, partialFilterExpression: { imei: { $exists: true, $gt: '' } } }
+);
 ProductSchema.index({ companyId: 1, name: 'text' });
 ProductSchema.index({ companyId: 1, internationalBarcode: 1 }, { sparse: true });
 ProductSchema.index({ companyId: 1, systemBarcode: 1 }, { sparse: true });
