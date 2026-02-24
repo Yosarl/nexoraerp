@@ -86,6 +86,7 @@ interface LineItem {
   specialPrice1: number;
   specialPrice2: number;
   batchNumber: string;
+  isCommitted: boolean;
 }
 
 interface MultiUnit {
@@ -140,11 +141,21 @@ const emptyLine = (): LineItem => ({
   specialPrice1: 0,
   specialPrice2: 0,
   batchNumber: '',
+  isCommitted: false,
 });
 
 export default function OpeningStock() {
   const productFilterOptions = useMemo(
-    () => createFilterOptions<Product>({ matchFrom: 'any', stringify: (opt) => opt.name || '' }),
+    () => (options: Product[], state: { inputValue: string }) => {
+      const q = (state.inputValue || '').trim().toLowerCase();
+      const name = (p: Product) => (p.name || '').toLowerCase();
+      const sortByName = (arr: Product[]) =>
+        arr.slice().sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }));
+      if (!q) return options;
+      const startsWith = options.filter((p) => name(p).startsWith(q));
+      const containsOnly = options.filter((p) => name(p).includes(q) && !name(p).startsWith(q));
+      return [...sortByName(startsWith), ...sortByName(containsOnly)];
+    },
     []
   );
 
@@ -167,6 +178,7 @@ export default function OpeningStock() {
 
   const imeiInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const itemNameInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const itemNameSnapshotRef = useRef<{ lineId: string, data: LineItem } | null>(null);
   const unitInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const qtyInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const priceInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
@@ -467,6 +479,7 @@ export default function OpeningStock() {
             specialPrice1: b.specialPrice1 ?? 0,
             specialPrice2: b.specialPrice2 ?? 0,
             batchNumber: b.batchNumber || '',
+            isCommitted: true,
           };
         });
 
@@ -715,11 +728,25 @@ export default function OpeningStock() {
     rowCommittedRef.current = false;
   }, []);
 
+  const handleItemNameFocus = useCallback((line: LineItem) => {
+    itemNameSnapshotRef.current = { lineId: line.id, data: { ...line } };
+  }, []);
+
+  const handleItemNameBlur = useCallback((line: LineItem) => {
+    const snap = itemNameSnapshotRef.current;
+    if (snap && snap.lineId === line.id && snap.data.productId && !line.productId && snap.data.isCommitted) {
+      setLines((prev) =>
+        prev.map((l) => (l.id === line.id ? { ...l, ...snap.data } : l))
+      );
+    }
+    itemNameSnapshotRef.current = null;
+  }, []);
+
   const enterRow = useCallback(
     (line: LineItem) => {
       if (rowSnapshotRef.current?.lineId === line.id) return;
       revertUncommittedRow();
-      if (line.productId) {
+      if (line.isCommitted) {
         rowSnapshotRef.current = {
           lineId: line.id,
           data: { ...line, availableUnits: [...(line.availableUnits || [])] },
@@ -803,6 +830,7 @@ export default function OpeningStock() {
 
           rowCommittedRef.current = true;
           rowSnapshotRef.current = null;
+          updateLine(lineId, 'isCommitted', true);
 
           if (currentIndex >= 0 && currentIndex < current.length - 1) {
             const nextLine = current[currentIndex + 1];
@@ -1639,17 +1667,21 @@ export default function OpeningStock() {
             sx={{
               minWidth: '100%',
               tableLayout: 'fixed',
+              borderCollapse: 'separate',
+              borderSpacing: 0,
               '& .MuiTableCell-root': { fontSize: '0.875rem' },
+              '& .MuiInputBase-input': { fontSize: '0.875rem' },
+              '& .MuiAutocomplete-input': { fontSize: '0.875rem' }
             }}
           >
             <TableHead>
               <TableRow>
                 <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '2.5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Sl</TableCell>
-                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '9%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Int Barcode</TableCell>
-                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '14%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Item Name</TableCell>
-                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '6%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Unit</TableCell>
-                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Qty</TableCell>
-                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '6%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>P Rate</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '11.7%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Int Barcode</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '21.875%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Item Name</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '7.2%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Unit</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '6.5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Qty</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '7.8%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>P Rate</TableCell>
                 <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '6.5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Gross</TableCell>
                 <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>DISC%</TableCell>
                 <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Disc</TableCell>
@@ -1717,6 +1749,53 @@ export default function OpeningStock() {
                       }}
                       onHighlightChange={handleProductHighlight}
                       openOnFocus
+                      ListboxProps={{
+                        sx: {
+                          p: 0,
+                          maxHeight: 250,
+                          overflowX: 'hidden',
+                          overflowY: 'auto',
+                          '&::-webkit-scrollbar': {
+                            display: 'none'
+                          },
+                          msOverflowStyle: 'none',
+                          scrollbarWidth: 'none',
+                          '& .MuiAutocomplete-option': {
+                            minHeight: 'auto',
+                            py: 0.75,
+                            px: 2,
+                            fontSize: '1.09375rem',
+                            bgcolor: 'transparent',
+                            '&:hover': {
+                              bgcolor: 'rgba(79, 195, 197, 0.25) !important',
+                              color: '#1e293b'
+                            },
+                            '&[data-focus="true"]': {
+                              bgcolor: '#4fc3c5 !important',
+                              color: '#ffffff !important'
+                            },
+                            '&[aria-selected="true"]': {
+                              bgcolor: '#4fc3c5 !important',
+                              color: '#ffffff !important'
+                            },
+                            '&.Mui-focused': {
+                              bgcolor: '#4fc3c5 !important',
+                              color: '#ffffff !important'
+                            }
+                          }
+                        }
+                      }}
+                      isOptionEqualToValue={(a, b) => a._id === b._id}
+                      renderOption={(props, opt) => (
+                        <li {...props} key={opt._id} style={{
+                          fontSize: '1.09375rem',
+                          fontWeight: 400,
+                          padding: '6px 16px',
+                          cursor: 'pointer'
+                        }}>
+                          {opt.name}
+                        </li>
+                      )}
                       renderInput={(params) => (
                         <TextField
                           {...params}
@@ -1724,6 +1803,8 @@ export default function OpeningStock() {
                             const input = el?.querySelector?.('input') ?? el ?? null;
                             itemNameInputRefs.current[line.id] = input;
                           }}
+                          onFocus={() => handleItemNameFocus(line)}
+                          onBlur={() => handleItemNameBlur(line)}
                           onKeyDown={(e) => {
                             if (e.key !== 'Enter') return;
                             const listOpen = (e.target as HTMLInputElement)?.getAttribute?.('aria-expanded') === 'true';

@@ -39,6 +39,7 @@ import {
   WarningAmber as WarningIcon,
 } from '@mui/icons-material';
 import { useSelector, useDispatch } from 'react-redux';
+import { useNavigate, useLocation } from 'react-router-dom';
 import type { RootState } from '../store';
 import {
   productApi,
@@ -135,6 +136,7 @@ interface LineItem {
   availableUnits: UnitOption[];
   baseStockPieces: number;
   batchMaxPieces?: number;
+  isCommitted: boolean;
 }
 
 const emptyLine = (): LineItem => ({
@@ -155,6 +157,7 @@ const emptyLine = (): LineItem => ({
   unitName: '',
   availableUnits: [],
   baseStockPieces: 0,
+  isCommitted: false,
 });
 
 function buildAvailableUnitsFromProduct(product: Product | null): UnitOption[] {
@@ -208,13 +211,24 @@ const VAT_RATE = 5;
 
 export default function PurchaseReturn() {
   const productFilterOptions = useMemo(
-    () => createFilterOptions<Product>({ matchFrom: 'any', stringify: (opt) => opt.name || '' }),
+    () => (options: Product[], state: { inputValue: string }) => {
+      const q = (state.inputValue || '').trim().toLowerCase();
+      const name = (p: Product) => (p.name || '').toLowerCase();
+      const sortByName = (arr: Product[]) =>
+        arr.slice().sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }));
+      if (!q) return options;
+      const startsWith = options.filter((p) => name(p).startsWith(q));
+      const containsOnly = options.filter((p) => name(p).includes(q) && !name(p).startsWith(q));
+      return [...sortByName(startsWith), ...sortByName(containsOnly)];
+    },
     []
   );
 
   const companyId = useSelector((s: RootState) => s.app.selectedCompanyId);
   const financialYearId = useSelector((s: RootState) => s.app.selectedFinancialYearId);
   const dispatch = useDispatch();
+  const navigate = useNavigate();
+  const routeLocation = useLocation();
 
   const handlePageClick = useCallback(() => {
     dispatch(setDrawerOpen(false));
@@ -239,6 +253,10 @@ export default function PurchaseReturn() {
   const [, setSuppliers] = useState<SupplierOption[]>([]);
   const [, setCashAccounts] = useState<CashOption[]>([]);
   const [supplierCashOptions, setSupplierCashOptions] = useState<SupplierCashOption[]>([]);
+  const [supplierAcListboxOpen, setSupplierAcListboxOpen] = useState(false);
+  const [createSupplierConfirmOpen, setCreateSupplierConfirmOpen] = useState(false);
+  const [createSupplierConfirmName, setCreateSupplierConfirmName] = useState<string | null>(null);
+  const [pendingSupplierName, setPendingSupplierName] = useState<string | null>(null);
 
   // Products & lines
   const [products, setProducts] = useState<Product[]>([]);
@@ -352,6 +370,8 @@ export default function PurchaseReturn() {
   const narrationRef = useRef<HTMLInputElement>(null);
   const saveButtonRef = useRef<HTMLButtonElement>(null);
 
+  const nameSnapshotRef = useRef<{ lineId: string, data: LineItem } | null>(null);
+
   // Row edit commit/revert (same as B2C): snapshot when entering a row; commit only on Enter on Qty; revert when leaving without commit
   const rowSnapshotRef = useRef<{ lineId: string; data: LineItem } | null>(null);
   const rowCommittedRef = useRef(false);
@@ -415,31 +435,51 @@ export default function PurchaseReturn() {
     setOtherDiscount(parseFloat(((subTotal * percent) / 100).toFixed(2)));
   };
 
-  // Load suppliers and cash accounts
-  useEffect(() => {
+  const loadSuppliers = useCallback(async () => {
     if (!companyId) return;
-    const load = async () => {
-      try {
-        const [supRes, cashRes] = await Promise.all([
-          ledgerAccountApi.list(companyId, 'Supplier'),
-          ledgerAccountApi.list(companyId, 'Cash'),
-        ]);
-        const supList = (supRes.data.data || []) as Array<{ _id: string; code?: string; name: string; address?: string }>;
-        const cashList = (cashRes.data.data || []) as Array<{ _id: string; code?: string; name: string }>;
-        setSuppliers(supList.map((s) => ({ ...s, type: 'supplier' as const })));
-        setCashAccounts(cashList.map((c) => ({ ...c, type: 'cash' as const })));
-        setSupplierCashOptions([
-          ...cashList.map((c) => ({ _id: c._id, code: c.code, name: c.name, type: 'cash' as const })),
-          ...supList.map((s) => ({ _id: s._id, code: s.code, name: s.name, address: s.address, type: 'supplier' as const })),
-        ]);
-      } catch {
-        setSuppliers([]);
-        setCashAccounts([]);
-        setSupplierCashOptions([]);
-      }
-    };
-    load();
+    try {
+      const [supRes, cashRes] = await Promise.all([
+        ledgerAccountApi.list(companyId, 'Supplier'),
+        ledgerAccountApi.list(companyId, 'Cash'),
+      ]);
+      const supList = (supRes.data.data || []) as Array<{ _id: string; code?: string; name: string; address?: string }>;
+      const cashList = (cashRes.data.data || []) as Array<{ _id: string; code?: string; name: string }>;
+      setSuppliers(supList.map((s) => ({ ...s, type: 'supplier' as const })));
+      setCashAccounts(cashList.map((c) => ({ ...c, type: 'cash' as const })));
+      const combined = [
+        ...cashList.map((c) => ({ _id: c._id, code: c.code, name: c.name, type: 'cash' as const })),
+        ...supList.map((s) => ({ _id: s._id, code: s.code, name: s.name, address: s.address, type: 'supplier' as const })),
+      ].sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }));
+      setSupplierCashOptions(combined);
+    } catch {
+      setSuppliers([]);
+      setCashAccounts([]);
+      setSupplierCashOptions([]);
+    }
   }, [companyId]);
+
+  // Load suppliers and cash accounts on mount
+  useEffect(() => {
+    loadSuppliers();
+  }, [loadSuppliers]);
+
+  // Detect return from Supplier Create page — read created ledger from state, set pending and reload suppliers
+  const handledReturnFromCreateRef = useRef(false);
+  useEffect(() => {
+    const state = routeLocation.state as { createdLedgerName?: string } | null;
+    if (routeLocation.pathname !== '/entry/purchase-return' && routeLocation.pathname !== '/entry/purchasereturn') {
+      handledReturnFromCreateRef.current = false;
+      return;
+    }
+    if (!state?.createdLedgerName) return;
+    if (handledReturnFromCreateRef.current) return;
+    handledReturnFromCreateRef.current = true;
+    const createdName = state.createdLedgerName;
+    setPendingSupplierName(createdName);
+    loadSuppliers();
+    const path = routeLocation.pathname;
+    setTimeout(() => navigate(path, { replace: true, state: {} }), 0);
+  }, [routeLocation.pathname, routeLocation.state, loadSuppliers, navigate]);
 
   // Load products
   useEffect(() => {
@@ -563,6 +603,7 @@ export default function PurchaseReturn() {
           multiUnitId: selectedUnit?.isMultiUnit ? selectedUnit?.multiUnitId : undefined,
           availableUnits,
           baseStockPieces: 0,
+          isCommitted: true,
         };
       });
       setLines(newLines.length > 0 ? newLines : [emptyLine()]);
@@ -633,6 +674,7 @@ export default function PurchaseReturn() {
           multiUnitId: it.multiUnitId ?? (selectedUnit?.isMultiUnit ? selectedUnit?.multiUnitId : undefined),
           availableUnits,
           baseStockPieces: 0,
+          isCommitted: true,
         };
       });
       rowSnapshotRef.current = null;
@@ -1161,6 +1203,20 @@ export default function PurchaseReturn() {
     committedLineIdRef.current = null;
   }, []);
 
+  const handleNameFocus = useCallback((line: LineItem) => {
+    nameSnapshotRef.current = { lineId: line.id, data: { ...line } };
+  }, []);
+
+  const handleNameBlur = useCallback((line: LineItem) => {
+    const snap = nameSnapshotRef.current;
+    if (snap && snap.lineId === line.id && snap.data.productId && !line.productId && snap.data.isCommitted) {
+      setLines((prev) =>
+        prev.map((l) => (l.id === line.id ? { ...l, ...snap.data } : l))
+      );
+    }
+    nameSnapshotRef.current = null;
+  }, []);
+
   // Called when user enters a row (focus any cell) — revert previous row if uncommitted, snapshot this row
   const enterRow = useCallback((line: LineItem) => {
     if (rowSnapshotRef.current && rowSnapshotRef.current.lineId === line.id) return;
@@ -1171,7 +1227,7 @@ export default function PurchaseReturn() {
     }
     revertUncommittedRow();
     committedLineIdRef.current = null;
-    if (line.productId) {
+    if (line.isCommitted) {
       rowSnapshotRef.current = {
         lineId: line.id,
         data: { ...line, availableUnits: [...(line.availableUnits ?? [])] },
@@ -1274,6 +1330,7 @@ export default function PurchaseReturn() {
         rowCommittedRef.current = true;
         rowSnapshotRef.current = null;
         committedLineIdRef.current = lineId;
+        updateLine(lineId, 'isCommitted', true);
 
         // Move to next row's IMEI, or add a new row
         if (currentIndex >= 0 && currentIndex < currentLines.length - 1) {
@@ -1320,6 +1377,27 @@ export default function PurchaseReturn() {
       }
     }, 10);
   }, [updateLine]);
+
+  const handleSupplierSelect = useCallback((option: SupplierCashOption | null) => {
+    if (!option) {
+      setSupplierId(null);
+      setCashAccountId(null);
+      setSupplierName('');
+      setSupplierAddress('');
+      return;
+    }
+    if (option.type === 'cash') {
+      setCashAccountId(option._id);
+      setSupplierId(null);
+      setSupplierName(option.name);
+      setSupplierAddress('');
+    } else {
+      setSupplierId(option._id);
+      setCashAccountId(null);
+      setSupplierName(option.name);
+      setSupplierAddress(option.address || '');
+    }
+  }, []);
 
   const handleClear = useCallback(async () => {
     setReturnId(null);
@@ -1559,69 +1637,85 @@ export default function PurchaseReturn() {
               sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }}
             />
           </Grid>
-          <Grid item xs={6} sm={6} md={2.5} lg={2.2}>
+          <Grid item xs={7.5} sm={7.5} md={3.125} lg={2.75}>
             <Autocomplete<SupplierCashOption>
               size="small"
               options={supplierCashOptions}
-              groupBy={(opt) => (opt.type === 'cash' ? 'Cash Accounts' : 'Suppliers')}
               getOptionLabel={(opt) => opt.name || ''}
-              value={selectedSupplierCashValue}
-              onChange={(_, v) => {
-                if (!v) {
-                  setSupplierId(null);
-                  setCashAccountId(null);
-                  setSupplierName('');
-                  setSupplierAddress('');
-                  return;
-                }
-                if (v.type === 'cash') {
-                  setCashAccountId(v._id);
-                  setSupplierId(null);
-                  setSupplierName('');
-                  setSupplierAddress('');
-                } else {
-                  setSupplierId(v._id);
-                  setCashAccountId(null);
-                  setSupplierName(v.name);
-                  setSupplierAddress(v.address || '');
-                }
+              filterOptions={(options, state) => {
+                const q = (state.inputValue || '').trim().toLowerCase();
+                const name = (o: SupplierCashOption) => (o.name || '').toLowerCase();
+                const sortByName = (arr: SupplierCashOption[]) => arr.slice().sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }));
+                if (!q) return options;
+                const startsWith = options.filter((o) => name(o).startsWith(q));
+                const containsOnly = options.filter((o) => name(o).includes(q) && !name(o).startsWith(q));
+                return [...sortByName(startsWith), ...sortByName(containsOnly)];
               }}
+              value={selectedSupplierCashValue}
+              onChange={(_, v) => handleSupplierSelect(v)}
+              onOpen={() => setSupplierAcListboxOpen(true)}
+              onClose={() => setSupplierAcListboxOpen(false)}
+              autoHighlight
+              isOptionEqualToValue={(opt, val) => opt._id === val._id}
+              slotProps={{ paper: { sx: { minWidth: '150%', width: '150%', maxWidth: '90vw' } } }}
               ListboxProps={{
                 sx: {
-                  p: 0,
-                  maxHeight: 250,
-                  overflowY: 'auto',
-                  '& .MuiAutocomplete-groupLabel': { bgcolor: '#f1f5f9', color: '#1e293b', fontWeight: 600, fontSize: '0.75rem', py: 0.5, px: 2 },
-                  '& .MuiAutocomplete-option': { minHeight: 'auto', py: 0.75, px: 2, fontSize: '0.85rem', bgcolor: 'transparent', '&[data-focus="true"]': { bgcolor: '#0f766e !important', color: '#ffffff !important' }, '&[aria-selected="true"]': { bgcolor: '#0f766e !important', color: '#ffffff !important' }, '&.Mui-focused': { bgcolor: '#0f766e !important', color: '#ffffff !important' } },
+                  '& .MuiAutocomplete-option': {
+                    '&[data-focus="true"]': { bgcolor: '#4fc3c5 !important', color: '#ffffff !important' },
+                    '&[aria-selected="true"]': { bgcolor: '#4fc3c5 !important', color: '#ffffff !important' },
+                    '&:hover': { bgcolor: 'rgba(79, 195, 197, 0.25)' },
+                  },
                 },
               }}
-              renderOption={(props, opt) => (
-                <li {...props} key={opt._id} style={{ fontSize: '0.85rem', fontWeight: 400, padding: '6px 14px', background: '#ffffff', color: opt.type === 'cash' ? '#0ea5e9' : '#334155', cursor: 'pointer' }}>
-                  {opt.name}
-                </li>
-              )}
-              isOptionEqualToValue={(a, b) => a._id === b._id}
               renderInput={(params) => (
                 <TextField
                   {...params}
-                  inputRef={supplierAcRef}
-                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); supplierNameRef.current?.focus(); } }}
-                  label="Supplier / Cash A/C"
+                  label="Cash / Supplier A/C"
                   InputLabelProps={{ shrink: true }}
-                  sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }}
+                  inputRef={supplierAcRef}
+                  autoFocus
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      const typed = (e.target as HTMLInputElement).value.trim();
+                      if (!typed) {
+                        e.preventDefault();
+                        setTimeout(() => supplierNameRef.current?.focus(), 50);
+                        return;
+                      }
+                      const exists = supplierCashOptions.find((s) => (s.name || '').toLowerCase() === typed.toLowerCase());
+                      if (exists) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        handleSupplierSelect(exists);
+                        setTimeout(() => supplierNameRef.current?.focus(), 50);
+                        return;
+                      }
+                      if (supplierAcListboxOpen) {
+                        const isPrefixOfSome = supplierCashOptions.some((s) => (s.name || '').toLowerCase().startsWith(typed.toLowerCase()));
+                        if (isPrefixOfSome) return;
+                      }
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setCreateSupplierConfirmName(typed);
+                      setCreateSupplierConfirmOpen(true);
+                    }
+                  }}
+                  sx={{
+                    '& .MuiOutlinedInput-root': { borderRadius: 1.5 },
+                    '& .MuiInputBase-input': { fontSize: '0.75rem' },
+                    '& .MuiInputLabel-root': { fontSize: '0.75rem' },
+                  }}
                 />
               )}
             />
           </Grid>
-          <Grid item xs={6} sm={6} md={2.5} lg={2.2}>
+          <Grid item xs={6} sm={3.75} md={3.125} lg={3.125}>
             <TextField
-              label="Supplier Name / Address"
               size="small"
-              value={supplierAddress || supplierName}
-              onChange={(e) => {
-                setSupplierAddress(e.target.value);
-                if (!supplierId && !cashAccountId) setSupplierName(e.target.value);
-              }}
+              label="Supplier Name"
+              fullWidth
+              value={supplierName}
+              onChange={(e) => setSupplierName(e.target.value)}
               inputRef={supplierNameRef}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
@@ -1630,9 +1724,14 @@ export default function PurchaseReturn() {
                   else taxRef.current?.focus();
                 }
               }}
-              fullWidth
               InputLabelProps={{ shrink: true }}
-              sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5, bgcolor: supplierId || cashAccountId ? '#f1f5f9' : undefined } }}
+              InputProps={{ readOnly: !!supplierId || !!cashAccountId }}
+              sx={{
+                '& .MuiOutlinedInput-root': { borderRadius: 1.5 },
+                '& .MuiInputBase-input': { fontSize: '0.75rem' },
+                '& .MuiInputLabel-root': { fontSize: '0.75rem' },
+                ...(supplierId || cashAccountId ? { '& .MuiOutlinedInput-root': { bgcolor: '#f1f5f9', borderRadius: 1.5 } } : {}),
+              }}
             />
           </Grid>
           {returnType === 'ByRef' && (
@@ -1804,20 +1903,20 @@ export default function PurchaseReturn() {
             }, 100);
           }}
         >
-          <Table stickyHeader size="small" sx={{ minWidth: '100%', '& .MuiTableCell-root': { fontSize: '0.78rem' }, '& .MuiInputBase-input': { fontSize: '0.78rem' } }}>
+          <Table stickyHeader size="small" sx={{ minWidth: '100%', tableLayout: 'fixed', borderCollapse: 'separate', borderSpacing: 0, '& .MuiTableCell-root': { fontSize: '0.875rem' }, '& .MuiInputBase-input': { fontSize: '0.875rem' }, '& .MuiAutocomplete-input': { fontSize: '0.875rem' } }}>
             <TableHead>
               <TableRow>
-                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '3%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Sl</TableCell>
-                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '10%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Item Code</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '2.5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Sl</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '11.7%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Item Code</TableCell>
                 <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '9%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>IMEI</TableCell>
-                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '14%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Item Name</TableCell>
-                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '6%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Unit</TableCell>
-                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Qty</TableCell>
-                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '10%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Rate</TableCell>
-                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '8%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Disc %</TableCell>
-                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '8%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Disc Amt</TableCell>
-                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '8%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>VAT</TableCell>
-                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '10%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Total</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '21.875%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Item Name</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '7.2%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Unit</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '6.5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Qty</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '7.8%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Rate</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Disc %</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Disc Amt</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>VAT</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '6.5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Total</TableCell>
                 <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '3%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }} />
               </TableRow>
             </TableHead>
@@ -1903,8 +2002,52 @@ export default function PurchaseReturn() {
                             setTimeout(() => focusQtyForLine(lineId), 120);
                           }
                         },
+                        sx: {
+                          p: 0,
+                          maxHeight: 250,
+                          overflowX: 'hidden',
+                          overflowY: 'auto',
+                          '&::-webkit-scrollbar': {
+                            display: 'none'
+                          },
+                          msOverflowStyle: 'none',
+                          scrollbarWidth: 'none',
+                          '& .MuiAutocomplete-option': {
+                            minHeight: 'auto',
+                            py: 0.75,
+                            px: 2,
+                            fontSize: '1.09375rem',
+                            bgcolor: 'transparent',
+                            '&:hover': {
+                              bgcolor: 'rgba(79, 195, 197, 0.25) !important',
+                              color: '#1e293b'
+                            },
+                            '&[data-focus="true"]': {
+                              bgcolor: '#4fc3c5 !important',
+                              color: '#ffffff !important'
+                            },
+                            '&[aria-selected="true"]': {
+                              bgcolor: '#4fc3c5 !important',
+                              color: '#ffffff !important'
+                            },
+                            '&.Mui-focused': {
+                              bgcolor: '#4fc3c5 !important',
+                              color: '#ffffff !important'
+                            }
+                          }
+                        }
                       }}
                       isOptionEqualToValue={(a, b) => a._id === b._id}
+                      renderOption={(props, opt) => (
+                        <li {...props} key={opt._id} style={{
+                          fontSize: '1.09375rem',
+                          fontWeight: 400,
+                          padding: '6px 16px',
+                          cursor: 'pointer'
+                        }}>
+                          {opt.name}
+                        </li>
+                      )}
                       renderInput={(params) => (
                         <TextField
                           {...params}
@@ -1912,6 +2055,8 @@ export default function PurchaseReturn() {
                             const input = el?.querySelector?.('input') ?? el ?? null;
                             nameInputRefs.current[line.id] = input;
                           }}
+                          onFocus={() => handleNameFocus(line)}
+                          onBlur={() => handleNameBlur(line)}
                           onKeyDown={(e) => {
                             if (e.key !== 'Enter') return;
                             const focusInListbox = document.activeElement?.closest?.('.MuiAutocomplete-listbox') != null;
@@ -2369,6 +2514,47 @@ export default function PurchaseReturn() {
         </DialogContent>
         <DialogActions sx={{ bgcolor: '#f8fafc', borderTop: '1px solid #e2e8f0', px: 2, py: 1 }}>
           <Button onClick={handleBatchDialogClose} sx={{ textTransform: 'none', borderRadius: 1.5, color: '#64748b' }}>Cancel</Button>
+        </DialogActions>
+      </Dialog>
+      {/* Create supplier confirm dialog */}
+      <Dialog
+        open={createSupplierConfirmOpen}
+        onClose={() => { setCreateSupplierConfirmOpen(false); setCreateSupplierConfirmName(null); }}
+        PaperProps={{ sx: { borderRadius: 2, minWidth: 360 } }}
+        TransitionProps={{
+          onEntered: (node) => {
+            const yesBtn = (node as HTMLElement).querySelector<HTMLButtonElement>('[data-create-supplier-yes]');
+            yesBtn?.focus();
+          },
+        }}
+      >
+        <DialogTitle sx={{ fontWeight: 700, fontSize: '1rem', color: '#0f766e' }}>Create account?</DialogTitle>
+        <DialogContent>
+          <Typography sx={{ fontSize: '0.9rem', color: '#475569' }}>
+            This account doesn&apos;t exist. Do you want to create it{createSupplierConfirmName ? ` for "${createSupplierConfirmName}"` : ''}?
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 2, pb: 2 }}>
+          <Button onClick={() => { setCreateSupplierConfirmOpen(false); setCreateSupplierConfirmName(null); }} sx={{ textTransform: 'none', borderRadius: 1.5, color: '#64748b' }}>
+            No
+          </Button>
+          <Button
+            variant="contained"
+            data-create-supplier-yes
+            autoFocus
+            onClick={() => {
+              const name = createSupplierConfirmName;
+              setCreateSupplierConfirmOpen(false);
+              setCreateSupplierConfirmName(null);
+              if (name) {
+                setPendingSupplierName(name);
+                navigate('/master/supplier-create', { state: { prefillName: name, returnTo: '/entry/purchase-return' } });
+              }
+            }}
+            sx={{ textTransform: 'none', borderRadius: 1.5, bgcolor: '#0f766e', '&:hover': { bgcolor: '#0d6561' }, boxShadow: 'none' }}
+          >
+            Yes
+          </Button>
         </DialogActions>
       </Dialog>
     </Box>

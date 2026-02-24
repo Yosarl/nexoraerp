@@ -118,6 +118,7 @@ interface LineItem {
   specialPrice1: number;
   specialPrice2: number;
   batchNumber: string;
+  isCommitted: boolean;
 }
 
 interface MultiUnit {
@@ -234,11 +235,24 @@ const emptyLine = (): LineItem => ({
   specialPrice1: 0,
   specialPrice2: 0,
   batchNumber: '',
+  isCommitted: false,
 });
 
 export default function PurchaseOrderEntry() {
-  // Filter for product Autocomplete — match anywhere in the name, no result limit
-  const productFilterOptions = useMemo(() => createFilterOptions<Product>({ matchFrom: 'any', stringify: (opt) => opt.name || '' }), []);
+  // Filter for product Autocomplete — sort like supplier A/C: starts with first, then contains, each sorted by name
+  const productFilterOptions = useMemo(
+    () => (options: Product[], state: { inputValue: string }) => {
+      const q = (state.inputValue || '').trim().toLowerCase();
+      const name = (p: Product) => (p.name || '').toLowerCase();
+      const sortByName = (arr: Product[]) =>
+        arr.slice().sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }));
+      if (!q) return options;
+      const startsWith = options.filter((p) => name(p).startsWith(q));
+      const containsOnly = options.filter((p) => name(p).includes(q) && !name(p).startsWith(q));
+      return [...sortByName(startsWith), ...sortByName(containsOnly)];
+    },
+    []
+  );
 
   const companyId = useSelector((s: RootState) => s.app.selectedCompanyId);
   const financialYearId = useSelector((s: RootState) => s.app.selectedFinancialYearId);
@@ -277,6 +291,9 @@ export default function PurchaseOrderEntry() {
 
   // Combined Cash + Supplier list
   const [supplierCashOptions, setSupplierCashOptions] = useState<SupplierCashOption[]>([]);
+  const [supplierAcListboxOpen, setSupplierAcListboxOpen] = useState(false);
+  const [createSupplierConfirmOpen, setCreateSupplierConfirmOpen] = useState(false);
+  const [createSupplierConfirmName, setCreateSupplierConfirmName] = useState<string | null>(null);
 
   // Products
   const [products, setProducts] = useState<Product[]>([]);
@@ -287,6 +304,7 @@ export default function PurchaseOrderEntry() {
   // Refs for input fields to enable focus navigation
   const imeiInputRefs = useRef<{ [key: string]: HTMLInputElement | null }>({});
   const itemNameInputRefs = useRef<{ [key: string]: HTMLInputElement | null }>({});
+  const itemNameSnapshotRef = useRef<{ lineId: string, data: LineItem } | null>(null);
   const unitInputRefs = useRef<{ [key: string]: HTMLInputElement | null }>({});
   const qtyInputRefs = useRef<{ [key: string]: HTMLInputElement | null }>({});
   const priceInputRefs = useRef<{ [key: string]: HTMLInputElement | null }>({});
@@ -604,6 +622,7 @@ export default function PurchaseOrderEntry() {
           specialPrice1: b.specialPrice1,
           specialPrice2: b.specialPrice2,
           batchNumber: b.batchNumber,
+          isCommitted: true,
         };
       });
 
@@ -1051,6 +1070,21 @@ export default function PurchaseOrderEntry() {
     rowCommittedRef.current = false;
   }, []);
 
+  const handleItemNameFocus = useCallback((line: LineItem) => {
+    itemNameSnapshotRef.current = { lineId: line.id, data: { ...line } };
+  }, []);
+
+  // Item name blur: if user cleared and did not select a product, restore from snapshot
+  const handleItemNameBlur = useCallback((line: LineItem) => {
+    const snap = itemNameSnapshotRef.current;
+    if (snap && snap.lineId === line.id && snap.data.productId && !line.productId && snap.data.isCommitted) {
+      setLines((prev) =>
+        prev.map((l) => (l.id === line.id ? { ...l, ...snap.data } : l))
+      );
+    }
+    itemNameSnapshotRef.current = null;
+  }, []);
+
   // Called when user enters a row (click or focus from keyboard navigation)
   const enterRow = useCallback((line: LineItem) => {
     // If we're entering the same row we're already on, do nothing
@@ -1059,8 +1093,8 @@ export default function PurchaseOrderEntry() {
     // If switching from another filled row that wasn't committed, revert it
     revertUncommittedRow();
 
-    // Take a snapshot of this row if it already has a product (existing filled row)
-    if (line.productId) {
+    // Take a snapshot of this row if it was previously committed
+    if (line.isCommitted) {
       rowSnapshotRef.current = {
         lineId: line.id,
         data: { ...line, availableUnits: [...line.availableUnits] },
@@ -1198,6 +1232,7 @@ export default function PurchaseOrderEntry() {
         // All valid — commit row and move to next
         rowCommittedRef.current = true;
         rowSnapshotRef.current = null;
+        updated.isCommitted = true;
 
         if (idx >= 0 && idx < current.length - 1) {
           const nextLine = current[idx + 1];
@@ -1454,7 +1489,7 @@ export default function PurchaseOrderEntry() {
     setSupplierName(held.supplierName);
     setSupplierAddress(held.supplierAddress);
     setCashAccountId(held.cashAccountId);
-    setLines(held.lines.length > 0 ? held.lines : [emptyLine()]);
+    setLines(held.lines.length > 0 ? held.lines.map(l => ({ ...l, isCommitted: true })) : [emptyLine()]);
     setOtherDiscPercent(held.otherDiscPercent);
     setOtherDiscount(held.otherDiscount);
     setOtherCharges(held.otherCharges);
@@ -1475,6 +1510,27 @@ export default function PurchaseOrderEntry() {
     saveHeldPurchaseOrders(updated);
   };
 
+  const handleSupplierSelect = useCallback((option: SupplierCashOption | null) => {
+    if (!option) {
+      setSupplierId(null);
+      setCashAccountId(null);
+      setSupplierName('');
+      setSupplierAddress('');
+      return;
+    }
+    if (option.type === 'cash') {
+      setCashAccountId(option._id);
+      setSupplierId(null);
+      setSupplierName(option.name);
+      setSupplierAddress('');
+    } else {
+      setSupplierId(option._id);
+      setCashAccountId(null);
+      setSupplierName(option.name);
+      setSupplierAddress(option.address || '');
+    }
+  }, []);
+
   const handleClear = async () => {
     setInvoiceId(null);
     setEditingNumericCell(null);
@@ -1483,6 +1539,7 @@ export default function PurchaseOrderEntry() {
     setVatType('Vat');
     setTaxMode('inclusive');
     setSupplierId(null);
+    setCashAccountId(null);
     setSupplierName('');
     setSupplierAddress('');
     setLines([emptyLine()]);
@@ -1642,8 +1699,10 @@ export default function PurchaseOrderEntry() {
       invoiceNo,
       supplierInvoiceNo: supplierInvNo,
       date,
-      supplierId,
-      supplierName,
+      supplierId: supplierId || undefined,
+      supplierName: supplierName || undefined,
+      cashAccountId: cashAccountId || undefined,
+      supplierAddress: supplierAddress || undefined,
       vatType,
       narration,
       companyId,
@@ -1882,110 +1941,98 @@ export default function PurchaseOrderEntry() {
             />
           </Grid>
           <Grid item xs={7.5} sm={7.5} md={3.125} lg={2.75}>
-            <Autocomplete
+            <Autocomplete<SupplierCashOption>
               size="small"
               options={supplierCashOptions}
-              groupBy={(opt) => opt.type === 'cash' ? 'Cash Accounts' : 'Suppliers'}
               getOptionLabel={(opt) => opt.name || ''}
-              value={supplierCashOptions.find((s) => s._id === supplierId) || null}
+              filterOptions={(options, state) => {
+                const q = (state.inputValue || '').trim().toLowerCase();
+                const name = (o: SupplierCashOption) => (o.name || '').toLowerCase();
+                const sortByName = (arr: SupplierCashOption[]) => arr.slice().sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }));
+                if (!q) return options;
+                const startsWith = options.filter((o) => name(o).startsWith(q));
+                const containsOnly = options.filter((o) => name(o).includes(q) && !name(o).startsWith(q));
+                return [...sortByName(startsWith), ...sortByName(containsOnly)];
+              }}
+              value={supplierCashOptions.find((s) => s._id === supplierId || s._id === cashAccountId) || null}
               onChange={(_, v) => {
-                setSupplierId(v?._id || null);
-                setSupplierName(v?.name || '');
-                setSupplierAddress(v?.address || '');
+                handleSupplierSelect(v);
                 setIsSaved(false);
               }}
-              slotProps={{
-                paper: {
-                  sx: { minWidth: '150%', width: '150%', maxWidth: '90vw' },
-                },
-              }}
-              renderOption={(props, opt) => (
-                <li {...props} key={opt._id} style={{
-                  fontSize: '0.85rem',
-                  fontWeight: 400,
-                  padding: '6px 14px',
-                  background: '#ffffff',
-                  color: opt.type === 'cash' ? '#0ea5e9' : '#334155',
-                  cursor: 'pointer'
-                }}>
-                  {opt.name}
-                </li>
-              )}
+              onOpen={() => setSupplierAcListboxOpen(true)}
+              onClose={() => setSupplierAcListboxOpen(false)}
+              autoHighlight
+              isOptionEqualToValue={(opt, val) => opt._id === val._id}
+              slotProps={{ paper: { sx: { minWidth: '150%', width: '150%', maxWidth: '90vw' } } }}
               ListboxProps={{
                 sx: {
-                  p: 0,
-                  maxHeight: 250,
-                  overflowY: 'auto',
-                  '& .MuiAutocomplete-groupLabel': {
-                    bgcolor: '#f1f5f9',
-                    color: '#1e293b',
-                    fontWeight: 600,
-                    fontSize: '0.75rem',
-                    py: 0.5,
-                    px: 2,
-                  },
                   '& .MuiAutocomplete-option': {
-                    minHeight: 'auto', py: 0.75, px: 2, fontSize: '0.85rem', bgcolor: 'transparent',
-                    '&[data-focus="true"]': { bgcolor: '#0f766e !important', color: '#ffffff !important' },
-                    '&[aria-selected="true"]': { bgcolor: '#0f766e !important', color: '#ffffff !important' },
-                    '&.Mui-focused': { bgcolor: '#0f766e !important', color: '#ffffff !important' }
-                  }
-                }
+                    '&[data-focus="true"]': { bgcolor: '#4fc3c5 !important', color: '#ffffff !important' },
+                    '&[aria-selected="true"]': { bgcolor: '#4fc3c5 !important', color: '#ffffff !important' },
+                    '&:hover': { bgcolor: 'rgba(79, 195, 197, 0.25)' },
+                  },
+                },
               }}
-              isOptionEqualToValue={(opt, val) => opt._id === val._id}
               renderInput={(params) => (
                 <TextField
                   {...params}
-                  label="Cash/ Supplier AC"
+                  label="Cash / Supplier A/C"
                   InputLabelProps={{ shrink: true }}
                   inputRef={supplierAcRef}
                   autoFocus
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
                       const typed = (e.target as HTMLInputElement).value.trim();
-                      if (supplierId) {
-                        e.preventDefault();
-                        const firstLine = lines[0];
-                        if (firstLine) setTimeout(() => imeiInputRefs.current[firstLine.id]?.focus(), 50);
-                        return;
-                      }
                       if (!typed) {
                         e.preventDefault();
-                        return;
-                      }
-                      const existsInSuppliers = suppliers.find((s) => s.name.toLowerCase() === typed.toLowerCase());
-                      const existsInCash = cashAccounts.find((c) => c.name.toLowerCase() === typed.toLowerCase());
-                      if (existsInSuppliers || existsInCash) {
-                        const match = existsInSuppliers || existsInCash;
-                        if (match) {
-                          setSupplierId(match._id);
-                          setSupplierName(match.name);
-                          setSupplierAddress((match as any).address || '');
-                        }
                         const firstLine = lines[0];
                         if (firstLine) setTimeout(() => imeiInputRefs.current[firstLine.id]?.focus(), 50);
-                      } else {
+                        return;
+                      }
+                      const exists = supplierCashOptions.find((s) => (s.name || '').toLowerCase() === typed.toLowerCase());
+                      if (exists) {
                         e.preventDefault();
                         e.stopPropagation();
-                        setPendingSupplierName(typed);
-                        navigate('/master/supplier-create', { state: { prefillName: typed, returnTo: '/entry/purchase-order' } });
+                        handleSupplierSelect(exists);
+                        setIsSaved(false);
+                        const firstLine = lines[0];
+                        if (firstLine) setTimeout(() => imeiInputRefs.current[firstLine.id]?.focus(), 50);
+                        return;
                       }
+                      if (supplierAcListboxOpen) {
+                        const isPrefixOfSome = supplierCashOptions.some((s) => (s.name || '').toLowerCase().startsWith(typed.toLowerCase()));
+                        if (isPrefixOfSome) return;
+                      }
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setCreateSupplierConfirmName(typed);
+                      setCreateSupplierConfirmOpen(true);
                     }
                   }}
-                  sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }}
+                  sx={{
+                    '& .MuiOutlinedInput-root': { borderRadius: 1.5 },
+                    '& .MuiInputBase-input': { fontSize: '0.75rem' },
+                    '& .MuiInputLabel-root': { fontSize: '0.75rem' },
+                  }}
                 />
               )}
             />
           </Grid>
-          <Grid item xs={6} sm={6} md={2.5} lg={2.2}>
+          <Grid item xs={6} sm={3.75} md={3.125} lg={3.125}>
             <TextField
-              label="Supplier Name"
               size="small"
-              value={supplierAddress}
-              onChange={(e) => setSupplierAddress(e.target.value)}
+              label="Supplier Name"
               fullWidth
+              value={supplierName}
+              onChange={(e) => setSupplierName(e.target.value)}
               InputLabelProps={{ shrink: true }}
-              sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 }, ...(supplierId ? { '& .MuiOutlinedInput-root': { bgcolor: '#f1f5f9' } } : {}) }}
+              InputProps={{ readOnly: !!supplierId || !!cashAccountId }}
+              sx={{
+                '& .MuiOutlinedInput-root': { borderRadius: 1.5 },
+                '& .MuiInputBase-input': { fontSize: '0.75rem' },
+                '& .MuiInputLabel-root': { fontSize: '0.75rem' },
+                ...(supplierId || cashAccountId ? { '& .MuiOutlinedInput-root': { bgcolor: '#f1f5f9', borderRadius: 1.5 } } : {}),
+              }}
             />
           </Grid>
           <Grid item xs={12} sm={6} md={3} lg={2.5}>
@@ -2177,11 +2224,11 @@ export default function PurchaseOrderEntry() {
             <TableHead>
               <TableRow>
                 <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '2.5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Sl</TableCell>
-                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '9%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Int Barcode</TableCell>
-                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '14%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Item Name</TableCell>
-                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '6%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Unit</TableCell>
-                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Qty</TableCell>
-                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '6%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>P Rate</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '11.7%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Int Barcode</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '21.875%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Item Name</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '7.2%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Unit</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '6.5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Qty</TableCell>
+                <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '7.8%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>P Rate</TableCell>
                 <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '6.5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Gross</TableCell>
                 <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>DISC%</TableCell>
                 <TableCell sx={{ background: '#d53e4f', color: 'white', fontWeight: 600, width: '5%', p: 0.5, textAlign: 'center', fontSize: '0.75rem' }}>Disc</TableCell>
@@ -2233,14 +2280,12 @@ export default function PurchaseOrderEntry() {
                         }
                       }}
                       onHighlightChange={handleProductHighlight}
-                      renderInput={(params) => <TextField {...params} size="small" variant="outlined" inputRef={(el) => { itemNameInputRefs.current[line.id] = el; }} onKeyDown={(e) => handleItemNameKeyDown(e, line)} sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.75, fontSize: '0.875rem' } }} />}
+                      renderInput={(params) => <TextField {...params} size="small" variant="outlined" inputRef={(el) => { itemNameInputRefs.current[line.id] = el; }} onFocus={() => handleItemNameFocus(line)} onBlur={() => handleItemNameBlur(line)} onKeyDown={(e) => handleItemNameKeyDown(e, line)} sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.75, fontSize: '0.875rem' } }} />}
                       renderOption={(props, opt) => (
                         <li {...props} key={opt._id} style={{
-                          fontSize: '0.875rem',
+                          fontSize: '1.09375rem',
                           fontWeight: 400,
                           padding: '6px 16px',
-                          background: '#ffffff',
-                          color: '#555555',
                           cursor: 'pointer'
                         }}>
                           {opt.name}
@@ -2261,46 +2306,24 @@ export default function PurchaseOrderEntry() {
                             minHeight: 'auto',
                             py: 0.75,
                             px: 2,
-                            fontSize: '0.875rem',
+                            fontSize: '1.09375rem',
                             bgcolor: 'transparent',
+                            '&:hover': {
+                              bgcolor: 'rgba(79, 195, 197, 0.25) !important',
+                              color: '#1e293b'
+                            },
                             '&[data-focus="true"]': {
-                              bgcolor: '#0f766e !important',
+                              bgcolor: '#4fc3c5 !important',
                               color: '#ffffff !important'
                             },
                             '&[aria-selected="true"]': {
-                              bgcolor: '#0f766e !important',
+                              bgcolor: '#4fc3c5 !important',
                               color: '#ffffff !important'
                             },
                             '&.Mui-focused': {
-                              bgcolor: '#0f766e !important',
+                              bgcolor: '#4fc3c5 !important',
                               color: '#ffffff !important'
                             }
-                          }
-                        }
-                      }}
-                      componentsProps={{
-                        popper: {
-                          placement: 'bottom-start',
-                          modifiers: [
-                            {
-                              name: 'flip',
-                              enabled: false
-                            },
-                            {
-                              name: 'preventOverflow',
-                              enabled: false
-                            }
-                          ]
-                        },
-                        paper: {
-                          sx: {
-                            width: '300px',
-                            boxShadow: '0 4px 15px rgba(79,195,197,0.3)',
-                            borderRadius: '10px',
-                            border: '2px solid #4fc3c5',
-                            bgcolor: '#ffffff',
-                            overflow: 'hidden',
-                            mt: 0.5
                           }
                         }
                       }}
@@ -2888,6 +2911,47 @@ export default function PurchaseOrderEntry() {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setHoldListDialogOpen(false)}>Close</Button>
+        </DialogActions>
+      </Dialog>
+      {/* Create supplier confirm dialog */}
+      <Dialog
+        open={createSupplierConfirmOpen}
+        onClose={() => { setCreateSupplierConfirmOpen(false); setCreateSupplierConfirmName(null); }}
+        PaperProps={{ sx: { borderRadius: 2, minWidth: 360 } }}
+        TransitionProps={{
+          onEntered: (node) => {
+            const yesBtn = (node as HTMLElement).querySelector<HTMLButtonElement>('[data-create-supplier-yes]');
+            yesBtn?.focus();
+          },
+        }}
+      >
+        <DialogTitle sx={{ fontWeight: 700, fontSize: '1rem', color: '#0f766e' }}>Create account?</DialogTitle>
+        <DialogContent>
+          <Typography sx={{ fontSize: '0.9rem', color: '#475569' }}>
+            This account doesn&apos;t exist. Do you want to create it{createSupplierConfirmName ? ` for "${createSupplierConfirmName}"` : ''}?
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 2, pb: 2 }}>
+          <Button onClick={() => { setCreateSupplierConfirmOpen(false); setCreateSupplierConfirmName(null); }} sx={{ textTransform: 'none', borderRadius: 1.5, color: '#64748b' }}>
+            No
+          </Button>
+          <Button
+            variant="contained"
+            data-create-supplier-yes
+            autoFocus
+            onClick={() => {
+              const name = createSupplierConfirmName;
+              setCreateSupplierConfirmOpen(false);
+              setCreateSupplierConfirmName(null);
+              if (name) {
+                setPendingSupplierName(name);
+                navigate('/master/supplier-create', { state: { prefillName: name, returnTo: '/entry/purchase-order' } });
+              }
+            }}
+            sx={{ textTransform: 'none', borderRadius: 1.5, bgcolor: '#0f766e', '&:hover': { bgcolor: '#0d6561' }, boxShadow: 'none' }}
+          >
+            Yes
+          </Button>
         </DialogActions>
       </Dialog>
     </Box>

@@ -38,6 +38,7 @@ interface LineItem {
   batchMaxPieces?: number;
   /** Batch number selected for this line (used for cross-row batch cap checks) */
   batchNumber?: string;
+  isCommitted: boolean;
 }
 
 interface MultiUnit {
@@ -64,6 +65,7 @@ const emptyLine = (): LineItem => ({
   quantity: 0, price: 0, purchasePrice: 0, gross: 0,
   discPercent: 0, discAmount: 0, vatAmount: 0, total: 0,
   baseStockPieces: 0,
+  isCommitted: false,
 });
 
 /* ════════════════════════════════════════════════════════════ */
@@ -222,6 +224,7 @@ export default function QuotationSales() {
   const narrationRef = useRef<HTMLInputElement>(null);
   const imeiInputRefs = useRef<{ [key: string]: HTMLInputElement | null }>({});
   const itemNameInputRefs = useRef<{ [key: string]: HTMLInputElement | null }>({});
+  const itemNameSnapshotRef = useRef<{ lineId: string, data: LineItem } | null>(null);
   const itemNameListboxOpenRef = useRef(false);
 
   const unitInputRefs = useRef<{ [key: string]: HTMLInputElement | null }>({});
@@ -966,11 +969,25 @@ export default function QuotationSales() {
     rowCommittedRef.current = false;
   }, []);
 
+  const handleItemNameFocus = useCallback((line: LineItem) => {
+    itemNameSnapshotRef.current = { lineId: line.id, data: { ...line } };
+  }, []);
+
+  const handleItemNameBlur = useCallback((line: LineItem) => {
+    const snap = itemNameSnapshotRef.current;
+    if (snap && snap.lineId === line.id && snap.data.productId && !line.productId && snap.data.isCommitted) {
+      setLines((prev) =>
+        prev.map((l) => (l.id === line.id ? { ...l, ...snap.data } : l))
+      );
+    }
+    itemNameSnapshotRef.current = null;
+  }, []);
+
   // Called when user enters a row (click or focus from keyboard navigation)
   const enterRow = useCallback((line: LineItem) => {
     if (rowSnapshotRef.current && rowSnapshotRef.current.lineId === line.id) return;
     revertUncommittedRow();
-    if (line.productId) {
+    if (line.isCommitted) {
       rowSnapshotRef.current = {
         lineId: line.id,
         data: { ...line, availableUnits: [...line.availableUnits] },
@@ -1193,6 +1210,7 @@ export default function QuotationSales() {
       // Mark current row as committed (edits are accepted)
       rowCommittedRef.current = true;
       rowSnapshotRef.current = null;
+      updateLine(line.id, 'isCommitted', true);
 
       const currentIndex = lines.findIndex((l) => l.id === line.id);
 
@@ -2053,6 +2071,8 @@ export default function QuotationSales() {
                           {...params}
                           variant="outlined"
                           inputRef={(el) => { itemNameInputRefs.current[line.id] = el; }}
+                          onFocus={() => handleItemNameFocus(line)}
+                          onBlur={() => handleItemNameBlur(line)}
                           onKeyDown={(e) => handleItemNameKeyDown(e, line)}
                           inputProps={{ ...params.inputProps, style: { fontSize: '0.82rem' } }}
                           sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, py: 0, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: '3px !important' } }}

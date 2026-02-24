@@ -117,6 +117,7 @@ interface LineItem {
   specialPrice1: number;
   specialPrice2: number;
   batchNumber: string;
+  isCommitted: boolean;
 }
 
 interface MultiUnit {
@@ -233,6 +234,7 @@ const emptyLine = (): LineItem => ({
   specialPrice1: 0,
   specialPrice2: 0,
   batchNumber: '',
+  isCommitted: false,
 });
 
 export default function PurchaseEntry() {
@@ -307,6 +309,7 @@ export default function PurchaseEntry() {
   // Refs for input fields to enable focus navigation
   const imeiInputRefs = useRef<{ [key: string]: HTMLInputElement | null }>({});
   const itemNameInputRefs = useRef<{ [key: string]: HTMLInputElement | null }>({});
+  const itemNameSnapshotRef = useRef<{ lineId: string, data: LineItem } | null>(null);
   const unitInputRefs = useRef<{ [key: string]: HTMLInputElement | null }>({});
   const qtyInputRefs = useRef<{ [key: string]: HTMLInputElement | null }>({});
   const priceInputRefs = useRef<{ [key: string]: HTMLInputElement | null }>({});
@@ -572,6 +575,7 @@ export default function PurchaseEntry() {
           specialPrice2: l.specialPrice2,
           batchNumber: l.batchNumber ?? '',
           multiUnitId: l.multiUnitId,
+          isCommitted: true,
         };
       });
     } else if (state.batches) {
@@ -607,6 +611,7 @@ export default function PurchaseEntry() {
           specialPrice2: b.specialPrice2 ?? 0,
           batchNumber: b.batchNumber ?? '',
           multiUnitId: b.multiUnitId,
+          isCommitted: true,
         };
       });
     } else {
@@ -842,6 +847,7 @@ export default function PurchaseEntry() {
           specialPrice1: b.specialPrice1,
           specialPrice2: b.specialPrice2,
           batchNumber: b.batchNumber,
+          isCommitted: true,
         };
       });
 
@@ -1372,6 +1378,21 @@ export default function PurchaseEntry() {
     rowCommittedRef.current = false;
   }, []);
 
+  const handleItemNameFocus = useCallback((line: LineItem) => {
+    itemNameSnapshotRef.current = { lineId: line.id, data: { ...line } };
+  }, []);
+
+  // Item name blur: if user cleared and did not select a product, restore from snapshot
+  const handleItemNameBlur = useCallback((line: LineItem) => {
+    const snap = itemNameSnapshotRef.current;
+    if (snap && snap.lineId === line.id && snap.data.productId && !line.productId && snap.data.isCommitted) {
+      setLines((prev) =>
+        prev.map((l) => (l.id === line.id ? { ...l, ...snap.data } : l))
+      );
+    }
+    itemNameSnapshotRef.current = null;
+  }, []);
+
   // Called when user enters a row (click or focus from keyboard navigation)
   const enterRow = useCallback((line: LineItem) => {
     // If we're entering the same row we're already on, do nothing
@@ -1380,8 +1401,8 @@ export default function PurchaseEntry() {
     // If switching from another filled row that wasn't committed, revert it
     revertUncommittedRow();
 
-    // Take a snapshot of this row if it already has a product (existing filled row)
-    if (line.productId) {
+    // Take a snapshot of this row if it was previously committed
+    if (line.isCommitted) {
       rowSnapshotRef.current = {
         lineId: line.id,
         data: { ...line, availableUnits: [...line.availableUnits] },
@@ -1491,6 +1512,7 @@ export default function PurchaseEntry() {
           // ── Valid → commit row (only Enter in Wholesale finalizes) ──
           rowCommittedRef.current = true;
           rowSnapshotRef.current = null;
+          updateLine(lineId, 'isCommitted', true);
 
           // Move to next row's Item Name, or add new row
           if (currentIndex >= 0 && currentIndex < current.length - 1) {
@@ -1802,7 +1824,7 @@ export default function PurchaseEntry() {
     setSupplierName(held.supplierName);
     setSupplierAddress(held.supplierAddress);
     setCashAccountId(held.cashAccountId);
-    setLines(held.lines.length > 0 ? held.lines : [emptyLine()]);
+    setLines(held.lines.length > 0 ? held.lines.map(l => ({ ...l, isCommitted: true })) : [emptyLine()]);
     setOtherDiscPercent(held.otherDiscPercent);
     setOtherDiscount(held.otherDiscount);
     setOtherCharges(held.otherCharges);
@@ -2196,7 +2218,6 @@ export default function PurchaseEntry() {
               onOpen={() => setSupplierAcListboxOpen(true)}
               onClose={() => setSupplierAcListboxOpen(false)}
               autoHighlight
-              autoSelect
               isOptionEqualToValue={(opt, val) => opt._id === val._id}
               slotProps={{
                 paper: {
@@ -2552,9 +2573,8 @@ export default function PurchaseEntry() {
                       onOpen={() => { itemNameListboxOpenRef.current = true; }}
                       onClose={() => { itemNameListboxOpenRef.current = false; }}
                       onHighlightChange={handleProductHighlight}
-                      autoSelect
                       autoHighlight
-                      renderInput={(params) => <TextField {...params} size="small" variant="outlined" inputRef={(el) => { itemNameInputRefs.current[line.id] = el; }} onKeyDownCapture={(e) => { if (e.key === 'Enter') handleItemNameKeyDown(e, line); }} sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.75, fontSize: '0.875rem' } }} />}
+                      renderInput={(params) => <TextField {...params} size="small" variant="outlined" inputRef={(el) => { itemNameInputRefs.current[line.id] = el; }} onFocus={() => handleItemNameFocus(line)} onBlur={() => handleItemNameBlur(line)} onKeyDownCapture={(e) => { if (e.key === 'Enter') handleItemNameKeyDown(e, line); }} sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.75, fontSize: '0.875rem' } }} />}
                       renderOption={(props, opt) => (
                         <li {...props} key={opt._id} style={{
                           fontSize: '1.09375rem',

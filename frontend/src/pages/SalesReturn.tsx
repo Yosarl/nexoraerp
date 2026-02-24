@@ -77,6 +77,7 @@ interface LineItem {
   vatAmount: number;
   total: number;
   batchNumber?: string;
+  isCommitted: boolean;
 }
 
 interface Customer {
@@ -151,6 +152,7 @@ const emptyLine = (): LineItem => ({
   unitId: '', unitName: '', availableUnits: [],
   quantity: 0, price: 0, purchasePrice: 0, gross: 0,
   discPercent: 0, discAmount: 0, vatAmount: 0, total: 0,
+  isCommitted: false,
 });
 
 export default function SalesReturn() {
@@ -321,6 +323,7 @@ export default function SalesReturn() {
         discAmount: disc,
         vatAmount,
         total: lineTotal,
+        isCommitted: true,
       };
     });
     setLines(newLines.length > 0 ? newLines : [emptyLine()]);
@@ -474,6 +477,7 @@ export default function SalesReturn() {
   };
 
   const itemNameInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const itemNameSnapshotRef = useRef<{ lineId: string, data: LineItem } | null>(null);
   const itemNameListboxOpenRef = useRef(false);
   const qtyInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const priceInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
@@ -750,6 +754,7 @@ export default function SalesReturn() {
         discAmount: disc,
         vatAmount,
         total: lineTotal,
+        isCommitted: true,
       };
     });
     setLines(newLines.length > 0 ? newLines : [emptyLine()]);
@@ -797,10 +802,24 @@ export default function SalesReturn() {
     rowCommittedRef.current = false;
   }, []);
 
+  const handleItemNameFocus = useCallback((line: LineItem) => {
+    itemNameSnapshotRef.current = { lineId: line.id, data: { ...line } };
+  }, []);
+
+  const handleItemNameBlur = useCallback((line: LineItem) => {
+    const snap = itemNameSnapshotRef.current;
+    if (snap && snap.lineId === line.id && snap.data.productId && !line.productId && snap.data.isCommitted) {
+      setLines((prev) =>
+        prev.map((l) => (l.id === line.id ? { ...l, ...snap.data } : l))
+      );
+    }
+    itemNameSnapshotRef.current = null;
+  }, []);
+
   const enterRow = useCallback((line: LineItem) => {
     if (rowSnapshotRef.current && rowSnapshotRef.current.lineId === line.id) return;
     revertUncommittedRow();
-    if (line.productId) {
+    if (line.isCommitted) {
       rowSnapshotRef.current = {
         lineId: line.id,
         data: { ...line, availableUnits: [...line.availableUnits] },
@@ -989,6 +1008,7 @@ export default function SalesReturn() {
 
       rowCommittedRef.current = true;
       rowSnapshotRef.current = null;
+      updateLine(line.id, 'isCommitted', true);
 
       const currentIndex = lines.findIndex((l) => l.id === line.id);
       if (currentIndex >= 0 && currentIndex < lines.length - 1) {
@@ -1734,6 +1754,8 @@ export default function SalesReturn() {
                             variant="outlined"
                             placeholder="Item name"
                             inputRef={(el) => { itemNameInputRefs.current[line.id] = el; }}
+                            onFocus={() => handleItemNameFocus(line)}
+                            onBlur={() => handleItemNameBlur(line)}
                             onKeyDown={(e) => handleItemNameKeyDown(e, line)}
                             sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.3, fontSize: '0.82rem' } }}
                           />
@@ -1769,6 +1791,8 @@ export default function SalesReturn() {
                         value={line.name}
                         onChange={(e) => updateLine(line.id, 'name', e.target.value)}
                         inputRef={(el) => { itemNameInputRefs.current[line.id] = el; }}
+                        onFocus={() => handleItemNameFocus(line)}
+                        onBlur={() => handleItemNameBlur(line)}
                         onKeyDown={(e) => handleItemNameKeyDown(e, line)}
                         fullWidth
                         placeholder="Item name"

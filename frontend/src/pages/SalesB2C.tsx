@@ -92,6 +92,7 @@ interface LineItem {
   discAmount: number;
   vatAmount: number;
   total: number;
+  isCommitted: boolean;
 }
 
 interface MultiUnit {
@@ -203,6 +204,7 @@ const emptyLine = (): LineItem => ({
   discAmount: 0,
   vatAmount: 0,
   total: 0,
+  isCommitted: false,
 });
 
 export default function SalesB2C() {
@@ -678,6 +680,7 @@ export default function SalesB2C() {
         discAmount: l.discAmount ?? 0,
         vatAmount: l.vatAmount ?? 0,
         total: l.total,
+        isCommitted: true,
       };
     });
     setLines(newLines.length > 0 ? newLines : [emptyLine()]);
@@ -831,7 +834,7 @@ export default function SalesB2C() {
   // Item name blur: if user cleared and did not select a product, restore from snapshot
   const handleItemNameBlur = useCallback((line: LineItem) => {
     const snap = itemNameSnapshotRef.current;
-    if (snap && snap.lineId === line.id && snap.data.productId && !line.productId) {
+    if (snap && snap.lineId === line.id && snap.data.productId && !line.productId && snap.data.isCommitted) {
       setLines((prev) =>
         prev.map((l) => (l.id === line.id ? { ...l, ...snap.data } : l))
       );
@@ -1414,8 +1417,8 @@ export default function SalesB2C() {
     // If switching from another filled row that wasn't committed, revert it
     revertUncommittedRow();
 
-    // Take a snapshot of this row if it already has a product (existing filled row)
-    if (line.productId) {
+    // Take a snapshot of this row if it was previously committed
+    if (line.isCommitted) {
       rowSnapshotRef.current = {
         lineId: line.id,
         data: { ...line, availableUnits: [...line.availableUnits] },
@@ -1580,6 +1583,7 @@ export default function SalesB2C() {
       // Mark current row as committed (edits are accepted)
       rowCommittedRef.current = true;
       rowSnapshotRef.current = null;
+      updateLine(line.id, 'isCommitted', true);
 
       const currentIndex = lines.findIndex((l) => l.id === line.id);
 
@@ -1603,6 +1607,8 @@ export default function SalesB2C() {
       setLines((prev) => [...prev, newLine]);
 
       // Focus on new row's Item Name field
+      enterRow(newLine);
+      setActiveLineId(newLine.id);
       setTimeout(() => {
         const itemNameInput = itemNameInputRefs.current[newLine.id];
         if (itemNameInput) {
@@ -1610,7 +1616,7 @@ export default function SalesB2C() {
         }
       }, 100);
     }
-  }, [lines, enterRow]);
+  }, [lines, enterRow, updateLine]);
 
   // Handle QTY blur — if qty exceeds stock, show dialog and keep focus on QTY field
   const handleQtyBlur = useCallback((line: LineItem) => {
@@ -1878,7 +1884,7 @@ export default function SalesB2C() {
     setCashAccountId(held.cashAccountId);
     setCardAccountId(held.cardAccountId);
     setCardAmount(held.cardAmount);
-    setLines(held.lines.length > 0 ? held.lines : [emptyLine()]);
+    setLines(held.lines.length > 0 ? held.lines.map(l => ({ ...l, isCommitted: true })) : [emptyLine()]);
     setCashReceived(held.cashReceived);
     setOldBalance(held.oldBalance);
     setOtherDiscPercent(held.otherDiscPercent);
@@ -2440,6 +2446,7 @@ export default function SalesB2C() {
             discAmount: disc,
             vatAmount: vat,
             total,
+            isCommitted: true,
           };
         })
       );
@@ -3086,7 +3093,7 @@ export default function SalesB2C() {
                 <TableRow
                   key={line.id}
                   sx={{
-                    bgcolor: idx === 0 && !line.productId ? '#fffbeb' : (idx % 2 === 0 ? '#f8fafb' : 'white'),
+                    bgcolor: activeLineId === line.id ? '#e0f7fa' : (idx === 0 && !line.productId ? '#fffbeb' : (idx % 2 === 0 ? '#f8fafb' : 'white')),
                     cursor: 'pointer',
                     '&:hover': { bgcolor: '#e0f7fa' },
                     transition: 'background-color 0.1s',
