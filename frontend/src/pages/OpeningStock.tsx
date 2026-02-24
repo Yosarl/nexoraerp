@@ -635,8 +635,9 @@ export default function OpeningStock() {
         })
       );
       setActiveLineId(lineId);
-      rowCommittedRef.current = true;
-      rowSnapshotRef.current = null;
+      if (!rowSnapshotRef.current) {
+        rowCommittedRef.current = true;
+      }
 
       let actualStock = 0;
       try {
@@ -965,11 +966,11 @@ export default function OpeningStock() {
         setSelectedProductInfo((prev) =>
           prev
             ? {
-                ...prev,
-                purchaseRate: newPrice,
-                retailPrice: newRetail,
-                wholesalePrice: newWholesale,
-              }
+              ...prev,
+              purchaseRate: newPrice,
+              retailPrice: newRetail,
+              wholesalePrice: newWholesale,
+            }
             : null
         );
       }
@@ -1450,8 +1451,8 @@ export default function OpeningStock() {
                     >
                       {activeMultiUnitInfo?.pcsInside
                         ? (
-                            selectedProductInfo.purchaseRate * activeMultiUnitInfo.pcsInside
-                          ).toFixed(2)
+                          selectedProductInfo.purchaseRate * activeMultiUnitInfo.pcsInside
+                        ).toFixed(2)
                         : selectedProductInfo.purchaseRate.toFixed(2)}
                     </Typography>
                   </Box>

@@ -144,9 +144,23 @@ export default function QuotationSales() {
     stock?: number; totalStock?: number; lastVendor?: string; batchNumber?: string; expiryDate?: string;
   } | null>(null);
   const [activeLineId, setActiveLineId] = useState<string | null>(null);
-  const [activeMultiUnitInfo, setActiveMultiUnitInfo] = useState<{
-    pcsInside?: number; wholesale?: number; retail?: number; specialPrice1?: number; specialPrice2?: number;
-  } | null>(null);
+  // Derive multi-unit info from current lines state (always up-to-date)
+  const activeMultiUnitInfo = useMemo(() => {
+    if (!activeLineId) return null;
+    const line = lines.find((l) => l.id === activeLineId);
+    if (!line || !line.unitId) return null;
+    const unit = line.availableUnits.find((u) => u.id === line.unitId);
+    if (!unit?.isMultiUnit) return null;
+    return {
+      name: unit.name,
+      pcsInside: unit.conversion,
+      multiUnitPrice: unit.price,
+      wholesale: unit.wholesale,
+      retail: unit.retail,
+      specialPrice1: unit.specialPrice1,
+      specialPrice2: unit.specialPrice2,
+    };
+  }, [activeLineId, lines]);
 
   // Batch selection (for products with allowBatches and multiple batches)
   const batchRowRefs = useRef<{ [key: number]: HTMLTableRowElement | null }>({});
@@ -471,7 +485,7 @@ export default function QuotationSales() {
         mainPrice = selectedBatch?.retail ?? product.retailPrice ?? 0;
       }
       mainPrice = parseFloat(mainPrice.toFixed(2));
-      const purchaseRate = selectedBatch?.purchasePrice ?? product.purchasePrice ?? 0;
+      const purchaseRate = (product as any).purchasePrice ?? selectedBatch?.purchasePrice ?? 0;
 
       // Build available units
       const availableUnits: UnitOption[] = [];
@@ -522,9 +536,7 @@ export default function QuotationSales() {
       const usePrice = parseFloat((selectedUnit?.price ?? mainPrice).toFixed(2));
 
       if (selectedUnit?.isMultiUnit) {
-        setActiveMultiUnitInfo({ pcsInside: selectedUnit.conversion, wholesale: selectedUnit.wholesale, retail: selectedUnit.retail, specialPrice1: selectedUnit.specialPrice1, specialPrice2: selectedUnit.specialPrice2 });
       } else {
-        setActiveMultiUnitInfo(null);
       }
 
       let totalStock = 0;
@@ -588,8 +600,9 @@ export default function QuotationSales() {
       });
       setActiveLineId(lineId);
 
-      rowCommittedRef.current = true;
-      rowSnapshotRef.current = null;
+      if (!rowSnapshotRef.current) {
+        rowCommittedRef.current = true;
+      }
 
       setLines((prev) =>
         prev.map((line) => {
@@ -789,9 +802,6 @@ export default function QuotationSales() {
       setSelectedProductInfo((prev) => prev ? { ...prev, profit } : null);
 
       if (isMulti) {
-        setActiveMultiUnitInfo({ pcsInside: selectedUnit.conversion, wholesale: selectedUnit.wholesale, retail: selectedUnit.retail, specialPrice1: selectedUnit.specialPrice1, specialPrice2: selectedUnit.specialPrice2 });
-      } else {
-        setActiveMultiUnitInfo(null);
       }
     },
     [vatType, lines, rateType, calcVatAndTotal]
@@ -1122,12 +1132,16 @@ export default function QuotationSales() {
       e.preventDefault();
       const currentIndex = lines.findIndex((l) => l.id === line.id);
       const isLastRow = currentIndex === lines.length - 1;
-      const isBlank = !line.productCode || line.quantity <= 0 || line.price <= 0;
+
+      const inputVal = qtyInputRefs.current[line.id]?.value;
+      const currentQty = (inputVal !== undefined && inputVal !== '') ? (parseFloat(inputVal) || 0) : line.quantity;
+
+      const isBlank = !line.productCode || currentQty <= 0 || line.price <= 0;
       if (isLastRow && isBlank) {
         setTimeout(() => saveButtonRef.current?.focus(), 50);
         return;
       }
-      if (line.quantity > 0) {
+      if (currentQty > 0) {
         const priceInput = priceInputRefs.current[line.id];
         if (priceInput) {
           priceInput.focus();
@@ -1272,7 +1286,6 @@ export default function QuotationSales() {
     setActiveLineId(line.id);
     if (!line.productId) {
       setSelectedProductInfo(null);
-      setActiveMultiUnitInfo(null);
       return;
     }
     const product = products.find((p) => p._id === line.productId);
@@ -1282,9 +1295,7 @@ export default function QuotationSales() {
     const profit = line.price - multiCost;
 
     if (isMulti && unit) {
-      setActiveMultiUnitInfo({ pcsInside: unit.conversion, wholesale: unit.wholesale, retail: unit.retail, specialPrice1: unit.specialPrice1, specialPrice2: unit.specialPrice2 });
     } else {
-      setActiveMultiUnitInfo(null);
     }
 
     // Show cached stock immediately
@@ -1318,7 +1329,7 @@ export default function QuotationSales() {
     setOtherCharges(0); setFreightCharge(0); setRoundOff(0);
     setNarration('');
     setIsSaved(false);
-    setSelectedProductInfo(null); setActiveLineId(null); setActiveMultiUnitInfo(null);
+    setSelectedProductInfo(null); setActiveLineId(null);
     setBillingAddress(''); setBillingPhone(''); setBillingNarration('');
     setShippingName(''); setShippingAddress(''); setShippingPhone(''); setShippingContactPerson('');
     loadNextInvoiceNo();
@@ -1886,7 +1897,7 @@ export default function QuotationSales() {
                   <Box sx={{ minWidth: 0 }}>
                     <Typography sx={{ fontSize: '0.62rem', lineHeight: 1, color: '#64748b', fontWeight: 500 }}>P.Rate</Typography>
                     <Typography sx={{ fontSize: '0.85rem', fontWeight: 700, lineHeight: 1.3 }}>
-                      {activeMultiUnitInfo?.pcsInside
+                      {activeMultiUnitInfo && activeMultiUnitInfo.pcsInside
                         ? (selectedProductInfo.purchaseRate * activeMultiUnitInfo.pcsInside).toFixed(2)
                         : selectedProductInfo.purchaseRate.toFixed(2)}
                     </Typography>
@@ -1894,9 +1905,17 @@ export default function QuotationSales() {
                   <Box sx={{ minWidth: 0, px: 1, py: 0.3, bgcolor: '#fef2f2', borderRadius: 1 }}>
                     <Typography sx={{ fontSize: '0.62rem', lineHeight: 1, color: '#dc2626', fontWeight: 600 }}>Stock</Typography>
                     <Typography sx={{ fontSize: '1rem', fontWeight: 800, lineHeight: 1.3, color: '#dc2626' }}>
-                      {activeMultiUnitInfo?.pcsInside
-                        ? ((selectedProductInfo.totalStock ?? selectedProductInfo.stock ?? 0) / activeMultiUnitInfo.pcsInside).toFixed(2)
-                        : (selectedProductInfo.totalStock ?? selectedProductInfo.stock ?? '-')}
+                      {(() => {
+                        const basePieces = selectedProductInfo.totalStock ?? selectedProductInfo.stock;
+                        const isNum = typeof basePieces === 'number';
+                        const pcsInside = activeMultiUnitInfo?.pcsInside;
+                        if (isNum && pcsInside && pcsInside > 0) {
+                          const inUnit = basePieces / pcsInside;
+                          const unitName = activeMultiUnitInfo?.name ?? '';
+                          return `${basePieces} pcs${unitName ? ` (${inUnit.toFixed(2)} ${unitName})` : ''}`;
+                        }
+                        return isNum ? `${basePieces} pcs` : (basePieces ?? '-');
+                      })()}
                     </Typography>
                   </Box>
                   <Box sx={{ minWidth: 0 }}>
@@ -2028,7 +2047,6 @@ export default function QuotationSales() {
                       onClose={() => {
                         itemNameListboxOpenRef.current = false;
                       }}
-                      autoSelect
                       autoHighlight
                       renderInput={(params) => (
                         <TextField

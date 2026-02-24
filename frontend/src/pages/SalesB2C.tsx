@@ -1092,9 +1092,9 @@ export default function SalesB2C() {
       });
       setActiveLineId(lineId);
 
-      // Product selection is a fresh fill — auto-commit so it won't be reverted
-      rowCommittedRef.current = true;
-      rowSnapshotRef.current = null;
+      if (!rowSnapshotRef.current) {
+        rowCommittedRef.current = true;
+      }
 
       // Default quantity capped to available stock
       const defaultQty = Math.min(1, parseFloat(effectiveMaxQty.toFixed(4)));
@@ -1532,12 +1532,16 @@ export default function SalesB2C() {
       e.preventDefault();
       const currentIndex = lines.findIndex((l) => l.id === line.id);
       const isLastRow = currentIndex === lines.length - 1;
-      const isBlank = !line.productCode || line.quantity <= 0 || line.price <= 0;
+
+      const inputVal = qtyInputRefs.current[line.id]?.value;
+      const currentQty = (inputVal !== undefined && inputVal !== '') ? (parseFloat(inputVal) || 0) : line.quantity;
+
+      const isBlank = !line.productCode || currentQty <= 0 || line.price <= 0;
       if (isLastRow && isBlank) {
         setTimeout(() => cashReceivedRef.current?.focus(), 50);
         return;
       }
-      if (line.quantity > 0) {
+      if (currentQty > 0) {
         const priceInput = priceInputRefs.current[line.id];
         if (priceInput) {
           priceInput.focus();
@@ -3134,6 +3138,7 @@ export default function SalesB2C() {
                       filterOptions={productFilterOptions}
                       isOptionEqualToValue={(opt, val) => opt._id === val._id}
                       getOptionLabel={(opt) => (typeof opt === 'string' ? opt : opt.name || '')}
+                      value={products.find((p) => p._id === line.productId) || null}
                       inputValue={line.name}
                       onInputChange={(_, v) => {
                         if (v.trim() === '') {
@@ -3151,7 +3156,6 @@ export default function SalesB2C() {
                       onOpen={() => { itemNameListboxOpenRef.current = true; }}
                       onClose={() => { itemNameListboxOpenRef.current = false; }}
                       onHighlightChange={handleProductHighlight}
-                      autoSelect
                       autoHighlight
                       renderInput={(params) => (
                         <TextField

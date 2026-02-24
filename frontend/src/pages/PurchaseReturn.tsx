@@ -807,6 +807,9 @@ export default function PurchaseReturn() {
         })
       );
       setActiveLineId(lineId);
+      if (!rowSnapshotRef.current) {
+        rowCommittedRef.current = true;
+      }
       setSelectedProductInfo({
         purchaseRate: usePrice,
         lastVendor: (product as any).lastVendor ?? '-',

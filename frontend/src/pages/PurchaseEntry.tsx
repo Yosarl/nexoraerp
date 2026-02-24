@@ -1130,9 +1130,9 @@ export default function PurchaseEntry() {
       });
       setActiveLineId(lineId);
 
-      // Product selection is a fresh fill — auto-commit so it won't be reverted
-      rowCommittedRef.current = true;
-      rowSnapshotRef.current = null;
+      if (!rowSnapshotRef.current) {
+        rowCommittedRef.current = true;
+      }
 
       // Focus on qty field after product selection
       if (!searchedImei) {
@@ -2534,6 +2534,7 @@ export default function PurchaseEntry() {
                       filterOptions={productFilterOptions}
                       isOptionEqualToValue={(opt, val) => opt._id === val._id}
                       getOptionLabel={(opt) => (typeof opt === 'string' ? opt : opt.name || '')}
+                      value={products.find((p) => p._id === line.productId) || null}
                       inputValue={line.name}
                       onInputChange={(_, v) => {
                         updateLine(line.id, 'name', v);

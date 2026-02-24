@@ -4,7 +4,7 @@ import {
   Box, Paper, Typography, TextField, Button, Grid, IconButton,
   Autocomplete, Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
   Dialog, DialogTitle, DialogContent, DialogActions, RadioGroup, FormControlLabel, Radio,
-  MenuItem, Checkbox, FormControlLabel as MuiFormControlLabel, Divider,
+  MenuItem, Checkbox, FormControlLabel as MuiFormControlLabel, Divider, Tooltip,
 } from '@mui/material';
 import {
   Save as SaveIcon,
@@ -13,10 +13,16 @@ import {
   Print as PrintIcon,
   Edit as EditIcon,
   Search as SearchIcon,
+  KeyboardDoubleArrowLeft as FirstIcon,
+  KeyboardArrowLeft as PrevIcon,
+  KeyboardArrowRight as NextIcon,
+  KeyboardDoubleArrowRight as LastIcon,
+  PauseCircleOutline as HoldIcon,
+  PlaylistAdd as HoldListIcon,
 } from '@mui/icons-material';
 import { useSelector, useDispatch } from 'react-redux';
 import type { RootState } from '../store';
-import { salesApi, ledgerAccountApi, productApi } from '../services/api';
+import { salesApi, ledgerAccountApi, productApi, stockApi } from '../services/api';
 import DateInput, { getCurrentDate } from '../components/DateInput';
 import { setDrawerOpen } from '../store/slices/appSlice';
 
@@ -38,6 +44,7 @@ interface ProductOption {
   allowBatches?: boolean;
   retailPrice?: number;
   wholesalePrice?: number;
+  imei?: string;
 }
 
 interface UnitOption {
@@ -92,6 +99,50 @@ interface RefInvoiceItem {
   totalAmount: number;
   unitName?: string;
   unitId?: string;
+}
+
+interface HeldSalesReturn {
+  id: string;
+  heldAt: string;
+  customerName: string;
+  itemCount: number;
+  total: number;
+  invoiceNo: string;
+  date: string;
+  taxMode: 'inclusive' | 'exclusive';
+  vatType: 'Vat' | 'NonVat';
+  returnType: 'OnAccount' | 'ByRef';
+  customerId: string | null;
+  customerAddress: string;
+  billingAddress: string;
+  billingPhone: string;
+  cashAccountId: string | null;
+  lines: LineItem[];
+  otherDiscPercent: number;
+  otherDiscount: number;
+  otherCharges: number;
+  roundOff: number;
+  narration: string;
+  originalInvoiceIdForReturn: string | null;
+  refInvoiceNoInput: string;
+  refInvoiceData: any;
+  paymentType: 'Cash' | 'Credit';
+  rateType: 'Retail' | 'WSale' | 'Special1' | 'Special2';
+}
+
+const HOLD_STORAGE_KEY = 'salesReturn_heldInvoices';
+
+function loadHeldReturns(): HeldSalesReturn[] {
+  try {
+    const data = localStorage.getItem(HOLD_STORAGE_KEY);
+    return data ? JSON.parse(data) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveHeldReturns(returns: HeldSalesReturn[]): void {
+  localStorage.setItem(HOLD_STORAGE_KEY, JSON.stringify(returns));
 }
 
 const emptyLine = (): LineItem => ({
@@ -153,6 +204,9 @@ export default function SalesReturn() {
   const [narration, setNarration] = useState('');
   const [loading, setLoading] = useState(false);
   const [returnId, setReturnId] = useState<string | null>(null);
+  const [returnIds, setReturnIds] = useState<string[]>([]);
+  const [heldReturns, setHeldReturns] = useState<HeldSalesReturn[]>(loadHeldReturns());
+  const [holdListDialogOpen, setHoldListDialogOpen] = useState(false);
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
   const [searchDialogOpen, setSearchDialogOpen] = useState(false);
   const [searchInvoiceNo, setSearchInvoiceNo] = useState('');
@@ -181,11 +235,139 @@ export default function SalesReturn() {
     batchNumber?: string;
     expiryDate?: string;
   } | null>(null);
+  const rowSnapshotRef = useRef<{ lineId: string; data: LineItem } | null>(null);
+  const rowCommittedRef = useRef(false);
   const [activeLineId, setActiveLineId] = useState<string | null>(null);
   const rateTypeRef = useRef<HTMLInputElement>(null);
   const returnTypeRef = useRef<HTMLInputElement>(null);
   const refInvoiceNoRef = useRef<HTMLInputElement>(null);
   const imeiInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const stockCacheRef = useRef<Map<string, { stock: number; ts: number }>>(new Map());
+  const STOCK_CACHE_TTL = 30_000; // 30 seconds
+  const stockDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const getStockCached = useCallback(async (productId: string): Promise<number> => {
+    const cached = stockCacheRef.current.get(productId);
+    if (cached && Date.now() - cached.ts < STOCK_CACHE_TTL) return cached.stock;
+    try {
+      if (companyId) {
+        const stockRes = await stockApi.getProductStock(companyId, productId);
+        const stock = stockRes.data.data?.stock ?? 0;
+        stockCacheRef.current.set(productId, { stock, ts: Date.now() });
+        return stock;
+      }
+    } catch { /* fallback */ }
+    return cached?.stock ?? 0;
+  }, [companyId]);
+
+  const loadReturnIds = useCallback(async () => {
+    try {
+      if (!companyId || !financialYearId) return;
+      const res = await salesApi.listSalesReturns(companyId, financialYearId);
+      setReturnIds(res.data.data.map((r) => r._id));
+    } catch {
+      // ignore
+    }
+  }, [companyId, financialYearId]);
+
+  useEffect(() => {
+    loadReturnIds();
+  }, [loadReturnIds]);
+
+  const loadReturnForm = useCallback((data: any) => {
+    setReturnId(data._id);
+    setInvoiceNo(data.invoiceNo);
+    setDate(data.date ? new Date(data.date).toISOString().slice(0, 10) : getCurrentDate());
+    setReturnType((data.returnType || 'OnAccount') as 'OnAccount' | 'ByRef');
+    setOriginalInvoiceIdForReturn(data.originalInvoiceId ?? null);
+    setCustomerId(data.customerId ?? null);
+    setCustomerName(data.customerName ?? 'CASH');
+    setCustomerAddress(data.customerAddress ?? '');
+    setVatType((data.vatType as 'Vat' | 'NonVat') || 'Vat');
+    setTaxMode((data.taxMode as 'inclusive' | 'exclusive') || 'exclusive');
+    setOtherDiscount(data.otherDiscount ?? 0);
+    setOtherCharges(data.otherCharges ?? 0);
+    setRoundOff(data.roundOff ?? 0);
+    setNarration(data.narration ?? '');
+    if (data.cashAccountId) setCashAccountId(data.cashAccountId);
+
+    const newLines: LineItem[] = (data.items || []).map((it: any, idx: number) => {
+      const pid = typeof it.productId === 'object' && it.productId !== null ? it.productId._id : String(it.productId);
+      const name = typeof it.productId === 'object' && it.productId.name ? it.productId.name : (it.description || '');
+      const price = it.unitPrice ?? 0;
+      const qty = it.quantity ?? 0;
+      const disc = it.discount ?? 0;
+      const gross = qty * price;
+      const net = gross - disc;
+      const vatRate = data.vatType === 'NonVat' ? 0 : 5;
+      const vatAmount = parseFloat((net * (vatRate / 100)).toFixed(2));
+      const lineTotal = parseFloat((net + vatAmount).toFixed(2));
+      const uname = it.unitName || 'Pcs';
+      const uid = it.unitId || 'pcs';
+      return {
+        id: `loaded-${idx}-${Date.now()}`,
+        productId: pid,
+        productCode: it.productCode || '',
+        imei: it.imei || '',
+        name: name || '',
+        unitId: uid,
+        unitName: uname,
+        availableUnits: [{ id: uid, name: uname }],
+        quantity: qty,
+        price,
+        purchasePrice: it.costPriceAtSale ?? (it as any).purchasePrice ?? 0,
+        gross,
+        discPercent: gross > 0 ? (disc / gross) * 100 : 0,
+        discAmount: disc,
+        vatAmount,
+        total: lineTotal,
+      };
+    });
+    setLines(newLines.length > 0 ? newLines : [emptyLine()]);
+    rowSnapshotRef.current = null;
+    rowCommittedRef.current = false;
+  }, []);
+
+  const navigateToReturn = async (id: string) => {
+    setLoading(true);
+    try {
+      const res = await salesApi.getSalesReturn(id, companyId!);
+      if (res.data.data) {
+        loadReturnForm(res.data.data);
+      }
+    } catch {
+      setErrorDialogMessage('Failed to load sales return');
+      setErrorDialogOpen(true);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleFirstReturn = () => {
+    if (returnIds.length > 0) navigateToReturn(returnIds[0]);
+  };
+
+  const handlePrevReturn = () => {
+    if (!returnId || returnIds.length === 0) {
+      if (returnIds.length > 0) navigateToReturn(returnIds[returnIds.length - 1]);
+      return;
+    }
+    const currentIndex = returnIds.indexOf(returnId);
+    if (currentIndex > 0) navigateToReturn(returnIds[currentIndex - 1]);
+  };
+
+  const handleNextReturn = () => {
+    if (!returnId || returnIds.length === 0) {
+      if (returnIds.length > 0) navigateToReturn(returnIds[0]);
+      return;
+    }
+    const currentIndex = returnIds.indexOf(returnId);
+    if (currentIndex < returnIds.length - 1) navigateToReturn(returnIds[currentIndex + 1]);
+  };
+
+  const handleLastReturn = () => {
+    if (returnIds.length > 0) navigateToReturn(returnIds[returnIds.length - 1]);
+  };
 
   const handleCustomerSelect = useCallback((customer: Customer | null) => {
     if (!customer) {
@@ -204,6 +386,93 @@ export default function SalesReturn() {
     setBillingPhone(customer.phone || '');
     if (isCash) setPaymentType('Cash');
   }, []);
+
+  const handleHoldReturn = async () => {
+    if (returnId) {
+      setErrorDialogMessage('Cannot hold a saved return');
+      setErrorDialogOpen(true);
+      return;
+    }
+    const filledLines = lines.filter((l) => l.productId);
+    if (filledLines.length === 0) {
+      setErrorDialogMessage('Nothing to hold — add at least one product first');
+      setErrorDialogOpen(true);
+      return;
+    }
+    const held: HeldSalesReturn = {
+      id: Date.now().toString(),
+      heldAt: new Date().toLocaleString(),
+      customerName,
+      itemCount: filledLines.length,
+      total: calculations.grandTotal,
+      invoiceNo,
+      date,
+      taxMode,
+      vatType,
+      returnType,
+      customerId,
+      customerAddress,
+      billingAddress,
+      billingPhone,
+      cashAccountId,
+      lines,
+      otherDiscPercent,
+      otherDiscount,
+      otherCharges,
+      roundOff,
+      narration,
+      originalInvoiceIdForReturn,
+      refInvoiceNoInput,
+      refInvoiceData,
+      paymentType,
+      rateType,
+    };
+    const updated = [...heldReturns, held];
+    setHeldReturns(updated);
+    saveHeldReturns(updated);
+    setSavedDialogMessage(`Return held (${filledLines.length} items)`);
+    setSavedDialogOpen(true);
+    handleClear();
+  };
+
+  const handleRestoreHeldReturn = (held: HeldSalesReturn) => {
+    setReturnId(null);
+    setInvoiceNo(held.invoiceNo);
+    setDate(held.date);
+    setTaxMode(held.taxMode);
+    setVatType(held.vatType);
+    setReturnType(held.returnType);
+    setCustomerId(held.customerId);
+    setCustomerName(held.customerName);
+    setCustomerAddress(held.customerAddress);
+    setBillingAddress(held.billingAddress);
+    setBillingPhone(held.billingPhone);
+    setCashAccountId(held.cashAccountId);
+    setLines(held.lines.length > 0 ? held.lines : [emptyLine()]);
+    setOtherDiscPercent(held.otherDiscPercent);
+    setOtherDiscount(held.otherDiscount);
+    setOtherCharges(held.otherCharges);
+    setRoundOff(held.roundOff);
+    setNarration(held.narration);
+    setOriginalInvoiceIdForReturn(held.originalInvoiceIdForReturn);
+    setRefInvoiceNoInput(held.refInvoiceNoInput);
+    setRefInvoiceData(held.refInvoiceData);
+    setPaymentType(held.paymentType);
+    setRateType(held.rateType);
+
+    // Remove from held list
+    const updated = heldReturns.filter((h) => h.id !== held.id);
+    setHeldReturns(updated);
+    saveHeldReturns(updated);
+    setHoldListDialogOpen(false);
+  };
+
+  const handleDeleteHeldReturn = (heldId: string) => {
+    const updated = heldReturns.filter((h) => h.id !== heldId);
+    setHeldReturns(updated);
+    saveHeldReturns(updated);
+  };
+
   const itemNameInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const itemNameListboxOpenRef = useRef(false);
   const qtyInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
@@ -234,16 +503,69 @@ export default function SalesReturn() {
   const handleProductHighlight = useCallback((_e: React.SyntheticEvent, option: unknown) => {
     if (!option || typeof option === 'string') return;
     const product = option as ProductOption;
+
+    const cachedEntry = stockCacheRef.current.get(product._id);
+    const initialStock = cachedEntry?.stock ?? (product as any).stock ?? 0;
+
     setSelectedProductInfo({
       profit: 0,
       purchaseRate: product.purchasePrice ?? 0,
       lastVendor: (product as any).lastVendor ?? (product as any).lastSupplier ?? '-',
-      totalStock: (product as any).stock ?? 0,
+      totalStock: initialStock,
       previousPrice: (product as any).previousPrice ?? 0,
       retailPrice: product.retailPrice ?? 0,
       wholesalePrice: product.wholesalePrice ?? 0,
     });
-  }, []);
+
+    if (stockDebounceRef.current) clearTimeout(stockDebounceRef.current);
+    stockDebounceRef.current = setTimeout(async () => {
+      const actualStock = await getStockCached(product._id);
+      setSelectedProductInfo((prev) => prev ? { ...prev, totalStock: actualStock } : null);
+    }, 500);
+  }, [getStockCached]);
+
+  useEffect(() => {
+    if (stockDebounceRef.current) clearTimeout(stockDebounceRef.current);
+    if (!activeLineId) {
+      setSelectedProductInfo(null);
+      return;
+    }
+    if (itemNameListboxOpenRef.current) return;
+    const line = lines.find((l) => l.id === activeLineId);
+    if (!line || !line.productId) {
+      setSelectedProductInfo(null);
+      return;
+    }
+
+    const product = products.find((p) => p._id === line.productId);
+
+    // Calculate profit
+    const unit = line.availableUnits.find((u) => u.id === line.unitId);
+    const isMulti = unit?.isMultiUnit && unit?.conversion;
+    const multiCost = isMulti ? line.purchasePrice * (unit!.conversion!) : line.purchasePrice;
+    const profit = line.price - multiCost;
+
+    // Show info immediately with cached stock, update async
+    const cachedEntry = stockCacheRef.current.get(line.productId);
+    const initialStock = cachedEntry?.stock ?? (product as any)?.stock ?? 0;
+
+    setSelectedProductInfo({
+      profit,
+      purchaseRate: line.purchasePrice,
+      lastVendor: product ? ((product as any).lastVendor ?? (product as any).lastSupplier ?? '-') : '-',
+      totalStock: initialStock,
+      previousPrice: product ? ((product as any).previousPrice ?? 0) : 0,
+      retailPrice: product?.retailPrice ?? 0,
+      wholesalePrice: product?.wholesalePrice ?? 0,
+    });
+
+    // Fetch actual stock in background
+    stockDebounceRef.current = setTimeout(async () => {
+      const actualStock = await getStockCached(line.productId);
+      setSelectedProductInfo((prev) => prev ? { ...prev, totalStock: actualStock } : null);
+    }, 500);
+
+  }, [activeLineId, lines, products, getStockCached]);
 
   const numberInputStyle = {
     '& input[type=number]': { MozAppearance: 'textfield' as const },
@@ -422,7 +744,7 @@ export default function SalesReturn() {
         availableUnits,
         quantity: qty,
         price,
-        purchasePrice: 0,
+        purchasePrice: (it as any).costPriceAtSale ?? (it as any).purchasePrice ?? 0,
         gross,
         discPercent: 0,
         discAmount: disc,
@@ -461,7 +783,37 @@ export default function SalesReturn() {
     );
   }, [vatType]);
 
+  const revertUncommittedRow = useCallback(() => {
+    if (rowSnapshotRef.current && !rowCommittedRef.current) {
+      const snapshot = rowSnapshotRef.current;
+      setLines((prev) =>
+        prev.map((l) => (l.id === snapshot.lineId ? { ...snapshot.data } : l))
+      );
+      if (snapshot.lineId) {
+        setEditingNumericCell((prev) => prev && prev.lineId === snapshot.lineId ? null : prev);
+      }
+    }
+    rowSnapshotRef.current = null;
+    rowCommittedRef.current = false;
+  }, []);
+
+  const enterRow = useCallback((line: LineItem) => {
+    if (rowSnapshotRef.current && rowSnapshotRef.current.lineId === line.id) return;
+    revertUncommittedRow();
+    if (line.productId) {
+      rowSnapshotRef.current = {
+        lineId: line.id,
+        data: { ...line, availableUnits: [...line.availableUnits] },
+      };
+      rowCommittedRef.current = false;
+    }
+  }, [revertUncommittedRow]);
+
   const removeLine = useCallback((id: string) => {
+    if (rowSnapshotRef.current?.lineId === id) {
+      rowSnapshotRef.current = null;
+      rowCommittedRef.current = false;
+    }
     setLines((prev) => {
       const filtered = prev.filter((l) => l.id !== id);
       return filtered.length > 0 ? filtered : [emptyLine()];
@@ -492,10 +844,16 @@ export default function SalesReturn() {
     const uid = product.unitId ?? 'pcs';
     const uname = product.unitName ?? 'Pcs';
     const availableUnits: UnitOption[] = [{ id: uid, name: uname }];
+
+    if (!rowSnapshotRef.current) {
+      rowCommittedRef.current = true;
+    }
+
     setLines((prev) =>
       prev.map((line) => {
         if (line.id !== lineId) return line;
-        const gross = line.quantity * price;
+        const qty = line.quantity || 1;
+        const gross = qty * price;
         const disc = line.discAmount;
         const net = gross - disc;
         const vatRate = vatType === 'NonVat' ? 0 : 5;
@@ -506,10 +864,13 @@ export default function SalesReturn() {
           productId: product._id,
           productCode: product.code ?? '',
           name: product.name ?? '',
+          imei: product.imei ?? '',
           unitId: uid,
           unitName: uname,
           availableUnits,
+          quantity: qty,
           price,
+          purchasePrice: product.purchasePrice ?? 0,
           gross,
           vatAmount,
           total,
@@ -562,11 +923,10 @@ export default function SalesReturn() {
       if (line.productId) {
         e.preventDefault();
         e.stopPropagation();
-        if (line.availableUnits.length > 0) {
-          setTimeout(() => unitInputRefs.current[line.id]?.focus(), 50);
-        } else {
-          setTimeout(() => qtyInputRefs.current[line.id]?.focus(), 50);
-        }
+        setTimeout(() => {
+          qtyInputRefs.current[line.id]?.focus();
+          qtyInputRefs.current[line.id]?.select();
+        }, 50);
         return;
       }
 
@@ -585,34 +945,75 @@ export default function SalesReturn() {
   const handleQtyKeyDown = useCallback((e: React.KeyboardEvent, line: LineItem) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      const idx = lines.findIndex((l) => l.id === line.id);
-      const isLastRow = idx === lines.length - 1;
-      const isBlank = !line.productId || line.quantity <= 0;
+      const currentIndex = lines.findIndex((l) => l.id === line.id);
+      const isLastRow = currentIndex === lines.length - 1;
+
+      const inputVal = qtyInputRefs.current[line.id]?.value;
+      const currentQty = (inputVal !== undefined && inputVal !== '') ? (parseFloat(inputVal) || 0) : line.quantity;
+
+      const isBlank = !line.productId || currentQty <= 0 || line.price <= 0;
       if (isLastRow && isBlank) {
         setTimeout(() => narrationRef.current?.focus(), 50);
         return;
       }
-      if (line.quantity > 0) {
-        const priceInput = priceInputRefs.current[line.id];
-        if (priceInput) {
-          priceInput.focus();
-          priceInput.select();
-        }
-      }
+
+      setTimeout(() => {
+        priceInputRefs.current[line.id]?.focus();
+        priceInputRefs.current[line.id]?.select();
+      }, 50);
     }
   }, [lines]);
   const handlePriceKeyDown = useCallback((e: React.KeyboardEvent, line: LineItem) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      const idx = lines.findIndex((l) => l.id === line.id);
-      if (idx >= 0 && idx < lines.length - 1) {
-        const nextLine = lines[idx + 1];
-        setTimeout(() => itemNameInputRefs.current[nextLine.id]?.focus(), 50);
-      } else {
-        setTimeout(() => narrationRef.current?.focus(), 50);
+
+      if (!line.productCode || !line.name || line.quantity <= 0 || line.price <= 0) {
+        const idx = lines.findIndex((l) => l.id === line.id);
+        const isLastRow = idx === lines.length - 1;
+        const isBlank = !line.productId || line.quantity <= 0 || line.price <= 0;
+
+        if (isLastRow && isBlank) {
+          setTimeout(() => narrationRef.current?.focus(), 50);
+          return;
+        }
+
+        if (!line.productId || !line.name) {
+          setTimeout(() => itemNameInputRefs.current[line.id]?.focus(), 50);
+        } else if (line.quantity <= 0) {
+          setTimeout(() => qtyInputRefs.current[line.id]?.focus(), 50);
+        } else if (line.price <= 0) {
+          setTimeout(() => priceInputRefs.current[line.id]?.focus(), 50);
+        }
+        return;
       }
+
+      rowCommittedRef.current = true;
+      rowSnapshotRef.current = null;
+
+      const currentIndex = lines.findIndex((l) => l.id === line.id);
+      if (currentIndex >= 0 && currentIndex < lines.length - 1) {
+        const nextLine = lines[currentIndex + 1];
+        enterRow(nextLine);
+        setActiveLineId(nextLine.id);
+        setTimeout(() => {
+          const nextInput = itemNameInputRefs.current[nextLine.id];
+          if (nextInput) {
+            nextInput.focus();
+          }
+        }, 50);
+        return;
+      }
+
+      const newLine = emptyLine();
+      setLines((prev) => [...prev, newLine]);
+      setTimeout(() => {
+        const itemNameInput = itemNameInputRefs.current[newLine.id];
+        if (itemNameInput) {
+          itemNameInput.focus();
+        }
+      }, 100);
     }
-  }, [lines]);
+  }, [lines, enterRow]);
   const handleDiscPercentKeyDown = useCallback((e: React.KeyboardEvent, line: LineItem) => {
     if (e.key === 'Enter') {
       e.preventDefault();
@@ -622,15 +1023,22 @@ export default function SalesReturn() {
   const handleDiscAmountKeyDown = useCallback((e: React.KeyboardEvent, line: LineItem) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      const idx = lines.findIndex((l) => l.id === line.id);
-      if (idx >= 0 && idx < lines.length - 1) {
-        const nextLine = lines[idx + 1];
-        setTimeout(() => itemNameInputRefs.current[nextLine.id]?.focus(), 50);
+      const currentIndex = lines.findIndex((l) => l.id === line.id);
+      if (currentIndex >= 0 && currentIndex < lines.length - 1) {
+        const nextLine = lines[currentIndex + 1];
+        enterRow(nextLine);
+        setActiveLineId(nextLine.id);
+        setTimeout(() => {
+          const nextInput = itemNameInputRefs.current[nextLine.id];
+          if (nextInput) {
+            nextInput.focus();
+          }
+        }, 50);
       } else {
         setTimeout(() => narrationRef.current?.focus(), 50);
       }
     }
-  }, [lines]);
+  }, [lines, enterRow]);
 
   const calculations = {
     subTotal: lines.reduce((s, l) => s + l.total, 0),
@@ -693,6 +1101,7 @@ export default function SalesReturn() {
       setSaveDialogOpen(false);
       setSavedDialogMessage(`Sales Return ${res.data.data.invoiceNo} saved successfully.`);
       setSavedDialogOpen(true);
+      loadReturnIds();
       setLines([emptyLine()]);
       setCustomerId(null);
       setCustomerName('');
@@ -738,75 +1147,7 @@ export default function SalesReturn() {
     setSearchLoading(true);
     try {
       const res = await salesApi.searchSalesReturn(companyId, searchInvoiceNo.trim());
-      const data = res.data.data as {
-        _id: string; invoiceNo: string; date: string; returnType: string;
-        originalInvoiceId?: string;
-        customerId?: string; customerName?: string; customerAddress?: string; cashAccountId?: string;
-        vatType?: string; taxMode?: string; items: Array<{
-          productId: string | { _id: string; name?: string };
-          productCode?: string;
-          description?: string;
-          quantity: number;
-          unitPrice: number;
-          discount?: number;
-          totalAmount?: number;
-          unitName?: string;
-        }>;
-        otherDiscount?: number;
-        otherCharges?: number;
-        roundOff?: number;
-        narration?: string;
-      };
-      setReturnId(data._id);
-      setInvoiceNo(data.invoiceNo);
-      setDate(data.date ? new Date(data.date).toISOString().slice(0, 10) : getCurrentDate());
-      setReturnType((data.returnType || 'OnAccount') as 'OnAccount' | 'ByRef');
-      setOriginalInvoiceIdForReturn(data.originalInvoiceId ?? null);
-      setCustomerId(data.customerId ?? null);
-      setCustomerName(data.customerName ?? 'CASH');
-      setCustomerAddress(data.customerAddress ?? '');
-      setVatType((data.vatType as 'Vat' | 'NonVat') || 'Vat');
-      setTaxMode((data.taxMode as 'inclusive' | 'exclusive') || 'exclusive');
-      setOtherDiscount(data.otherDiscount ?? 0);
-      setOtherCharges(data.otherCharges ?? 0);
-      setRoundOff(data.roundOff ?? 0);
-      setNarration(data.narration ?? '');
-      if (data.cashAccountId) setCashAccountId(data.cashAccountId);
-      const newLines: LineItem[] = (data.items || []).map((it, idx) => {
-        const pid = typeof it.productId === 'object' && it.productId !== null ? (it.productId as { _id: string })._id : String(it.productId);
-        const name = typeof it.productId === 'object' && (it.productId as { name?: string }).name ? (it.productId as { name: string }).name : (it.description || '');
-        const price = it.unitPrice ?? 0;
-        const qty = it.quantity ?? 0;
-        void (it.totalAmount ?? qty * price);
-        const disc = it.discount ?? 0;
-        const gross = qty * price;
-        const net = gross - disc;
-        const vatRate = data.vatType === 'NonVat' ? 0 : 5;
-        const vatAmount = parseFloat((net * (vatRate / 100)).toFixed(2));
-        const lineTotal = parseFloat((net + vatAmount).toFixed(2));
-        const uname = (it.unitName as string) || 'Pcs';
-        const uid = (it as { unitId?: string }).unitId || 'pcs';
-        const availableUnits: UnitOption[] = [{ id: uid, name: uname }];
-        return {
-          id: `loaded-${idx}-${Date.now()}`,
-          productId: pid,
-          productCode: (it.productCode as string) || '',
-          imei: ((it as any).imei as string) || '',
-          name: name || '',
-          unitId: uid,
-          unitName: uname,
-          availableUnits,
-          quantity: qty,
-          price,
-          purchasePrice: 0,
-          gross,
-          discPercent: 0,
-          discAmount: disc,
-          vatAmount,
-          total: lineTotal,
-        };
-      });
-      setLines(newLines.length > 0 ? newLines : [emptyLine()]);
+      loadReturnForm(res.data.data);
       setSearchDialogOpen(false);
       setSearchInvoiceNo('');
     } catch {
@@ -824,6 +1165,7 @@ export default function SalesReturn() {
       setDeleteDialogOpen(false);
       setSavedDialogMessage('Sales return deleted successfully.');
       setSavedDialogOpen(true);
+      loadReturnIds();
       handleClear();
     } catch (e: unknown) {
       setErrorDialogMessage((e as { response?: { data?: { message?: string } } })?.response?.data?.message || 'Delete failed');
@@ -1022,6 +1364,57 @@ export default function SalesReturn() {
               <MenuItem value="OnAccount">On Account</MenuItem>
               <MenuItem value="ByRef">By Ref</MenuItem>
             </TextField>
+          </Grid>
+          <Grid item xs={12} sm={6} md={5} lg={3.5}>
+            <Box sx={{ display: 'flex', gap: 0.5, height: 40, alignItems: 'center' }}>
+              {/* Navigation Group */}
+              <Box sx={{ display: 'flex', gap: 0.5, flex: 1.2 }}>
+                {[
+                  { icon: <FirstIcon />, handler: handleFirstReturn, tip: 'First' },
+                  { icon: <PrevIcon />, handler: handlePrevReturn, tip: 'Previous' },
+                  { icon: <NextIcon />, handler: handleNextReturn, tip: 'Next' },
+                  { icon: <LastIcon />, handler: handleLastReturn, tip: 'Last' },
+                ].map((nav, i) => (
+                  <Tooltip key={i} title={`${nav.tip} Return`}>
+                    <Button
+                      variant="contained"
+                      size="small"
+                      onClick={nav.handler}
+                      sx={{ flex: 1, py: 0.5, minWidth: 0, borderRadius: 1.5, bgcolor: '#0f766e', '&:hover': { bgcolor: '#0d9488' }, boxShadow: 'none' }}
+                    >
+                      {nav.icon}
+                    </Button>
+                  </Tooltip>
+                ))}
+              </Box>
+
+              <Divider orientation="vertical" flexItem sx={{ mx: 0.5, my: 1 }} />
+
+              {/* Hold Group */}
+              <Box sx={{ display: 'flex', gap: 0.5, flex: 1 }}>
+                <Tooltip title="Hold this return for later">
+                  <Button
+                    variant="contained"
+                    size="small"
+                    onClick={handleHoldReturn}
+                    sx={{ flex: 1.2, py: 0.4, minWidth: 0, borderRadius: 1.5, bgcolor: '#f59e0b', '&:hover': { bgcolor: '#d97706' }, boxShadow: 'none', fontSize: '0.75rem', fontWeight: 600, textTransform: 'none' }}
+                    startIcon={<HoldIcon sx={{ fontSize: 16 }} />}
+                  >
+                    Hold
+                  </Button>
+                </Tooltip>
+                <Tooltip title="View held returns">
+                  <Button
+                    variant="contained"
+                    size="small"
+                    onClick={() => setHoldListDialogOpen(true)}
+                    sx={{ flex: 0.5, py: 0.4, minWidth: 0, borderRadius: 1.5, bgcolor: '#64748b', '&:hover': { bgcolor: '#475569' }, boxShadow: 'none' }}
+                  >
+                    <HoldListIcon fontSize="small" />
+                  </Button>
+                </Tooltip>
+              </Box>
+            </Box>
           </Grid>
           {returnType === 'ByRef' && (
             <>
@@ -1244,7 +1637,21 @@ export default function SalesReturn() {
 
       {/* Product Grid - B2C style */}
       <Paper elevation={0} sx={{ mb: 1, width: '100%', overflow: 'hidden', border: '1px solid #e0e7ef', borderRadius: 2, bgcolor: 'white' }}>
-        <TableContainer sx={{ minHeight: 320, maxHeight: 400, width: '100%', bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }}>
+        <TableContainer
+          sx={{ minHeight: 320, maxHeight: 400, width: '100%', bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }}
+          onBlurCapture={(e) => {
+            const container = e.currentTarget;
+            setTimeout(() => {
+              const active = document.activeElement;
+              if (!active) return;
+              const inPopper = active.closest('.MuiAutocomplete-popper, .MuiAutocomplete-listbox, .MuiPopper-root');
+              if (inPopper) return;
+              if (!container.contains(active)) {
+                revertUncommittedRow();
+              }
+            }, 100);
+          }}
+        >
           <Table stickyHeader size="small" sx={{ minWidth: '100%', tableLayout: 'fixed', borderCollapse: 'separate', borderSpacing: 0, '& .MuiTableCell-root': { fontSize: '0.82rem' }, '& .MuiInputBase-input': { fontSize: '0.82rem' } }}>
             <TableHead>
               <TableRow>
@@ -1280,6 +1687,17 @@ export default function SalesReturn() {
                   sx={{
                     bgcolor: idx === 0 && !line.productId ? '#fffbeb' : (idx % 2 === 0 ? '#f8fafb' : 'white'),
                     '&:hover': { bgcolor: '#e0f7fa' },
+                    cursor: 'pointer',
+                  }}
+                  onClick={(e) => {
+                    const el = e.target as HTMLElement;
+                    if (el.tagName === 'INPUT' || el.tagName === 'BUTTON' || el.closest('button') || el.closest('.MuiAutocomplete-root')) return;
+                    enterRow(line);
+                    setActiveLineId(line.id);
+                  }}
+                  onFocusCapture={() => {
+                    enterRow(line);
+                    setActiveLineId(line.id);
                   }}
                 >
                   <TableCell sx={{ p: '3px', borderRight: '1px solid #f0f0f0', borderBottom: '1px solid #eef2f6', textAlign: 'center', fontWeight: 700, color: '#64748b', fontSize: '0.8rem', bgcolor: '#f1f5f9' }}>{idx + 1}</TableCell>
@@ -1308,7 +1726,6 @@ export default function SalesReturn() {
                           handleProductHighlight(e, opt);
                           setActiveLineId(line.id);
                         }}
-                        autoSelect
                         autoHighlight
                         renderInput={(params) => (
                           <TextField
@@ -1789,6 +2206,63 @@ export default function SalesReturn() {
           <Button variant="contained" onClick={confirmSelectRefItems} sx={{ textTransform: 'none', borderRadius: 1.5, bgcolor: '#0f766e', '&:hover': { bgcolor: '#115e59' } }}>
             Confirm
           </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Held Returns Dialog - B2C Style */}
+      <Dialog open={holdListDialogOpen} onClose={() => setHoldListDialogOpen(false)} maxWidth="sm" fullWidth PaperProps={{ sx: { borderRadius: 2 } }}>
+        <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1.5, bgcolor: '#f8fafc', borderBottom: '1px solid #e2e8f0', py: 2 }}>
+          <HoldListIcon sx={{ color: '#f59e0b' }} />
+          <Typography sx={{ fontWeight: 700, fontSize: '1.1rem', color: '#1e293b' }}>Held Sales Returns</Typography>
+        </DialogTitle>
+        <DialogContent sx={{ p: 0 }}>
+          {heldReturns.length === 0 ? (
+            <Box sx={{ py: 6, textAlign: 'center' }}>
+              <Typography sx={{ color: '#94a3b8', fontStyle: 'italic' }}>No held returns found</Typography>
+            </Box>
+          ) : (
+            <Box sx={{ maxHeight: 400, overflow: 'auto' }}>
+              {heldReturns.map((held, idx) => (
+                <Box
+                  key={held.id}
+                  sx={{
+                    p: 2,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    borderBottom: idx === heldReturns.length - 1 ? 'none' : '1px solid #f1f5f9',
+                    '&:hover': { bgcolor: '#f8fafc' }
+                  }}
+                >
+                  <Box sx={{ flex: 1 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                      <Typography sx={{ fontWeight: 700, color: '#0f766e', fontSize: '0.95rem' }}>{held.customerName}</Typography>
+                      <Typography sx={{ fontSize: '0.75rem', color: '#94a3b8', bgcolor: '#f1f5f9', px: 1, py: 0.2, borderRadius: 10 }}>{held.heldAt}</Typography>
+                    </Box>
+                    <Typography sx={{ fontSize: '0.82rem', color: '#64748b' }}>
+                      {held.itemCount} items • Total: <strong style={{ color: '#1e293b' }}>{held.total.toFixed(2)}</strong>
+                    </Typography>
+                  </Box>
+                  <Box sx={{ display: 'flex', gap: 1 }}>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      onClick={() => handleRestoreHeldReturn(held)}
+                      sx={{ textTransform: 'none', borderRadius: 1.5, borderColor: '#0f766e', color: '#0f766e', '&:hover': { bgcolor: 'rgba(15, 118, 110, 0.05)', borderColor: '#0d6561' } }}
+                    >
+                      Restore
+                    </Button>
+                    <IconButton size="small" onClick={() => handleDeleteHeldReturn(held.id)} sx={{ color: '#ef4444', bgcolor: '#fee2e2', '&:hover': { bgcolor: '#fecaca' } }}>
+                      <DeleteIcon sx={{ fontSize: 18 }} />
+                    </IconButton>
+                  </Box>
+                </Box>
+              ))}
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions sx={{ p: 2, bgcolor: '#f8fafc', borderTop: '1px solid #e2e8f0' }}>
+          <Button onClick={() => setHoldListDialogOpen(false)} sx={{ textTransform: 'none', borderRadius: 1.5, color: '#64748b' }}>Close</Button>
         </DialogActions>
       </Dialog>
     </Box>

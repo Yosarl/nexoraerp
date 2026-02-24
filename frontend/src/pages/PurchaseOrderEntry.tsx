@@ -872,9 +872,9 @@ export default function PurchaseOrderEntry() {
       });
       setActiveLineId(lineId);
 
-      // Product selection is a fresh fill — auto-commit so it won't be reverted
-      rowCommittedRef.current = true;
-      rowSnapshotRef.current = null;
+      if (!rowSnapshotRef.current) {
+        rowCommittedRef.current = true;
+      }
 
       // Focus on qty field after product selection
       if (!searchedImei) {
@@ -1152,65 +1152,65 @@ export default function PurchaseOrderEntry() {
         updated.vatAmount = vt.vatAmount;
         updated.total = vt.total;
 
-          const product = products.find((p) => p._id === updated.productId);
+        const product = products.find((p) => p._id === updated.productId);
 
-          // Mandatory validation before commit (Purchase Order: Item Code, Name, IMEI if applicable, Qty, P Rate, Retail, Wholesale)
-          if (!updated.productCode || !String(updated.productCode).trim()) {
-            setTimeout(() => itemNameInputRefs.current[lineId]?.focus(), 30);
+        // Mandatory validation before commit (Purchase Order: Item Code, Name, IMEI if applicable, Qty, P Rate, Retail, Wholesale)
+        if (!updated.productCode || !String(updated.productCode).trim()) {
+          setTimeout(() => itemNameInputRefs.current[lineId]?.focus(), 30);
+          return current.map((l) => (l.id === lineId ? updated : l));
+        }
+        if (!updated.name || !String(updated.name).trim()) {
+          setTimeout(() => itemNameInputRefs.current[lineId]?.focus(), 30);
+          return current.map((l) => (l.id === lineId ? updated : l));
+        }
+        if (!product || product.name?.trim() !== updated.name.trim() || (product.code || '').trim() !== (updated.productCode || '').trim()) {
+          setTimeout(() => itemNameInputRefs.current[lineId]?.focus(), 30);
+          return current.map((l) => (l.id === lineId ? updated : l));
+        }
+        const hasImei = !!(product.imei && String(product.imei).trim()) || (product.multiUnits && product.multiUnits.some((mu) => mu.imei && String(mu.imei).trim()));
+        if (hasImei) {
+          const mainImei = String(product.imei || '').trim();
+          const multiImeis = (product.multiUnits || []).map((mu) => String(mu.imei || '').trim()).filter(Boolean);
+          const lineImei = String(updated.imei || '').trim();
+          const validImei = lineImei && (mainImei === lineImei || multiImeis.includes(lineImei));
+          if (!validImei) {
+            setTimeout(() => imeiInputRefs.current[lineId]?.focus(), 30);
             return current.map((l) => (l.id === lineId ? updated : l));
           }
-          if (!updated.name || !String(updated.name).trim()) {
-            setTimeout(() => itemNameInputRefs.current[lineId]?.focus(), 30);
-            return current.map((l) => (l.id === lineId ? updated : l));
-          }
-          if (!product || product.name?.trim() !== updated.name.trim() || (product.code || '').trim() !== (updated.productCode || '').trim()) {
-            setTimeout(() => itemNameInputRefs.current[lineId]?.focus(), 30);
-            return current.map((l) => (l.id === lineId ? updated : l));
-          }
-          const hasImei = !!(product.imei && String(product.imei).trim()) || (product.multiUnits && product.multiUnits.some((mu) => mu.imei && String(mu.imei).trim()));
-          if (hasImei) {
-            const mainImei = String(product.imei || '').trim();
-            const multiImeis = (product.multiUnits || []).map((mu) => String(mu.imei || '').trim()).filter(Boolean);
-            const lineImei = String(updated.imei || '').trim();
-            const validImei = lineImei && (mainImei === lineImei || multiImeis.includes(lineImei));
-            if (!validImei) {
-              setTimeout(() => imeiInputRefs.current[lineId]?.focus(), 30);
-              return current.map((l) => (l.id === lineId ? updated : l));
-            }
-          }
-          if (updated.quantity <= 0) {
-            setTimeout(() => qtyInputRefs.current[lineId]?.focus(), 30);
-            return current.map((l) => (l.id === lineId ? updated : l));
-          }
-          if (updated.pRate <= 0) {
-            setTimeout(() => priceInputRefs.current[lineId]?.focus(), 30);
-            return current.map((l) => (l.id === lineId ? updated : l));
-          }
-          if (updated.retail <= 0) {
-            setTimeout(() => retailInputRefs.current[lineId]?.focus(), 30);
-            return current.map((l) => (l.id === lineId ? updated : l));
-          }
-          if (wholesaleVal <= 0) {
-            setTimeout(() => wholesaleInputRefs.current[lineId]?.focus(), 30);
-            return current.map((l) => (l.id === lineId ? updated : l));
-          }
+        }
+        if (updated.quantity <= 0) {
+          setTimeout(() => qtyInputRefs.current[lineId]?.focus(), 30);
+          return current.map((l) => (l.id === lineId ? updated : l));
+        }
+        if (updated.pRate <= 0) {
+          setTimeout(() => priceInputRefs.current[lineId]?.focus(), 30);
+          return current.map((l) => (l.id === lineId ? updated : l));
+        }
+        if (updated.retail <= 0) {
+          setTimeout(() => retailInputRefs.current[lineId]?.focus(), 30);
+          return current.map((l) => (l.id === lineId ? updated : l));
+        }
+        if (wholesaleVal <= 0) {
+          setTimeout(() => wholesaleInputRefs.current[lineId]?.focus(), 30);
+          return current.map((l) => (l.id === lineId ? updated : l));
+        }
 
-          // All valid — commit row and move to next
-          rowCommittedRef.current = true;
-          rowSnapshotRef.current = null;
+        // All valid — commit row and move to next
+        rowCommittedRef.current = true;
+        rowSnapshotRef.current = null;
 
-          if (idx >= 0 && idx < current.length - 1) {
-            const nextLine = current[idx + 1];
-            enterRow(nextLine);
-            setTimeout(() => itemNameInputRefs.current[nextLine.id]?.focus(), 30);
-            return current.map((l) => (l.id === lineId ? updated : l));
-          }
+        if (idx >= 0 && idx < current.length - 1) {
+          const nextLine = current[idx + 1];
+          enterRow(nextLine);
+          setTimeout(() => itemNameInputRefs.current[nextLine.id]?.focus(), 30);
+          return current.map((l) => (l.id === lineId ? updated : l));
+        }
 
-          const newLineId = Date.now().toString() + Math.random().toString(36).substr(2, 9);
-          const newLine: LineItem = { ...emptyLine(), id: newLineId };
-          setTimeout(() => itemNameInputRefs.current[newLineId]?.focus(), 50);
-          return [...current.map((l) => (l.id === lineId ? updated : l)), newLine];
-        });
+        const newLineId = Date.now().toString() + Math.random().toString(36).substr(2, 9);
+        const newLine: LineItem = { ...emptyLine(), id: newLineId };
+        setTimeout(() => itemNameInputRefs.current[newLineId]?.focus(), 50);
+        return [...current.map((l) => (l.id === lineId ? updated : l)), newLine];
+      });
     },
     [products, vatType, calcVatAndTotal, enterRow]
   );
@@ -2224,6 +2224,7 @@ export default function PurchaseOrderEntry() {
                       filterOptions={productFilterOptions}
                       isOptionEqualToValue={(opt, val) => opt._id === val._id}
                       getOptionLabel={(opt) => (typeof opt === 'string' ? opt : opt.name || '')}
+                      value={products.find((p) => p._id === line.productId) || null}
                       inputValue={line.name}
                       onInputChange={(_, v) => updateLine(line.id, 'name', v)}
                       onChange={(_, v) => {
