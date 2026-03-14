@@ -54,6 +54,23 @@ import type { RootState } from '../store';
 import { salesApi, productApi, ledgerAccountApi, purchaseApi, stockApi, B2CLineItem, B2CInvoiceInput } from '../services/api';
 import DateInput, { getCurrentDate } from '../components/DateInput';
 import { setDrawerOpen } from '../store/slices/appSlice';
+import {
+  commonButtonStyles,
+  navigationButtonStyles,
+  entryBadgeStyles,
+  tableHeaderStyles,
+  sectionLabelStyles,
+  fieldLabelStyles,
+  dialogPaperStyles,
+  successDialogStyles,
+  errorDialogStyles,
+  createRowCommitRefs,
+  commitRowEdits,
+  revertRowEditsIfNotCommitted,
+  handleItemNameBlurWithRevert,
+  calculateProfit,
+  formatStockDisplay,
+} from '../utils/salesDesignPatterns';
 
 interface UnitOption {
   id: string;
@@ -307,9 +324,8 @@ export default function SalesB2C() {
   // When QTY exceeds stock, store lineId to refocus after dialog closes
   const qtyOverflowLineIdRef = useRef<string | null>(null);
 
-  // Row edit commit/revert: snapshot stores old row data before editing
-  const rowSnapshotRef = useRef<{ lineId: string; data: LineItem } | null>(null);
-  const rowCommittedRef = useRef(false);
+  // Row edit commit/revert using reusable pattern
+  const { rowSnapshotRef, rowCommittedRef } = createRowCommitRefs();
   // Item name field: snapshot before edit so we can undo if user clears then blurs without selecting
   const itemNameSnapshotRef = useRef<{ lineId: string; data: LineItem } | null>(null);
 
@@ -828,19 +844,17 @@ export default function SalesB2C() {
 
   // Item name focus: save snapshot so we can undo if user clears then blurs without selecting
   const handleItemNameFocus = useCallback((line: LineItem) => {
+    // Save snapshot for potential revert using reusable pattern
     itemNameSnapshotRef.current = { lineId: line.id, data: { ...line } };
   }, []);
 
-  // Item name blur: if user cleared and did not select a product, restore from snapshot
+  // Item name blur: if user cleared and did not select a product, restore from snapshot using reusable pattern
   const handleItemNameBlur = useCallback((line: LineItem) => {
-    const snap = itemNameSnapshotRef.current;
-    if (snap && snap.lineId === line.id && snap.data.productId && !line.productId && snap.data.isCommitted) {
-      setLines((prev) =>
-        prev.map((l) => (l.id === line.id ? { ...l, ...snap.data } : l))
-      );
-    }
+    // Pass isCommitted flag - only revert uncommitted rows where product was cleared
+    handleItemNameBlurWithRevert(line, setLines, itemNameSnapshotRef, line.isCommitted);
+    // Clear snapshot after blur
     itemNameSnapshotRef.current = null;
-  }, []);
+  }, [setLines]);
 
   // Line item handlers
   const updateLine = useCallback(
@@ -1581,8 +1595,8 @@ export default function SalesB2C() {
       }
 
       // Mark current row as committed (edits are accepted)
-      rowCommittedRef.current = true;
-      rowSnapshotRef.current = null;
+      // Commit row edits using reusable pattern
+      commitRowEdits(rowSnapshotRef, rowCommittedRef);
       updateLine(line.id, 'isCommitted', true);
 
       const currentIndex = lines.findIndex((l) => l.id === line.id);
@@ -1679,6 +1693,7 @@ export default function SalesB2C() {
   const removeLine = (id: string) => {
     // Clear snapshot if the removed row was being edited
     if (rowSnapshotRef.current?.lineId === id) {
+      // Reset commit state using reusable pattern
       rowSnapshotRef.current = null;
       rowCommittedRef.current = false;
     }
@@ -1723,9 +1738,8 @@ export default function SalesB2C() {
     }
     // For multi-unit: profit = selling price - (base purchase rate * pcs inside)
     const unit = line.availableUnits.find((u) => u.id === line.unitId);
-    const isMulti = unit?.isMultiUnit && unit?.conversion;
-    const multiCost = isMulti ? line.purchasePrice * (unit!.conversion!) : line.purchasePrice;
-    const profit = line.price - multiCost;
+    // Calculate profit using reusable pattern
+    const profit = calculateProfit(line);
     const product = products.find(p => p._id === line.productId);
 
     // Show info immediately with cached stock, update async
@@ -2969,14 +2983,10 @@ export default function SalesB2C() {
                     <Typography sx={{ fontSize: '1rem', fontWeight: 800, lineHeight: 1.3, color: '#dc2626' }}>
                       {(() => {
                         const basePieces = selectedProductInfo.totalStock ?? selectedProductInfo.stock;
-                        const isNum = typeof basePieces === 'number';
                         const pcsInside = activeMultiUnitInfo?.pcsInside;
-                        if (isNum && pcsInside && pcsInside > 0) {
-                          const inUnit = basePieces / pcsInside;
-                          const unitName = activeMultiUnitInfo?.name ?? '';
-                          return `${basePieces} pcs${unitName ? ` (${inUnit.toFixed(2)} ${unitName})` : ''}`;
-                        }
-                        return isNum ? `${basePieces} pcs` : (basePieces ?? '-');
+                        const unitName = activeMultiUnitInfo?.name ?? '';
+                        // Use reusable stock display formatter
+                        return formatStockDisplay(basePieces, pcsInside, unitName);
                       })()}
                     </Typography>
                   </Box>
@@ -3518,9 +3528,8 @@ export default function SalesB2C() {
             onClick={() => setSaveDialogOpen(true)}
             disabled={loading || isSaved}
             sx={{
-              minWidth: 100, py: 0.8, fontSize: '0.82rem', fontWeight: 600, textTransform: 'none',
-              borderRadius: 1.5, boxShadow: 'none',
-              bgcolor: '#16a34a', color: '#fff', '&:hover': { bgcolor: '#000000' }, '&.Mui-disabled': { bgcolor: '#d1d5db', color: '#9ca3af' },
+              ...commonButtonStyles,
+              bgcolor: '#16a34a', '&:hover': { bgcolor: '#000000' },
             }}
           >
             Save
@@ -3530,9 +3539,8 @@ export default function SalesB2C() {
             startIcon={<PrintIcon />}
             disabled={!isSaved}
             sx={{
-              minWidth: 100, py: 0.8, fontSize: '0.82rem', fontWeight: 600, textTransform: 'none',
-              borderRadius: 1.5, boxShadow: 'none',
-              bgcolor: '#16a34a', color: '#fff', '&:hover': { bgcolor: '#000000' }, '&.Mui-disabled': { bgcolor: '#d1d5db', color: '#9ca3af' },
+              ...commonButtonStyles,
+              bgcolor: '#16a34a', '&:hover': { bgcolor: '#000000' },
             }}
           >
             Print
@@ -3542,9 +3550,8 @@ export default function SalesB2C() {
             startIcon={<ClearIcon />}
             onClick={handleClear}
             sx={{
-              minWidth: 100, py: 0.8, fontSize: '0.82rem', fontWeight: 600, textTransform: 'none',
-              borderRadius: 1.5, boxShadow: 'none',
-              bgcolor: '#16a34a', color: '#fff', '&:hover': { bgcolor: '#000000' },
+              ...commonButtonStyles,
+              bgcolor: '#16a34a', '&:hover': { bgcolor: '#000000' },
             }}
           >
             Clear
