@@ -32,8 +32,6 @@ import ChartOfAccounts from './pages/ChartOfAccounts';
 import StockAdjustment from './pages/StockAdjustment';
 import VoucherByType from './pages/VoucherByType';
 import SalesB2C from './pages/SalesB2C';
-import SalesB2B from './pages/SalesB2B';
-import QuotationSales from './pages/QuotationSales';
 import SalesReturn from './pages/SalesReturn';
 import PurchaseEntry from './pages/PurchaseEntry';
 import PurchaseOrderEntry from './pages/PurchaseOrderEntry';
@@ -121,8 +119,8 @@ export default function App() {
           <Route path="opening-balance" element={<OpeningBalance />} />
           <Route path="pos" element={<POS />} />
           <Route path="sales-b2c" element={<SalesB2C />} />
-          <Route path="sales-b2b" element={<SalesB2B />} />
-          <Route path="quotation-sales" element={<QuotationSales />} />
+          <Route path="sales-b2b" element={<SalesB2C />} />
+          <Route path="quotation-sales" element={<SalesB2C />} />
           <Route path="sales-return" element={<SalesReturn />} />
           <Route path="purchase" element={<PurchaseEntry />} />
           <Route path="purchase-order" element={<PurchaseOrderEntry />} />

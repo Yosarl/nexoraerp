@@ -72,11 +72,12 @@ export async function getNextB2CInvoiceNo(
   try {
     const companyId = req.query.companyId as string;
     const financialYearId = req.query.financialYearId as string;
+    const type = (req.query.type as 'B2C' | 'B2B' | 'Quotation') || 'B2C';
     if (!companyId || !financialYearId) {
       res.status(400).json({ success: false, message: 'Company ID and Financial Year ID required' });
       return;
     }
-    const invoiceNo = await salesService.getNextB2CInvoiceNo(companyId, financialYearId);
+    const invoiceNo = await salesService.getNextB2CInvoiceNo(companyId, financialYearId, type);
     res.json({ success: true, data: { invoiceNo } });
   } catch (err) {
     next(err);
@@ -162,6 +163,7 @@ export async function listB2CInvoices(
       toDate: req.query.toDate as string,
       page: parseInt(req.query.page as string) || 1,
       limit: parseInt(req.query.limit as string) || 20,
+      type: req.query.type as 'B2C' | 'B2B' | 'Quotation' | undefined,
     };
     const data = await salesService.listB2CInvoices(companyId, financialYearId, opts);
     res.json({ success: true, data });
@@ -178,11 +180,13 @@ export async function getB2CInvoice(
   try {
     const invoiceId = req.params.id;
     const companyId = req.query.companyId as string;
+    const type = req.query.type as 'B2C' | 'B2B' | 'Quotation' | undefined;
+    const excludeReturnId = req.query.excludeReturnId as string | undefined;
     if (!companyId) {
       res.status(400).json({ success: false, message: 'Company ID required' });
       return;
     }
-    const data = await salesService.getB2CInvoice(invoiceId, companyId);
+    const data = await salesService.getB2CInvoice(invoiceId, companyId, type, excludeReturnId);
     if (!data) {
       res.status(404).json({ success: false, message: 'Invoice not found' });
       return;
@@ -202,11 +206,12 @@ export async function getProductCustomerHistory(
     const companyId = req.query.companyId as string;
     const productId = req.params.productId as string;
     const customerId = req.query.customerId as string | undefined;
+    const type = req.query.type as 'POS' | 'B2C' | 'B2B' | 'Quotation' | undefined;
     if (!companyId || !productId) {
       res.status(400).json({ success: false, message: 'Company ID and Product ID required' });
       return;
     }
-    const data = await salesService.getProductCustomerHistory(companyId, productId, customerId);
+    const data = await salesService.getProductCustomerHistory(companyId, productId, customerId, type);
     res.json({ success: true, data });
   } catch (err) {
     next(err);
@@ -221,11 +226,13 @@ export async function searchB2CByInvoiceNo(
   try {
     const companyId = req.query.companyId as string;
     const invoiceNo = req.query.invoiceNo as string;
+    const type = req.query.type as 'B2C' | 'B2B' | 'Quotation' | undefined;
+    const excludeReturnId = req.query.excludeReturnId as string | undefined;
     if (!companyId || !invoiceNo) {
       res.status(400).json({ success: false, message: 'Company ID and Invoice No required' });
       return;
     }
-    const data = await salesService.searchB2CByInvoiceNo(companyId, invoiceNo);
+    const data = await salesService.searchB2CByInvoiceNo(companyId, invoiceNo, type, excludeReturnId);
     if (!data) {
       res.status(404).json({ success: false, message: 'Invoice not found' });
       return;

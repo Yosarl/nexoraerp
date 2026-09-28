@@ -1,0 +1,775 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>90-Day Spoken English Mastery Blueprint</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap');
+
+  @page {
+    size: A4;
+    margin: 14mm 12mm 14mm 12mm;
+  }
+
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  body {
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    color: #1e293b;
+    background-color: #ffffff;
+    line-height: 1.5;
+    font-size: 13px;
+  }
+
+  .header {
+    background: linear-gradient(135deg, #0f172a 0%, #1e3a8a 100%);
+    color: #ffffff;
+    padding: 24px 28px;
+    border-radius: 12px;
+    margin-bottom: 22px;
+    box-shadow: 0 4px 12px rgba(15, 23, 42, 0.15);
+  }
+
+  .header h1 {
+    font-size: 24px;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+    margin-bottom: 4px;
+    color: #f8fafc;
+  }
+
+  .header .subtitle {
+    font-size: 13px;
+    color: #93c5fd;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+
+  .meta-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid rgba(255, 255, 255, 0.15);
+    font-size: 12px;
+  }
+
+  .meta-item strong {
+    color: #bfdbfe;
+    display: inline-block;
+    min-width: 110px;
+  }
+
+  h2 {
+    font-size: 16px;
+    font-weight: 700;
+    color: #0f172a;
+    margin: 20px 0 10px 0;
+    padding-bottom: 5px;
+    border-bottom: 2px solid #e2e8f0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .section-num {
+    background: #1e40af;
+    color: #ffffff;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 2px 7px;
+    border-radius: 4px;
+  }
+
+  /* Table styling */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 10px 0 16px 0;
+    font-size: 12px;
+  }
+
+  th, td {
+    padding: 8px 10px;
+    text-align: left;
+    vertical-align: top;
+    border: 1px solid #cbd5e1;
+  }
+
+  th {
+    background-color: #f1f5f9;
+    color: #0f172a;
+    font-weight: 700;
+    font-size: 11.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  tr:nth-child(even) {
+    background-color: #f8fafc;
+  }
+
+  /* Engine Cards */
+  .engine-container {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 12px;
+    margin: 12px 0 18px 0;
+  }
+
+  .engine-card {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-top: 4px solid #1e40af;
+    border-radius: 8px;
+    padding: 12px;
+  }
+
+  .engine-card:nth-child(2) {
+    border-top-color: #059669;
+  }
+
+  .engine-card:nth-child(3) {
+    border-top-color: #d97706;
+  }
+
+  .engine-card .time {
+    font-size: 18px;
+    font-weight: 800;
+    color: #0f172a;
+  }
+
+  .engine-card .label {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 6px;
+  }
+
+  .engine-card:nth-child(1) .label { color: #1e40af; }
+  .engine-card:nth-child(2) .label { color: #059669; }
+  .engine-card:nth-child(3) .label { color: #d97706; }
+
+  .engine-card ul {
+    list-style: none;
+    font-size: 11.5px;
+    color: #334155;
+  }
+
+  .engine-card ul li {
+    margin-bottom: 4px;
+    padding-left: 12px;
+    position: relative;
+  }
+
+  .engine-card ul li::before {
+    content: "•";
+    position: absolute;
+    left: 0;
+    color: #64748b;
+    font-weight: bold;
+  }
+
+  /* Boundary Grid */
+  .boundary-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    margin: 12px 0 18px 0;
+  }
+
+  .boundary-box {
+    border-radius: 8px;
+    padding: 12px 14px;
+    font-size: 12px;
+  }
+
+  .boundary-ignored {
+    background-color: #fef2f2;
+    border: 1px solid #fecaca;
+  }
+
+  .boundary-ignored h3 {
+    color: #b91c1c;
+    font-size: 12.5px;
+    font-weight: 700;
+    margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .boundary-mastered {
+    background-color: #f0fdf4;
+    border: 1px solid #bbf7d0;
+  }
+
+  .boundary-mastered h3 {
+    color: #15803d;
+    font-size: 12.5px;
+    font-weight: 700;
+    margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .boundary-box ul {
+    list-style: none;
+  }
+
+  .boundary-box ul li {
+    padding: 2px 0;
+    color: #334155;
+  }
+
+  /* Curriculum Blocks */
+  .month-header {
+    background: #1e293b;
+    color: #ffffff;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 700;
+    margin: 18px 0 10px 0;
+    letter-spacing: 0.5px;
+  }
+
+  .month-header span {
+    font-size: 11px;
+    font-weight: 400;
+    color: #94a3b8;
+    margin-left: 8px;
+  }
+
+  .week-card {
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    margin-bottom: 10px;
+    background: #ffffff;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  .week-title {
+    background: #f1f5f9;
+    padding: 6px 10px;
+    font-weight: 700;
+    font-size: 12px;
+    color: #0f172a;
+    border-bottom: 1px solid #cbd5e1;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .week-badge {
+    background: #3b82f6;
+    color: white;
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-weight: 600;
+  }
+
+  .week-content {
+    padding: 8px 10px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    font-size: 11.5px;
+  }
+
+  .week-row-full {
+    grid-column: span 2;
+  }
+
+  .detail-label {
+    font-weight: 700;
+    color: #475569;
+    font-size: 11px;
+    text-transform: uppercase;
+  }
+
+  .test-box {
+    background: #eff6ff;
+    border-top: 1px dashed #93c5fd;
+    padding: 6px 10px;
+    font-size: 11px;
+    color: #1e3a8a;
+    grid-column: span 2;
+  }
+
+  /* Page break helpers */
+  .page-break {
+    page-break-before: always;
+    break-before: page;
+  }
+
+  .callout {
+    background: #fffbeb;
+    border-left: 4px solid #f59e0b;
+    padding: 10px 14px;
+    border-radius: 0 6px 6px 0;
+    margin: 12px 0;
+    font-size: 12px;
+    color: #92400e;
+  }
+
+  .callout strong {
+    color: #78350f;
+  }
+</style>
+</head>
+<body>
+
+<!-- PAGE 1: CHARTER, DAILY ENGINE & BOUNDARIES -->
+<div class="header">
+  <div class="subtitle">Personalized Intensive Curriculum</div>
+  <h1>90-Day Spoken English Mastery Blueprint</h1>
+  <div style="font-size: 13px; color: #cbd5e1; margin-top: 2px;">Tailored for Retail Sales & Collegial Social Fluency in the UAE</div>
+  
+  <div class="meta-grid">
+    <div class="meta-item"><strong>Student Profile:</strong> Retail Sales Professional (UAE)</div>
+    <div class="meta-item"><strong>L1 Background:</strong> Malayalam (SOV to SVO transfer)</div>
+    <div class="meta-item"><strong>Daily Dedication:</strong> 1 Hour Study + 30m Live Work Practice</div>
+    <div class="meta-item"><strong>Core Strategy:</strong> Speed & Flow First (Option B) via Shadowing</div>
+  </div>
+</div>
+
+<h2><span class="section-num">01</span> Executive Course Charter</h2>
+<table>
+  <tr>
+    <th style="width: 25%;">Dimension</th>
+    <th>Calibration & Strategic Approach</th>
+  </tr>
+  <tr>
+    <td><strong>Current Baseline</strong></td>
+    <td>Intermediate comprehension (B1). High conversational courage (speaks without fear). Key friction points: Malayalam cognitive translation lag, irregular past tense verbs ($V_2/V_3$), and spatial/temporal prepositions (<em>in, on, at</em>).</td>
+  </tr>
+  <tr>
+    <td><strong>Target Destination</strong></td>
+    <td>Effortless, natural, unforced spoken English with international colleagues and retail customers. Eliminating the mental translation layer; participating fully in normal workplace banter, storytelling, and persuasion.</td>
+  </tr>
+  <tr>
+    <td><strong>Mastery Standard</strong></td>
+    <td><strong>Standard 3 (The Balanced Standard):</strong> Continuous spoken delivery (< 3-second pauses) combined with accurate usage of targeted weekly grammar/idiom structures.</td>
+  </tr>
+  <tr>
+    <td><strong>Gatekeeper Rule</strong></td>
+    <td><strong>Strict Gatekeeper (Option A):</strong> Week $N+1$ unlocks only upon passing the Sunday Dual-Test (Written Quiz + 2-minute Audio). If failed, a 72-hour review loop is mandated before re-testing.</td>
+  </tr>
+</table>
+
+<h2><span class="section-num">02</span> The Daily 60-Minute Training Engine</h2>
+<div class="engine-container">
+  <div class="engine-card">
+    <div class="time">20 MIN</div>
+    <div class="label">Tier 1: Audio Shadowing</div>
+    <ul>
+      <li>Earphones on; lifestyle podcast audio.</li>
+      <li>Speak words out loud with 0.5s delay.</li>
+      <li>Bypasses Malayalam translation center.</li>
+      <li>Conditions speech motor reflexes.</li>
+    </ul>
+  </div>
+  <div class="engine-card">
+    <div class="time">25 MIN</div>
+    <div class="label">Tier 2: Unscripted Speaking</div>
+    <ul>
+      <li>Stand up and walk while speaking.</li>
+      <li>Speak continuously on daily prompt.</li>
+      <li>Use conversational fillers if stuck.</li>
+      <li>Zero self-stopping or editing.</li>
+    </ul>
+  </div>
+  <div class="engine-card">
+    <div class="time">15 MIN</div>
+    <div class="label">Tier 3: Phrase Mining & Quiz</div>
+    <ul>
+      <li>Note 3–5 mined natural phrases.</li>
+      <li>Complete 5-min written grammar drill.</li>
+      <li>Mentally prepare phrases for work.</li>
+      <li>Visual & cognitive verification.</li>
+    </ul>
+  </div>
+</div>
+
+<h2><span class="section-num">03</span> The Boundary System: What We Ignore vs. Master</h2>
+<div class="boundary-grid">
+  <div class="boundary-box boundary-ignored">
+    <h3>❌ RUTHLESSLY IGNORED</h3>
+    <ul>
+      <li>• Native accent imitation (British / American perfectionism).</li>
+      <li>• Academic essay writing & formal composition.</li>
+      <li>• Heavy literature, dense novels & classic books.</li>
+      <li>• Obsolete idioms (e.g., <em>"raining cats and dogs"</em>).</li>
+      <li>• IELTS / GRE academic test-prep vocabulary lists.</li>
+    </ul>
+  </div>
+  <div class="boundary-box boundary-mastered">
+    <h3>✅ ACTIVELY MASTERED</h3>
+    <ul>
+      <li>• Clear, energetic, intelligible Global English.</li>
+      <li>• High-clarity functional grammar models ("The Why").</li>
+      <li>• Modern conversational idioms & phrasal verbs.</li>
+      <li>• Quick written check-in worksheets for verification.</li>
+      <li>• Real-world UAE workplace field missions with peers.</li>
+    </ul>
+  </div>
+</div>
+
+<!-- PAGE 2: MONTH 1 & MONTH 2 CURRICULUM -->
+<div class="page-break"></div>
+
+<h2><span class="section-num">04</span> The 12-Week Sequential Curriculum</h2>
+
+<div class="month-header">MONTH 1: COGNITIVE DECOUPLING & NARRATIVE MOTOR WIRING <span>(Weeks 1 – 4)</span></div>
+
+<!-- Week 1 -->
+<div class="week-card">
+  <div class="week-title">
+    <span>WEEK 1: Breaking the Translation Barrier & Present Flow</span>
+    <span class="week-badge">Month 1</span>
+  </div>
+  <div class="week-content">
+    <div><span class="detail-label">Grammar:</span> SVO Sentence Anchor (Subject-Verb-Object) to break Malayalam SOV delay. Eliminate "-ing" on stative verbs.</div>
+    <div><span class="detail-label">Idioms/Phrases:</span> <em>"To be honest"</em>, <em>"At the end of the day"</em>, <em>"As far as I know"</em>.</div>
+    <div><span class="detail-label">Shadowing Audio:</span> Casual introductions and coffee-break dialogues.</div>
+    <div><span class="detail-label">Daily Solo Prompt:</span> Describe your morning routine step-by-step with zero translation pauses.</div>
+    <div class="week-row-full"><span class="detail-label">Workplace Field Mission:</span> Initiate small talk with 2 colleagues: <em>"How's your shift going so far?"</em></div>
+  </div>
+  <div class="test-box"><strong>Sunday Dual Test:</strong> 10-sentence SVO transformation quiz + 2-min unscripted audio on daily work duties at Standard 3.</div>
+</div>
+
+<!-- Week 2 -->
+<div class="week-card">
+  <div class="week-title">
+    <span>WEEK 2: Past Simple Narrative Mechanics ($V_2$ Irregular Verbs)</span>
+    <span class="week-badge">Month 1</span>
+  </div>
+  <div class="week-content">
+    <div><span class="detail-label">Grammar:</span> Top 30 irregular past verbs (<em>went, saw, told, bought, thought</em>). Fix negative/question forms (<em>"Did you see"</em> not <em>"Did you saw"</em>).</div>
+    <div><span class="detail-label">Idioms/Phrases:</span> <em>"Long story short"</em>, <em>"Out of the blue"</em>, <em>"Back in the day"</em>.</div>
+    <div><span class="detail-label">Shadowing Audio:</span> Personal storytelling podcasts (people recounting memorable trips or events).</div>
+    <div><span class="detail-label">Daily Solo Prompt:</span> Recount yesterday from morning to night using at least 8 irregular past verbs.</div>
+    <div class="week-row-full"><span class="detail-label">Workplace Field Mission:</span> Tell a colleague a 45-second personal story about an event earlier this week.</div>
+  </div>
+  <div class="test-box"><strong>Sunday Dual Test:</strong> 15-verb irregular past quiz + 2-min audio recounting your most chaotic retail sales day at Standard 3.</div>
+</div>
+
+<!-- Week 3 -->
+<div class="week-card">
+  <div class="week-title">
+    <span>WEEK 3: The Prepositional Matrix (In, On, At)</span>
+    <span class="week-badge">Month 1</span>
+  </div>
+  <div class="week-content">
+    <div><span class="detail-label">Grammar:</span> Time (<em>At 5pm, On Monday, In August</em>) vs. Place (<em>At the store, On the shelf, In Dubai</em>). Eliminate Malayalam <em>-il</em> confusion.</div>
+    <div><span class="detail-label">Idioms/Phrases:</span> <em>"In the loop"</em>, <em>"On the same page"</em>, <em>"At a glance"</em>.</div>
+    <div><span class="detail-label">Shadowing Audio:</span> Everyday discussions about schedules, travel logistics, and location directions.</div>
+    <div><span class="detail-label">Daily Solo Prompt:</span> Describe your store layout or apartment, locating objects strictly with <em>in, on, at, next to</em>.</div>
+    <div class="week-row-full"><span class="detail-label">Workplace Field Mission:</span> Give precise directions or schedule updates to a client or colleague using proper prepositions.</div>
+  </div>
+  <div class="test-box"><strong>Sunday Dual Test:</strong> 20-item <em>in/on/at</em> worksheet + 2-min audio explaining your upcoming week's schedule at Standard 3.</div>
+</div>
+
+<!-- Week 4 -->
+<div class="week-card">
+  <div class="week-title">
+    <span>WEEK 4: The Experience Bridge ($V_3$ & Present Perfect)</span>
+    <span class="week-badge">Month 1 Gatekeeper</span>
+  </div>
+  <div class="week-content">
+    <div><span class="detail-label">Grammar:</span> Present Perfect (<em>have/has + $V_3$</em>) vs. Past Simple (<em>$V_2$</em>). Lifelong experience vs. completed past timestamp.</div>
+    <div><span class="detail-label">Idioms/Phrases:</span> <em>"So far, so good"</em>, <em>"Touch wood"</em>, <em>"Up to speed"</em>.</div>
+    <div><span class="detail-label">Shadowing Audio:</span> Life story interviews and career journey conversations.</div>
+    <div><span class="detail-label">Daily Solo Prompt:</span> Talk out loud about 3 things you have achieved and 3 things you haven't done yet.</div>
+    <div class="week-row-full"><span class="detail-label">Workplace Field Mission:</span> Ask 3 colleagues: <em>"Have you ever tried...?"</em> or <em>"Have you been to...?"</em> to start conversations.</div>
+  </div>
+  <div class="test-box"><strong>Sunday Dual Test:</strong> 15-question $V_2$ vs $V_3$ test + 2-min speech: <em>"My Journey to the UAE: What I Have Learned"</em> at Standard 3.</div>
+</div>
+
+<div class="month-header">MONTH 2: COLLEGIAL DYNAMICS, BANTER & CONVERSATIONAL MECHANICS <span>(Weeks 5 – 8)</span></div>
+
+<!-- Week 5 -->
+<div class="week-card">
+  <div class="week-title">
+    <span>WEEK 5: The Question Engine (Leading & Directing Conversations)</span>
+    <span class="week-badge">Month 2</span>
+  </div>
+  <div class="week-content">
+    <div><span class="detail-label">Grammar:</span> Open vs. Closed Questions, conversational tag questions (<em>"...don't you think?", "...right?"</em>).</div>
+    <div><span class="detail-label">Idioms/Phrases:</span> <em>"By the way"</em>, <em>"Catch you later"</em>, <em>"Off the top of my head"</em>.</div>
+    <div><span class="detail-label">Shadowing Audio:</span> High-energy conversational talk shows and podcast interviews.</div>
+    <div><span class="detail-label">Daily Solo Prompt:</span> Play interviewer and guest: ask and answer 5 probing conversational questions.</div>
+    <div class="week-row-full"><span class="detail-label">Workplace Field Mission:</span> Ask 2 colleagues open-ended questions about their weekend plans or hobbies.</div>
+  </div>
+  <div class="test-box"><strong>Sunday Dual Test:</strong> 10-question construction quiz + 2-min simulated dialogue asking and answering questions at Standard 3.</div>
+</div>
+
+<!-- Week 6 -->
+<div class="week-card">
+  <div class="week-title">
+    <span>WEEK 6: Tactful Agreement, Disagreement & Softening Modals</span>
+    <span class="week-badge">Month 2</span>
+  </div>
+  <div class="week-content">
+    <div><span class="detail-label">Grammar:</span> Softening with modals (<em>could, would, might</em>) to sound diplomatic, polite, and persuasive.</div>
+    <div><span class="detail-label">Idioms/Phrases:</span> <em>"I see your point, but..."</em>, <em>"Fair enough"</em>, <em>"I wouldn't say that"</em>, <em>"Spot on"</em>.</div>
+    <div><span class="detail-label">Shadowing Audio:</span> Group debates on friendly topics (films, food, lifestyle habits).</div>
+    <div><span class="detail-label">Daily Solo Prompt:</span> Take a fun topic (e.g. <em>"Is living in Dubai better than living in Kerala?"</em>) and debate both sides.</div>
+    <div class="week-row-full"><span class="detail-label">Workplace Field Mission:</span> Diplomatically offer an alternative opinion at work using: <em>"I get what you mean, but..."</em></div>
+  </div>
+  <div class="test-box"><strong>Sunday Dual Test:</strong> Politeness transformation worksheet + 2-min unscripted opinion debate audio at Standard 3.</div>
+</div>
+
+<!-- PAGE 3: MONTH 2/3 & DASHBOARD -->
+<div class="page-break"></div>
+
+<!-- Week 7 -->
+<div class="week-card">
+  <div class="week-title">
+    <span>WEEK 7: High-Frequency Phrasal Verbs of Daily Life & Retail</span>
+    <span class="week-badge">Month 2</span>
+  </div>
+  <div class="week-content">
+    <div><span class="detail-label">Grammar:</span> Multi-word verbs: <em>run out of, turn down, call off, figure out, wrap up, get along with</em>.</div>
+    <div><span class="detail-label">Idioms/Phrases:</span> <em>"Wrap it up"</em>, <em>"Back to square one"</em>, <em>"Call it a day"</em>.</div>
+    <div><span class="detail-label">Shadowing Audio:</span> Informal work dialogues and natural everyday problem-solving chats.</div>
+    <div><span class="detail-label">Daily Solo Prompt:</span> Describe a complicated work situation and how you <em>figured it out, followed up, and wrapped it up</em>.</div>
+    <div class="week-row-full"><span class="detail-label">Workplace Field Mission:</span> Intentionally use 3 target phrasal verbs during your retail shift today.</div>
+  </div>
+  <div class="test-box"><strong>Sunday Dual Test:</strong> 15-question phrasal substitution test + 2-min audio on store inventory problem-solving at Standard 3.</div>
+</div>
+
+<!-- Week 8 -->
+<div class="week-card">
+  <div class="week-title">
+    <span>WEEK 8: Storytelling Architecture (Hook $\to$ Drama $\to$ Resolution)</span>
+    <span class="week-badge">Month 2 Gatekeeper</span>
+  </div>
+  <div class="week-content">
+    <div><span class="detail-label">Grammar:</span> Narrative sequencing connectors: <em>Suddenly, As soon as, Meanwhile, Turns out that, Luckily</em>.</div>
+    <div><span class="detail-label">Idioms/Phrases:</span> <em>"To make matters worse"</em>, <em>"Believe it or not"</em>, <em>"You won't believe this, but..."</em>.</div>
+    <div><span class="detail-label">Shadowing Audio:</span> Stand-up comedy narrative clips and captivating dinner-table stories.</div>
+    <div><span class="detail-label">Daily Solo Prompt:</span> Tell a 2-minute story out loud about a funny cultural misunderstanding you experienced.</div>
+    <div class="week-row-full"><span class="detail-label">Workplace Field Mission:</span> Share a 1-minute funny anecdote with a group of colleagues during tea break.</div>
+  </div>
+  <div class="test-box"><strong>Sunday Dual Test:</strong> Discourse marker synthesis worksheet + 2-min storytelling test with zero dead air at Standard 3.</div>
+</div>
+
+<div class="month-header">MONTH 3: SPONTANEOUS NUANCE, WIT & SALES MASTERY <span>(Weeks 9 – 12)</span></div>
+
+<!-- Week 9 -->
+<div class="week-card">
+  <div class="week-title">
+    <span>WEEK 9: Retail Persuasion & Descriptive Sales Flow</span>
+    <span class="week-badge">Month 3</span>
+  </div>
+  <div class="week-content">
+    <div><span class="detail-label">Grammar:</span> Sensory adjectives and comparative/superlative precision (<em>"much more durable", "by far the most popular"</em>).</div>
+    <div><span class="detail-label">Idioms/Phrases:</span> <em>"Bang for your buck"</em>, <em>"A win-win situation"</em>, <em>"No-brainer"</em>.</div>
+    <div><span class="detail-label">Shadowing Audio:</span> Premium consultative sales dialogues and customer demonstration interactions.</div>
+    <div><span class="detail-label">Daily Solo Prompt:</span> Pitch an everyday object (e.g. your water bottle) for 2 minutes as an essential luxury product.</div>
+    <div class="week-row-full"><span class="detail-label">Workplace Field Mission:</span> Use 2 comparative structures to recommend a superior product to a customer in the store.</div>
+  </div>
+  <div class="test-box"><strong>Sunday Dual Test:</strong> 12-question comparative precision quiz + 2-min unscripted customer objection handling audio at Standard 3.</div>
+</div>
+
+<!-- Week 10 -->
+<div class="week-card">
+  <div class="week-title">
+    <span>WEEK 10: Hypotheticals & Future Scenarios (Conditional Mastery)</span>
+    <span class="week-badge">Month 3</span>
+  </div>
+  <div class="week-content">
+    <div><span class="detail-label">Grammar:</span> Second Conditional (<em>"If I were you, I would..."</em>) & Real Conditionals (<em>"Unless we order now..."</em>).</div>
+    <div><span class="detail-label">Idioms/Phrases:</span> <em>"If push comes to shove"</em>, <em>"Worst-case scenario"</em>, <em>"Play it by ear"</em>.</div>
+    <div><span class="detail-label">Shadowing Audio:</span> Strategic discussions, brainstorming sessions, and visionary life plans.</div>
+    <div><span class="detail-label">Daily Solo Prompt:</span> Speak for 2 minutes on: <em>"If I were given 1 million AED tomorrow, what would I build?"</em></div>
+    <div class="week-row-full"><span class="detail-label">Workplace Field Mission:</span> Advise a coworker on a work dilemma using: <em>"If I were in your shoes, I would..."</em></div>
+  </div>
+  <div class="test-box"><strong>Sunday Dual Test:</strong> 12-question conditional transformation test + 2-min audio analyzing a hypothetical business venture at Standard 3.</div>
+</div>
+
+<!-- Week 11 -->
+<div class="week-card">
+  <div class="week-title">
+    <span>WEEK 11: Real-Time Thinking & Conversational Fillers (Zero-Freeze)</span>
+    <span class="week-badge">Month 3</span>
+  </div>
+  <div class="week-content">
+    <div><span class="detail-label">Grammar:</span> Vocal holding patterns (<em>"How can I put this...", "What I'm trying to get at is..."</em>) replacing silence.</div>
+    <div><span class="detail-label">Idioms/Phrases:</span> <em>"Cut to the chase"</em>, <em>"The elephant in the room"</em>, <em>"Take it with a grain of salt"</em>.</div>
+    <div><span class="detail-label">Shadowing Audio:</span> Fast-paced unscripted roundtable panel discussions.</div>
+    <div><span class="detail-label">Daily Solo Prompt:</span> Pick an unfamiliar topic at random from news/YouTube and speak 2.5 minutes nonstop.</div>
+    <div class="week-row-full"><span class="detail-label">Workplace Field Mission:</span> Hold a continuous 5-minute conversation with an international colleague using zero Malayalam words.</div>
+  </div>
+  <div class="test-box"><strong>Sunday Dual Test:</strong> Fillers & repairs worksheet + 2.5-min audio with <strong>no pauses exceeding 2 seconds</strong> at Standard 3.</div>
+</div>
+
+<!-- Week 12 -->
+<div class="week-card">
+  <div class="week-title">
+    <span>WEEK 12: The Grand Capstone & Graduation</span>
+    <span class="week-badge" style="background: #15803d;">Graduation</span>
+  </div>
+  <div class="week-content">
+    <div><span class="detail-label">Focus:</span> Full synthesis: storytelling, retail persuasion, effortless collegial banter, and zero translation lag.</div>
+    <div><span class="detail-label">Shadowing Audio:</span> Masterclass level spontaneous collegial conversations.</div>
+    <div class="week-row-full"><span class="detail-label">Capstone Audio Test:</span> 3-minute continuous, unscripted speech: <em>"Who I Was 90 Days Ago vs. Who I Am Today in Spoken English."</em></div>
+    <div class="week-row-full"><span class="detail-label">Capstone Workplace Mission:</span> Actively engage, joke, and share stories at a full lunch/dinner with colleagues of multiple nationalities.</div>
+  </div>
+  <div class="test-box" style="background: #f0fdf4; border-top-color: #86efac; color: #166534;">
+    <strong>Graduation Dual Test:</strong> 30-question diagnostic synthesis worksheet + 3-minute Capstone Speech at Standard 3.
+  </div>
+</div>
+
+<!-- PAGE 4: DASHBOARD & MASTERY GATE -->
+<div class="page-break"></div>
+
+<h2><span class="section-num">05</span> The 12-Week Performance Dashboard Matrix</h2>
+<p style="font-size: 11.5px; color: #64748b; margin-bottom: 8px;">Fill in your actual scores each Sunday. Every module must show "PASSED" to advance.</p>
+
+<table>
+  <thead>
+    <tr>
+      <th style="width: 7%;">Week</th>
+      <th style="width: 38%;">Core Module Focus</th>
+      <th style="width: 15%;">Written Quiz</th>
+      <th style="width: 15%;">Spoken Test</th>
+      <th style="width: 13%;">Field Mission</th>
+      <th style="width: 12%;">Status</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>W1</strong></td>
+      <td>SVO Sentence Anchor & Present Flow</td>
+      <td>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; / 100%</td>
+      <td>[ &nbsp; ] Pass &nbsp; [ &nbsp; ] Fail</td>
+      <td>[ &nbsp; ] Done</td>
+      <td>🔒 Pending</td>
+    </tr>
+    <tr>
+      <td><strong>W2</strong></td>
+      <td>Past Simple & $V_2$ Irregular Verbs</td>
+      <td>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; / 100%</td>
+      <td>[ &nbsp; ] Pass &nbsp; [ &nbsp; ] Fail</td>
+      <td>[ &nbsp; ] Done</td>
+      <td>🔒 Locked</td>
+    </tr>
+    <tr>
+      <td><strong>W3</strong></td>
+      <td>The Preposition Matrix (<em>In/On/At</em>)</td>
+      <td>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; / 100%</td>
+      <td>[ &nbsp; ] Pass &nbsp; [ &nbsp; ] Fail</td>
+      <td>[ &nbsp; ] Done</td>
+      <td>🔒 Locked</td>
+    </tr>
+    <tr>
+      <td><strong>W4</strong></td>
+      <td>The Experience Bridge ($V_3$ Perfect)</td>
+      <td>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; / 100%</td>
+      <td>[ &nbsp; ] Pass &nbsp; [ &nbsp; ] Fail</td>
+      <td>[ &nbsp; ] Done</td>
+      <td>🔒 Locked</td>
+    </tr>
+    <tr>
+      <td><strong>W5</strong></td>
+      <td>The Question Engine & Initiation</td>
+      <td>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; / 100%</td>
+      <td>[ &nbsp; ] Pass &nbsp; [ &nbsp; ] Fail</td>
+      <td>[ &nbsp; ] Done</td>
+      <td>🔒 Locked</td>
+    </tr>
+    <tr>
+      <td><strong>W6</strong></td>
+      <td>Polite Disagreement & Softening</td>
+      <td>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; / 100%</td>
+      <td>[ &nbsp; ] Pass &nbsp; [ &nbsp; ] Fail</td>
+      <td>[ &nbsp; ] Done</td>
+      <td>🔒 Locked</td>
+    </tr>
+    <tr>
+      <td><strong>W7</strong></td>
+      <td>Everyday & Retail Phrasal Verbs</td>
+      <td>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; / 100%</td>
+      <td>[ &nbsp; ] Pass &nbsp; [ &nbsp; ] Fail</td>
+      <td>[ &nbsp; ] Done</td>
+      <td>🔒 Locked</td>
+    </tr>
+    <tr>
+      <td><strong>W8</strong></td>
+      <td>Narrative Storytelling Architecture</td>
+      <td>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; / 100%</td>
+      <td>[ &nbsp; ] Pass &nbsp; [ &nbsp; ] Fail</td>
+      <td>[ &nbsp; ] Done</td>
+      <td>🔒 Locked</td>
+    </tr>
+    <tr>
+      <td><strong>W9</strong></td>
+      <td>Persuasion & Descriptive Sales Flow</td>
+      <td>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; / 100%</td>
+      <td>[ &nbsp; ] Pass &nbsp; [ &nbsp; ] Fail</td>
+      <td>[ &nbsp; ] Done</td>
+      <td>🔒 Locked</td>
+    </tr>
+    <tr>
+      <td><strong>W10</strong></td>
+      <td>Hypotheticals & Future Scenarios</td>
+      <td>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; / 100%</td>
+      <td>[ &nbsp; ] Pass &nbsp; [ &nbsp; ] Fail</td>
+      <td>[ &nbsp; ] Done</td>
+      <td>🔒 Locked</td>
+    </tr>
+    <tr>
+      <td><strong>W11</strong></td>
+      <td>Zero-Freeze Real-Time Thinking</td>
+      <td>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; / 100%</td>
+      <td>[ &nbsp; ] Pass &nbsp; [ &nbsp; ] Fail</td>
+      <td>[ &nbsp; ] Done</td>
+      <td>🔒 Locked</td>
+    </tr>
+    <tr>
+      <td><strong>W12</strong></td>
+      <td>Grand Capstone & Graduation</td>
+      <td>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; / 100%</td>
+      <td>[ &nbsp; ] Pass &nbsp; [ &nbsp; ] Fail</td>
+      <td>[ &nbsp; ] Done</td>
+      <td>🎓 GRADUATE</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2><span class="section-num">06</span> The Strict Mastery Gatekeeper Protocol</h2>
+<div class="callout">
+  <strong>The 72-Hour Reset Rule:</strong><br>
+  Progression requires passing the Sunday Dual-Test under <strong>Standard 3</strong>:
+  <ol style="margin-top: 6px; margin-left: 18px;">
+    <li>Written score must be at least <strong>80%</strong>.</li>
+    <li>Spoken recording must have continuous flow with <strong>no pauses longer than 3 seconds</strong>.</li>
+    <li>At least <strong>4 target structures/idioms</strong> of that week must be used accurately in the recording.</li>
+  </ol>
+  <em>If failed: Week $N+1$ remains locked. Monday through Wednesday are spent repeating that week's shadowing and solo drills, followed by a re-test on Wednesday night.</em>
+</div>
+
+<div style="margin-top: 30px; padding: 14px 18px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; text-align: center;">
+  <div style="font-weight: 700; color: #0f172a; font-size: 13px;">READY TO BEGIN YOUR JOURNEY?</div>
+  <div style="color: #64748b; font-size: 12px; margin-top: 4px;">
+    Whenever you sit down for Day 1, simply say: <strong>"Let's start Week 1"</strong> to receive your first audio tracks, grammar lesson, and speaking drills.
+  </div>
+</div>
+
+</body>
+</html>

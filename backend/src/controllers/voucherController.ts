@@ -37,7 +37,7 @@ export async function list(
 export const createValidators = [
   body('companyId').notEmpty().withMessage('Company ID required'),
   body('financialYearId').notEmpty().withMessage('Financial year ID required'),
-  body('voucherType').isIn(['Receipt', 'Payment', 'Journal', 'ChequePayment', 'ChequeReceipt']).withMessage('Valid voucher type required'),
+  body('voucherType').isIn(['Receipt', 'Payment', 'Journal', 'Contra', 'ChequePayment', 'ChequeReceipt', 'Sales', 'Purchase', 'Opening']).withMessage('Valid voucher type required'),
   body('date').isISO8601().withMessage('Valid date required'),
   body('lines').isArray({ min: 2 }).withMessage('At least 2 lines required'),
   body('lines.*.ledgerAccountId').notEmpty().withMessage('Ledger account required'),
@@ -64,3 +64,56 @@ export async function create(
     next(err);
   }
 }
+
+export async function getNextVoucherNo(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const companyId = req.query.companyId as string;
+    const financialYearId = req.query.financialYearId as string;
+    const voucherType = (req.query.voucherType as string) || 'Receipt';
+    if (!companyId || !financialYearId) {
+      res.status(400).json({ success: false, message: 'companyId and financialYearId required' });
+      return;
+    }
+    const voucherNo = await voucherService.getNextVoucherNo(companyId, financialYearId, voucherType);
+    res.json({ success: true, data: { voucherNo } });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getById(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const id = req.params.id;
+    const voucher = await voucherService.getById(id);
+    if (!voucher) {
+      res.status(404).json({ success: false, message: 'Voucher not found' });
+      return;
+    }
+    res.json({ success: true, data: voucher });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function deleteVoucher(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const id = req.params.id;
+    await voucherService.deleteVoucher(id);
+    res.json({ success: true, message: 'Voucher deleted successfully' });
+  } catch (err) {
+    next(err);
+  }
+}
+

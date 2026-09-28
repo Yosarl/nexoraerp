@@ -12,6 +12,7 @@ interface DateInputProps {
   disabled?: boolean;
   error?: boolean;
   helperText?: string;
+  sx?: any;
 }
 
 // Helper to get current date in yyyy-mm-dd format
@@ -41,6 +42,7 @@ export default function DateInput({
   disabled = false,
   error = false,
   helperText,
+  sx,
 }: DateInputProps) {
   const handleChange = (newValue: Dayjs | null) => {
     if (newValue && newValue.isValid()) {
@@ -65,6 +67,7 @@ export default function DateInput({
             error,
             helperText,
             InputLabelProps: { shrink: true },
+            sx,
           },
         }}
       />

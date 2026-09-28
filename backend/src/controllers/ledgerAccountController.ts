@@ -77,6 +77,7 @@ export const updateValidators = [
   body('creditLimit').optional().isFloat({ min: 0 }),
   body('paymentTerms').optional().trim(),
   body('groupId').optional().notEmpty(),
+  body('type').optional().isIn(['Customer', 'Supplier', 'Bank', 'Cash', 'Expense', 'Revenue', 'Other']),
 ];
 
 export async function update(

@@ -4,8 +4,11 @@ export type VoucherType =
   | 'Receipt'
   | 'Payment'
   | 'Journal'
+  | 'Contra'
   | 'ChequePayment'
   | 'ChequeReceipt'
+  | 'Sales'
+  | 'Purchase'
   | 'Opening';
 
 export type VoucherStatus = 'Draft' | 'Posted' | 'Cancelled';
@@ -30,9 +33,14 @@ export interface IVoucher extends Document {
   status: VoucherStatus;
   referenceType?: string;
   referenceId?: mongoose.Types.ObjectId;
+  referenceNo?: string;
   chequeNumber?: string;
   chequeDate?: Date;
   bankLedgerId?: mongoose.Types.ObjectId;
+  chequeStatus?: 'PENDING' | 'CLEARED' | 'BOUNCED';
+  bankDate?: Date;
+  isReconciled?: boolean;
+  reconciledAt?: Date;
   createdBy?: mongoose.Types.ObjectId;
   createdAt: Date;
   updatedBy?: mongoose.Types.ObjectId;
@@ -55,7 +63,7 @@ const VoucherSchema = new Schema<IVoucher>(
     financialYearId: { type: Schema.Types.ObjectId, ref: 'FinancialYear', required: true },
     voucherType: {
       type: String,
-      enum: ['Receipt', 'Payment', 'Journal', 'ChequePayment', 'ChequeReceipt', 'Opening'],
+      enum: ['Receipt', 'Payment', 'Journal', 'Contra', 'ChequePayment', 'ChequeReceipt', 'Sales', 'Purchase', 'Opening'],
       required: true,
     },
     voucherNo: { type: String, required: true },
@@ -67,9 +75,17 @@ const VoucherSchema = new Schema<IVoucher>(
     status: { type: String, enum: ['Draft', 'Posted', 'Cancelled'], default: 'Draft' },
     referenceType: { type: String },
     referenceId: { type: Schema.Types.ObjectId },
+    referenceNo: { type: String },
     chequeNumber: { type: String },
     chequeDate: { type: Date },
     bankLedgerId: { type: Schema.Types.ObjectId, ref: 'LedgerAccount' },
+    chequeStatus: {
+      type: String,
+      enum: ['PENDING', 'CLEARED', 'BOUNCED'],
+    },
+    bankDate: { type: Date },
+    isReconciled: { type: Boolean, default: false },
+    reconciledAt: { type: Date },
     createdBy: { type: Schema.Types.ObjectId, ref: 'User' },
     updatedBy: { type: Schema.Types.ObjectId, ref: 'User' },
   },

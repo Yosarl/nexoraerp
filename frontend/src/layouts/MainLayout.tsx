@@ -31,6 +31,7 @@ import ShoppingCartIcon from '@mui/icons-material/ShoppingCart';
 import ReceiptIcon from '@mui/icons-material/Receipt';
 import AssignmentReturnIcon from '@mui/icons-material/AssignmentReturn';
 import AccountBalanceIcon from '@mui/icons-material/AccountBalance';
+import CompareArrowsIcon from '@mui/icons-material/CompareArrows';
 import ListAltIcon from '@mui/icons-material/ListAlt';
 import BackupIcon from '@mui/icons-material/Backup';
 import RestoreIcon from '@mui/icons-material/Restore';
@@ -93,6 +94,7 @@ const menuSections: SectionDef[] = [
       { label: 'Opening Balance', path: '/entry/opening-balance', icon: <AccountTreeIcon /> },
       { label: 'Receipt Voucher', path: '/entry/voucher/receipt', icon: <ReceiptIcon /> },
       { label: 'Payment Voucher', path: '/entry/voucher/payment', icon: <ReceiptIcon /> },
+      { label: 'Contra Voucher', path: '/entry/voucher/contra', icon: <CompareArrowsIcon /> },
       { label: 'Journal Voucher', path: '/entry/voucher/journal', icon: <AccountTreeIcon /> },
       { label: 'Cheque Payment', path: '/entry/voucher/cheque-payment', icon: <ReceiptIcon /> },
       { label: 'Cheque Receipt', path: '/entry/voucher/cheque-receipt', icon: <ReceiptIcon /> },
@@ -545,7 +547,13 @@ export default function MainLayout() {
                         sx={{ pl: 2 }}
                       >
                         {item.icon && <ListItemIcon sx={{ minWidth: 36 }}>{item.icon}</ListItemIcon>}
-                        <ListItemText primary={item.label} primaryTypographyProps={{ variant: 'body2' }} />
+                        <ListItemText
+                          primary={item.label}
+                          primaryTypographyProps={{
+                            variant: 'body2',
+                            sx: item.label === 'Bank Reconciliation' ? { fontSize: '0.55rem', lineHeight: 1.2 } : undefined,
+                          }}
+                        />
                       </ListItemButton>
                     ))}
                   </List>

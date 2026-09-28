@@ -8,6 +8,7 @@ export interface StockReportItem {
   productId: string;
   imei: string;
   itemName: string;
+  batchNumber?: string | null;
   itemGroup: string;
   brand: string;
   category: string;
@@ -26,7 +27,7 @@ export interface StockReportItem {
 
 // All searchable string fields on the final StockReportItem
 const STRING_FIELDS: (keyof StockReportItem)[] = [
-  'itemName', 'imei', 'itemGroup', 'brand', 'category', 'branch', 'sellerName', 'expiryDate',
+  'itemName', 'imei', 'batchNumber', 'itemGroup', 'brand', 'category', 'branch', 'sellerName', 'expiryDate',
 ];
 
 // All searchable numeric fields on the final StockReportItem
@@ -233,6 +234,7 @@ async function getAvgStockReport(
       productId: pid,
       imei: prod.imei ?? '',
       itemName: prod.name,
+      batchNumber: null,
       itemGroup: prod.itemGroup ?? '',
       brand: prod.brand ?? '',
       category: categoryName,
@@ -362,6 +364,7 @@ async function getBatchWiseReport(
           productId: pid,
           imei: prod.imei ?? '',
           itemName: prod.name,
+          batchNumber: null,
           itemGroup: prod.itemGroup ?? '',
           brand: prod.brand ?? '',
           category: categoryName,
@@ -394,6 +397,7 @@ async function getBatchWiseReport(
         });
 
         let soldRemaining = Math.max(totalSold, 0);
+        const batchRows: typeof items = [];
         for (const tx of sortedBatches) {
           // Subtract sold qty from this batch (FIFO)
           const soldFromBatch = Math.min(tx.quantityIn, soldRemaining);
@@ -404,11 +408,12 @@ async function getBatchWiseReport(
           if (batchQty <= 0) continue;
 
           const sellerUserId = tx.createdBy?.toString() ?? null;
-          items.push({
+          batchRows.push({
             rowId: tx._id.toString(),
             productId: pid,
             imei: prod.imei ?? '',
             itemName: prod.name,
+            batchNumber: tx.batchNumber || (tx.narration?.match(/Batch:\s*(\S+)/)?.[1]) || null,
             itemGroup: prod.itemGroup ?? '',
             brand: prod.brand ?? '',
             category: categoryName,
@@ -425,6 +430,129 @@ async function getBatchWiseReport(
             sellerName: sellerUserId ? userMap.get(sellerUserId) ?? 'N/A' : 'N/A',
           });
         }
+
+        // Handle excess stock from sales returns (netStock > totalPurchased)
+        // Add returned stock to the specific batch it was returned to
+        if (totalSold < 0 && Math.abs(totalSold) > 0) {
+          const excessStock = Math.abs(totalSold);
+
+          // Query SalesReturn transactions for this product grouped by batchNumber
+          const returnAgg = await InventoryTransaction.aggregate([
+            {
+              $match: {
+                companyId: companyOid,
+                productId: new mongoose.Types.ObjectId(pid),
+                type: 'SalesReturn',
+                quantityIn: { $gt: 0 },
+              },
+            },
+            {
+              $group: {
+                _id: '$batchNumber',
+                totalReturned: { $sum: '$quantityIn' },
+              },
+            },
+          ]);
+
+          // Find the batch narration from purchase transactions to identify batchNumber
+          // (Purchase transactions store batchNumber in narration as "Purchase XXX Batch: NNNNN")
+          const batchNumberMap = new Map<string, string>();
+          for (const tx of sortedBatches) {
+            const narr = tx.narration || '';
+            const batchMatch = narr.match(/Batch:\s*(\S+)/);
+            if (batchMatch) {
+              batchNumberMap.set(tx._id.toString(), batchMatch[1]);
+            }
+          }
+
+          let excessRemaining = excessStock;
+          for (const ret of returnAgg) {
+            if (excessRemaining <= 0) break;
+            const retBatch = ret._id || '';
+            const retQty = Math.min(ret.totalReturned, excessRemaining);
+
+            // Find the matching batch row by batchNumber
+            // Purchase tx narrations contain "Batch: XXXXX" — match against that
+            const matchIdx = batchRows.findIndex((row) => {
+              const txId = row.rowId;
+              const mappedBatch = batchNumberMap.get(txId);
+              return mappedBatch === retBatch;
+            });
+
+            if (matchIdx >= 0) {
+              batchRows[matchIdx].qtyAvailable += retQty;
+              batchRows[matchIdx].totalPurchaseRate = batchRows[matchIdx].qtyAvailable * batchRows[matchIdx].purchaseRate;
+              excessRemaining -= retQty;
+            } else {
+              // Batch was sold out but returns brought stock back — find it in sortedBatches
+              const rawMatch = sortedBatches.find((tx) => {
+                const narr = tx.narration || '';
+                const bm = narr.match(/Batch:\s*(\S+)/);
+                return bm && bm[1] === retBatch;
+              });
+              if (rawMatch) {
+                const sellerUserId = rawMatch.createdBy?.toString() ?? null;
+                batchRows.push({
+                  rowId: rawMatch._id.toString(),
+                  productId: pid,
+                  imei: prod.imei ?? '',
+                  itemName: prod.name,
+                  batchNumber: rawMatch.batchNumber || (rawMatch.narration?.match(/Batch:\s*(\S+)/)?.[1]) || null,
+                  itemGroup: prod.itemGroup ?? '',
+                  brand: prod.brand ?? '',
+                  category: categoryName,
+                  qtyAvailable: retQty,
+                  purchaseRate: rawMatch.costPrice ?? 0,
+                  totalPurchaseRate: retQty * (rawMatch.costPrice ?? 0),
+                  sellingPrice: prod.sellingPrice ?? prod.retailPrice ?? 0,
+                  retailPrice: prod.retailPrice ?? 0,
+                  wholesalePrice: prod.wholesalePrice ?? 0,
+                  specialPrice1: prod.specialPrice ?? 0,
+                  specialPrice2: prod.specialPrice2 ?? 0,
+                  expiryDate: null,
+                  branch: 'MAIN BRANCH',
+                  sellerName: sellerUserId ? userMap.get(sellerUserId) ?? 'N/A' : 'N/A',
+                });
+                excessRemaining -= retQty;
+              }
+            }
+          }
+
+          // Fallback: any remaining excess goes to newest batch
+          if (excessRemaining > 0) {
+            if (batchRows.length > 0) {
+              const lastRow = batchRows[batchRows.length - 1];
+              lastRow.qtyAvailable += excessRemaining;
+              lastRow.totalPurchaseRate = lastRow.qtyAvailable * lastRow.purchaseRate;
+            } else if (sortedBatches.length > 0) {
+              const lastTx = sortedBatches[sortedBatches.length - 1];
+              const sellerUserId = lastTx.createdBy?.toString() ?? null;
+              batchRows.push({
+                rowId: lastTx._id.toString(),
+                productId: pid,
+                imei: prod.imei ?? '',
+                itemName: prod.name,
+                batchNumber: lastTx.batchNumber || (lastTx.narration?.match(/Batch:\s*(\S+)/)?.[1]) || null,
+                itemGroup: prod.itemGroup ?? '',
+                brand: prod.brand ?? '',
+                category: categoryName,
+                qtyAvailable: excessRemaining,
+                purchaseRate: lastTx.costPrice ?? 0,
+                totalPurchaseRate: excessRemaining * (lastTx.costPrice ?? 0),
+                sellingPrice: prod.sellingPrice ?? prod.retailPrice ?? 0,
+                retailPrice: prod.retailPrice ?? 0,
+                wholesalePrice: prod.wholesalePrice ?? 0,
+                specialPrice1: prod.specialPrice ?? 0,
+                specialPrice2: prod.specialPrice2 ?? 0,
+                expiryDate: null,
+                branch: 'MAIN BRANCH',
+                sellerName: sellerUserId ? userMap.get(sellerUserId) ?? 'N/A' : 'N/A',
+              });
+            }
+          }
+        }
+
+        items.push(...batchRows);
       }
     } else {
       // No batches – still show the product as a single row
@@ -437,6 +565,7 @@ async function getBatchWiseReport(
         productId: pid,
         imei: prod.imei ?? '',
         itemName: prod.name,
+        batchNumber: null,
         itemGroup: prod.itemGroup ?? '',
         brand: prod.brand ?? '',
         category: categoryName,
@@ -510,13 +639,15 @@ async function getLastPurchaseRateReport(
         lastPurchaseDate: { $first: '$date' },
         lastPurchaseQty: { $first: '$quantityIn' },
         lastSupplierId: { $first: '$createdBy' },
+        lastBatchNumber: { $first: '$batchNumber' },
+        lastNarration: { $first: '$narration' },
       },
     },
   ]);
 
   const lastPurchaseMap = new Map<
     string,
-    { rate: number; date: Date | null; qty: number; supplierId: string | null }
+    { rate: number; date: Date | null; qty: number; supplierId: string | null; batchNumber: string | null }
   >();
   for (const item of lastPurchaseAgg) {
     lastPurchaseMap.set(item._id.toString(), {
@@ -524,6 +655,7 @@ async function getLastPurchaseRateReport(
       date: item.lastPurchaseDate ?? null,
       qty: item.lastPurchaseQty ?? 0,
       supplierId: item.lastSupplierId?.toString() ?? null,
+      batchNumber: item.lastBatchNumber || (item.lastNarration?.match(/Batch:\s*(\S+)/)?.[1]) || null,
     });
   }
 
@@ -569,6 +701,7 @@ async function getLastPurchaseRateReport(
       productId: pid,
       imei: prod.imei ?? '',
       itemName: prod.name,
+      batchNumber: lp?.batchNumber ?? null,
       itemGroup: prod.itemGroup ?? '',
       brand: prod.brand ?? '',
       category: categoryName,

@@ -3,7 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import {
   Box, Paper, Typography, TextField, Button, Grid, IconButton,
   Autocomplete, Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
-  Dialog, DialogTitle, DialogContent, DialogActions, RadioGroup, FormControlLabel, Radio,
+  Dialog, DialogTitle, DialogContent, DialogActions,
   MenuItem, Checkbox, FormControlLabel as MuiFormControlLabel, Divider, Tooltip,
 } from '@mui/material';
 import {
@@ -19,10 +19,11 @@ import {
   KeyboardDoubleArrowRight as LastIcon,
   PauseCircleOutline as HoldIcon,
   PlaylistAdd as HoldListIcon,
+  WarningAmber as WarningIcon,
 } from '@mui/icons-material';
 import { useSelector, useDispatch } from 'react-redux';
 import type { RootState } from '../store';
-import { salesApi, ledgerAccountApi, productApi, stockApi } from '../services/api';
+import { salesApi, ledgerAccountApi, productApi, stockApi, purchaseApi } from '../services/api';
 import DateInput, { getCurrentDate } from '../components/DateInput';
 import { setDrawerOpen } from '../store/slices/appSlice';
 
@@ -45,6 +46,18 @@ interface ProductOption {
   retailPrice?: number;
   wholesalePrice?: number;
   imei?: string;
+  unitOfMeasureId?: { _id: string; name?: string; shortCode?: string } | string;
+  multiUnits?: Array<{
+    multiUnitId: string;
+    imei?: string;
+    conversion?: number;
+    price?: number;
+    wholesale?: number;
+    retail?: number;
+    specialPrice1?: number;
+    specialPrice2?: number;
+    unitId?: { _id: string; name?: string; shortCode?: string } | string;
+  }>;
 }
 
 interface UnitOption {
@@ -57,6 +70,7 @@ interface UnitOption {
   retail?: number;
   specialPrice1?: number;
   specialPrice2?: number;
+  multiUnitId?: string;
 }
 
 interface LineItem {
@@ -78,6 +92,7 @@ interface LineItem {
   total: number;
   batchNumber?: string;
   isCommitted: boolean;
+  multiUnitId?: string;
 }
 
 interface Customer {
@@ -86,6 +101,7 @@ interface Customer {
   code?: string;
   address?: string;
   phone?: string;
+  type?: string;
 }
 
 interface RefInvoiceItem {
@@ -100,6 +116,8 @@ interface RefInvoiceItem {
   totalAmount: number;
   unitName?: string;
   unitId?: string;
+  batchNumber?: string;
+  multiUnitId?: string;
 }
 
 interface HeldSalesReturn {
@@ -197,6 +215,7 @@ export default function SalesReturn() {
   const [createCustomerConfirmOpen, setCreateCustomerConfirmOpen] = useState(false);
   const [createCustomerConfirmName, setCreateCustomerConfirmName] = useState<string | null>(null);
   const [cashAccountId, setCashAccountId] = useState<string | null>(null);
+  const [originalInvoiceNo, setOriginalInvoiceNo] = useState<string | null>(null);
   const [products, setProducts] = useState<ProductOption[]>([]);
   const [lines, setLines] = useState<LineItem[]>([emptyLine()]);
   const [otherDiscPercent, setOtherDiscPercent] = useState(0);
@@ -210,6 +229,7 @@ export default function SalesReturn() {
   const [heldReturns, setHeldReturns] = useState<HeldSalesReturn[]>(loadHeldReturns());
   const [holdListDialogOpen, setHoldListDialogOpen] = useState(false);
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+  const [editConfirmOpen, setEditConfirmOpen] = useState(false);
   const [searchDialogOpen, setSearchDialogOpen] = useState(false);
   const [searchInvoiceNo, setSearchInvoiceNo] = useState('');
   const [searchError, setSearchError] = useState('');
@@ -282,6 +302,7 @@ export default function SalesReturn() {
     setDate(data.date ? new Date(data.date).toISOString().slice(0, 10) : getCurrentDate());
     setReturnType((data.returnType || 'OnAccount') as 'OnAccount' | 'ByRef');
     setOriginalInvoiceIdForReturn(data.originalInvoiceId ?? null);
+    setOriginalInvoiceNo(data.originalInvoiceNo ?? null);
     setCustomerId(data.customerId ?? null);
     setCustomerName(data.customerName ?? 'CASH');
     setCustomerAddress(data.customerAddress ?? '');
@@ -306,6 +327,52 @@ export default function SalesReturn() {
       const lineTotal = parseFloat((net + vatAmount).toFixed(2));
       const uname = it.unitName || 'Pcs';
       const uid = it.unitId || 'pcs';
+      const product = products.find((p) => p._id === pid);
+      const availableUnits: UnitOption[] = [];
+
+      if (product && product.unitOfMeasureId) {
+        const mainUnitId = typeof product.unitOfMeasureId === 'object' ? product.unitOfMeasureId._id : product.unitOfMeasureId;
+        const mainUnitName = typeof product.unitOfMeasureId === 'object' ? (product.unitOfMeasureId.shortCode || product.unitOfMeasureId.name || 'Main') : 'Main';
+        availableUnits.push({
+          id: mainUnitId,
+          name: mainUnitName,
+          isMultiUnit: false,
+          price: price,
+        });
+      } else {
+        availableUnits.push({ id: uid, name: uname, isMultiUnit: false, price: price });
+      }
+
+      if (product && product.multiUnits && product.multiUnits.length > 0) {
+        product.multiUnits.forEach((mu) => {
+          const muUnitId = typeof mu.unitId === 'object' ? mu.unitId?._id : mu.unitId;
+          const muUnitName = typeof mu.unitId === 'object' ? (mu.unitId?.shortCode || mu.unitId?.name || 'Unit') : 'Unit';
+          if (muUnitId) {
+            const muRetail = mu.retail ?? 0;
+            const muWholesale = mu.wholesale ?? 0;
+            const muSp1 = mu.specialPrice1 ?? 0;
+            const muSp2 = mu.specialPrice2 ?? 0;
+            let muPrice = 0;
+            if (rateType === 'WSale') muPrice = muWholesale;
+            else if (rateType === 'Special1') muPrice = muSp1;
+            else if (rateType === 'Special2') muPrice = muSp2;
+            else muPrice = muRetail;
+            if (!muPrice) muPrice = muRetail || muWholesale || 0;
+            availableUnits.push({
+              id: muUnitId,
+              name: muUnitName,
+              isMultiUnit: true,
+              conversion: mu.conversion,
+              price: muPrice,
+              wholesale: muWholesale,
+              retail: muRetail,
+              specialPrice1: muSp1,
+              specialPrice2: muSp2,
+            });
+          }
+        });
+      }
+
       return {
         id: `loaded-${idx}-${Date.now()}`,
         productId: pid,
@@ -314,7 +381,7 @@ export default function SalesReturn() {
         name: name || '',
         unitId: uid,
         unitName: uname,
-        availableUnits: [{ id: uid, name: uname }],
+        availableUnits,
         quantity: qty,
         price,
         purchasePrice: it.costPriceAtSale ?? (it as any).purchasePrice ?? 0,
@@ -323,13 +390,29 @@ export default function SalesReturn() {
         discAmount: disc,
         vatAmount,
         total: lineTotal,
+        batchNumber: it.batchNumber || '',
         isCommitted: true,
       };
     });
     setLines(newLines.length > 0 ? newLines : [emptyLine()]);
     rowSnapshotRef.current = null;
     rowCommittedRef.current = false;
-  }, []);
+
+    if (data.originalInvoiceId && (data.returnType === 'ByRef' || data.originalInvoiceId) && companyId) {
+      salesApi.getB2C(data.originalInvoiceId, companyId, undefined, data._id)
+        .then((res) => {
+          const resData = res.data?.data as any;
+          if (resData?.items) {
+            refInvoiceItemsRef.current = resData.items;
+          }
+        })
+        .catch(() => {
+          refInvoiceItemsRef.current = [];
+        });
+    } else {
+      refInvoiceItemsRef.current = [];
+    }
+  }, [companyId]);
 
   const navigateToReturn = async (id: string) => {
     setLoading(true);
@@ -377,17 +460,27 @@ export default function SalesReturn() {
       setCustomerId(null);
       setCustomerName('');
       setCustomerAddress('');
+      setBillingAddress('');
+      setBillingPhone('');
       setPaymentType('Cash');
       return;
     }
-    const isCash = customer._id === 'cash';
-    setCustomerId(isCash ? null : customer._id);
-    setCustomerName(customer.name);
-    setCustomerAddress(customer.address || '');
-    // Auto-fill billing address from customer ledger account
-    setBillingAddress(customer.address || '');
-    setBillingPhone(customer.phone || '');
-    if (isCash) setPaymentType('Cash');
+    const isCash = customer.type === 'Cash' || customer._id === 'cash';
+    if (isCash) {
+      setCustomerId(null);
+      setCustomerName(customer.name);
+      setCustomerAddress(customer.address || '');
+      setBillingAddress(customer.address || '');
+      setBillingPhone(customer.phone || '');
+      setPaymentType('Cash');
+      setCashAccountId(customer._id);
+    } else {
+      setCustomerId(customer._id);
+      setCustomerName(customer.name);
+      setCustomerAddress(customer.address || '');
+      setBillingAddress(customer.address || '');
+      setBillingPhone(customer.phone || '');
+    }
   }, []);
 
   const handleHoldReturn = async () => {
@@ -462,6 +555,23 @@ export default function SalesReturn() {
     setRefInvoiceData(held.refInvoiceData);
     setPaymentType(held.paymentType);
     setRateType(held.rateType);
+
+    if (held.refInvoiceData?.items) {
+      refInvoiceItemsRef.current = held.refInvoiceData.items;
+    } else if (held.originalInvoiceIdForReturn && companyId) {
+      salesApi.getB2C(held.originalInvoiceIdForReturn, companyId)
+        .then((res) => {
+          const resData = res.data?.data as any;
+          if (resData?.items) {
+            refInvoiceItemsRef.current = resData.items;
+          }
+        })
+        .catch(() => {
+          refInvoiceItemsRef.current = [];
+        });
+    } else {
+      refInvoiceItemsRef.current = [];
+    }
 
     // Remove from held list
     const updated = heldReturns.filter((h) => h.id !== held.id);
@@ -603,6 +713,25 @@ export default function SalesReturn() {
   const [originalInvoiceIdForReturn, setOriginalInvoiceIdForReturn] = useState<string | null>(null);
   const [selectItemsDialogOpen, setSelectItemsDialogOpen] = useState(false);
   const [selectedRefItemIds, setSelectedRefItemIds] = useState<Set<string>>(new Set());
+  const refInvoiceItemsRef = useRef<RefInvoiceItem[]>([]);
+  const [warningDialogOpen, setWarningDialogOpen] = useState(false);
+  const [warningsList, setWarningsList] = useState<string[]>([]);
+  // Batch dialog state (mirrors SalesB2C)
+  const [batchDialogOpen, setBatchDialogOpen] = useState(false);
+  const [availableBatches, setAvailableBatches] = useState<{
+    batchNumber: string;
+    expiryDate: string;
+    quantity: number;
+    purchasePrice: number;
+    retail: number;
+    wholesale: number;
+    productId: string;
+    productName: string;
+  }[]>([]);
+  const [pendingProductLineId, setPendingProductLineId] = useState<string | null>(null);
+  const [pendingProduct, setPendingProduct] = useState<ProductOption | null>(null);
+  const batchRowRefs = useRef<(HTMLTableRowElement | null)[]>([]);
+  const [focusedBatchIndex, setFocusedBatchIndex] = useState(0);
 
   const loadNextInvoiceNo = useCallback(async () => {
     if (!companyId || !financialYearId) return;
@@ -620,15 +749,38 @@ export default function SalesReturn() {
 
   const loadCustomers = useCallback(() => {
     if (!companyId) return;
-    const cashOption = { _id: 'cash', code: 'CASH', name: 'CASH', address: '' };
-    ledgerAccountApi.list(companyId, 'Customer').then((res) => {
-      const list = (res.data.data ?? []) as Customer[];
-      const all = [cashOption, ...(Array.isArray(list) ? list : [])].sort((a, b) =>
-        a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+    const cashOption = { _id: 'cash', code: 'CASH', name: 'CASH', address: '', type: 'Cash' };
+    Promise.all([
+      ledgerAccountApi.list(companyId, 'Customer'),
+      ledgerAccountApi.list(companyId, 'Cash')
+    ]).then(([custRes, cashRes]) => {
+      const custList = (custRes.data.data ?? []) as Customer[];
+      const cashList = (cashRes.data.data ?? []) as Customer[];
+      if (cashList.length === 0) {
+        cashList.push(cashOption);
+      }
+      const all = [...custList, ...cashList];
+      const sorted = all.sort((a, b) =>
+        (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' })
       );
-      setCustomers(all);
-    }).catch(() => setCustomers([cashOption]));
-  }, [companyId]);
+      setCustomers(sorted);
+
+      if (!returnId) {
+        const defaultCash = cashList.find((c) => c.type === 'Cash') || cashList[0];
+        if (defaultCash) {
+          setCustomerId(null);
+          setCustomerName(defaultCash.name);
+          setCustomerAddress(defaultCash.address || '');
+          setBillingAddress(defaultCash.address || '');
+          setBillingPhone(defaultCash.phone || '');
+          setPaymentType('Cash');
+          setCashAccountId(defaultCash._id);
+        }
+      }
+    }).catch(() => {
+      setCustomers([cashOption]);
+    });
+  }, [companyId, returnId]);
 
   useEffect(() => {
     loadCustomers();
@@ -697,7 +849,7 @@ export default function SalesReturn() {
     setRefInvoiceError('');
     setRefInvoiceLoading(true);
     try {
-      const res = await salesApi.searchB2CByInvoiceNo(companyId, refInvoiceNoInput.trim());
+      const res = await salesApi.searchB2CByInvoiceNo(companyId, refInvoiceNoInput.trim(), undefined, returnId || undefined);
       const data = res.data.data as typeof refInvoiceData;
       if (!data || !data.items?.length) {
         setRefInvoiceError('Invoice not found or has no items');
@@ -706,13 +858,17 @@ export default function SalesReturn() {
       setRefInvoiceData(data);
       setRefInvoiceNoInput('');
       setSelectItemsDialogOpen(true);
-      setSelectedRefItemIds(new Set(data.items.map((i: RefInvoiceItem) => i._id)));
+      const eligibleItems = data.items.filter((i: any) => {
+        const remaining = i.remainingReturnableQuantity !== undefined ? i.remainingReturnableQuantity : i.quantity;
+        return remaining > 0;
+      });
+      setSelectedRefItemIds(new Set(eligibleItems.map((i: RefInvoiceItem) => i._id)));
     } catch (e: unknown) {
       setRefInvoiceError((e as { response?: { data?: { message?: string } } })?.response?.data?.message || 'Invoice not found');
     } finally {
       setRefInvoiceLoading(false);
     }
-  }, [companyId, refInvoiceNoInput]);
+  }, [companyId, refInvoiceNoInput, returnId]);
 
   const confirmSelectRefItems = useCallback(() => {
     if (!refInvoiceData) return;
@@ -722,13 +878,14 @@ export default function SalesReturn() {
       setErrorDialogOpen(true);
       return;
     }
+    refInvoiceItemsRef.current = refInvoiceData.items;
     const newLines: LineItem[] = selected.map((it, idx) => {
       const pid = typeof it.productId === 'object' ? (it.productId as { _id: string })._id : String(it.productId);
       const name = typeof it.productId === 'object' && (it.productId as { name?: string }).name ? (it.productId as { name: string }).name : (it.description || '');
       const price = it.unitPrice ?? 0;
-      const qty = it.quantity ?? 0;
-      void (it.totalAmount ?? qty * price);
-      const disc = it.discount ?? 0;
+      const qty = (it as any).remainingReturnableQuantity !== undefined ? (it as any).remainingReturnableQuantity : (it.quantity ?? 0);
+      const originalQty = it.quantity ?? 1;
+      const disc = originalQty > 0 ? parseFloat((((it.discount ?? 0) * qty) / originalQty).toFixed(2)) : 0;
       const gross = qty * price;
       const net = gross - disc;
       const vatRate = refInvoiceData.vatType === 'NonVat' ? 0 : 5;
@@ -736,15 +893,68 @@ export default function SalesReturn() {
       const lineTotal = parseFloat((net + vatAmount).toFixed(2));
       const uname = (it.unitName as string) || 'Pcs';
       const uid = (it as { unitId?: string }).unitId || 'pcs';
-      const availableUnits: UnitOption[] = [{ id: uid, name: uname }];
+
+      const product = products.find((p) => p._id === pid);
+      const availableUnits: UnitOption[] = [];
+
+      if (product && product.unitOfMeasureId) {
+        const mainUnitId = typeof product.unitOfMeasureId === 'object' ? product.unitOfMeasureId._id : product.unitOfMeasureId;
+        const mainUnitName = typeof product.unitOfMeasureId === 'object' ? (product.unitOfMeasureId.shortCode || product.unitOfMeasureId.name || 'Main') : 'Main';
+        availableUnits.push({
+          id: mainUnitId,
+          name: mainUnitName,
+          isMultiUnit: false,
+          price: price,
+        });
+      } else {
+        availableUnits.push({ id: uid, name: uname, isMultiUnit: false, price: price });
+      }
+
+      if (product && product.multiUnits && product.multiUnits.length > 0) {
+        product.multiUnits.forEach((mu) => {
+          const muUnitId = typeof mu.unitId === 'object' ? mu.unitId?._id : mu.unitId;
+          const muUnitName = typeof mu.unitId === 'object' ? (mu.unitId?.shortCode || mu.unitId?.name || 'Unit') : 'Unit';
+          if (muUnitId) {
+            const muRetail = mu.retail ?? 0;
+            const muWholesale = mu.wholesale ?? 0;
+            const muSp1 = mu.specialPrice1 ?? 0;
+            const muSp2 = mu.specialPrice2 ?? 0;
+            let muPrice = 0;
+            if (rateType === 'WSale') muPrice = muWholesale;
+            else if (rateType === 'Special1') muPrice = muSp1;
+            else if (rateType === 'Special2') muPrice = muSp2;
+            else muPrice = muRetail;
+            if (!muPrice) muPrice = muRetail || muWholesale || 0;
+            availableUnits.push({
+              id: muUnitId,
+              name: muUnitName,
+              isMultiUnit: true,
+              conversion: mu.conversion,
+              price: muPrice,
+              wholesale: muWholesale,
+              retail: muRetail,
+              specialPrice1: muSp1,
+              specialPrice2: muSp2,
+              multiUnitId: mu.multiUnitId,
+            });
+          }
+        });
+      }
+
+      // Derive the effective unit from availableUnits so the dropdown matches
+      const effectiveSelectedUnit = availableUnits.length > 0 ? availableUnits[0] : null;
+      const effectiveUid = effectiveSelectedUnit?.id || uid;
+      const effectiveUname = effectiveSelectedUnit?.name || uname;
+      const effectiveMultiUnitId = effectiveSelectedUnit?.isMultiUnit ? effectiveSelectedUnit.multiUnitId : undefined;
+
       return {
         id: `ref-${idx}-${Date.now()}`,
         productId: pid,
         productCode: (it.productCode as string) || '',
         imei: (it.imei as string) || '',
         name: name || '',
-        unitId: uid,
-        unitName: uname,
+        unitId: effectiveUid,
+        unitName: effectiveUname,
         availableUnits,
         quantity: qty,
         price,
@@ -754,7 +964,9 @@ export default function SalesReturn() {
         discAmount: disc,
         vatAmount,
         total: lineTotal,
+        batchNumber: it.batchNumber || '',
         isCommitted: true,
+        multiUnitId: (it as any).multiUnitId || effectiveMultiUnitId,
       };
     });
     setLines(newLines.length > 0 ? newLines : [emptyLine()]);
@@ -763,15 +975,51 @@ export default function SalesReturn() {
     setCustomerAddress(refInvoiceData.customerAddress ?? '');
     setVatType((refInvoiceData.vatType as 'Vat' | 'NonVat') || 'Vat');
     setOriginalInvoiceIdForReturn(refInvoiceData._id);
+    setOriginalInvoiceNo(refInvoiceData.invoiceNo);
     setSelectItemsDialogOpen(false);
     setRefInvoiceData(null);
   }, [refInvoiceData, selectedRefItemIds]);
 
   const updateLine = useCallback((id: string, field: keyof LineItem, value: unknown) => {
+    let quantityCapped = false;
+    let maxAllowed = 0;
+    let orig = 0;
+    let prevRet = 0;
+    let prodName = '';
+
     setLines((prev) =>
       prev.map((line) => {
         if (line.id !== id) return line;
-        const updated = { ...line, [field]: value };
+        let updated = { ...line, [field]: value };
+
+        if (returnType === 'ByRef' && field === 'quantity') {
+          const matchingItems = refInvoiceItemsRef.current.filter(x => {
+            const xPid = typeof x.productId === 'object' ? x.productId._id : String(x.productId);
+            return xPid === line.productId && ((line.batchNumber && x.batchNumber) ? x.batchNumber === line.batchNumber : true);
+          });
+          
+          if (matchingItems.length > 0) {
+            const originalQty = matchingItems.reduce((sum, x) => sum + x.quantity, 0);
+            const alreadyReturned = matchingItems.reduce((sum, x) => sum + ((x as any).returnedQuantity || 0), 0);
+            const totalRemaining = Math.max(0, originalQty - alreadyReturned);
+
+            const otherQtyInForm = prev
+              .filter(x => x.id !== line.id && x.productId === line.productId && ((line.batchNumber && x.batchNumber) ? x.batchNumber === line.batchNumber : true))
+              .reduce((sum, x) => sum + Number(x.quantity || 0), 0);
+
+            const remainingForThisLine = Math.max(0, totalRemaining - otherQtyInForm);
+
+            if (Number(value) > remainingForThisLine) {
+              updated.quantity = remainingForThisLine;
+              quantityCapped = true;
+              maxAllowed = remainingForThisLine;
+              orig = originalQty;
+              prevRet = alreadyReturned;
+              prodName = line.name;
+            }
+          }
+        }
+
         if (['quantity', 'price', 'discPercent', 'discAmount'].includes(field)) {
           const gross = updated.quantity * updated.price;
           const disc = field === 'discPercent' ? (gross * (Number(updated.discPercent) / 100)) : Number(updated.discAmount);
@@ -786,7 +1034,14 @@ export default function SalesReturn() {
         return updated;
       })
     );
-  }, [vatType]);
+
+    if (quantityCapped) {
+      const lineIndex = lines.findIndex((l) => l.id === id);
+      const slNo = lineIndex >= 0 ? lineIndex + 1 : 1;
+      setErrorDialogMessage(`Sl No ${slNo}: Quantity for "${prodName}" capped to maximum returnable quantity of ${maxAllowed} (purchased: ${orig}, already returned: ${prevRet}).`);
+      setErrorDialogOpen(true);
+    }
+  }, [vatType, returnType, lines]);
 
   const revertUncommittedRow = useCallback(() => {
     if (rowSnapshotRef.current && !rowCommittedRef.current) {
@@ -841,38 +1096,98 @@ export default function SalesReturn() {
 
 
 
-  const handleProductSelect = useCallback((lineId: string, product: ProductOption) => {
-    // Get price based on rateType
+  const getBatchesForProduct = useCallback(async (productId: string) => {
+    try {
+      if (!companyId) return [];
+      const res = await purchaseApi.getProductBatches(companyId, productId);
+      return res.data.data || [];
+    } catch {
+      return [];
+    }
+  }, [companyId]);
+
+  const applyProductToLine = useCallback((lineId: string, product: ProductOption, selectedBatch?: { batchNumber: string; retail: number; wholesale: number; purchasePrice: number }) => {
     let price = 0;
-    switch (rateType) {
-      case 'Retail':
-        price = (product as any).retailPrice ?? (product as any).retail ?? product.purchasePrice ?? 0;
-        break;
-      case 'WSale':
-        price = (product as any).wholesalePrice ?? (product as any).wholesale ?? product.purchasePrice ?? 0;
-        break;
-      case 'Special1':
-        price = (product as any).specialPrice1 ?? product.purchasePrice ?? 0;
-        break;
-      case 'Special2':
-        price = (product as any).specialPrice2 ?? product.purchasePrice ?? 0;
-        break;
-      default:
-        price = (product as any).wholesalePrice ?? (product as any).wholesale ?? product.purchasePrice ?? 0;
+    if (rateType === 'Retail') {
+      price = selectedBatch?.retail ?? (product as any).retailPrice ?? (product as any).retail ?? product.purchasePrice ?? 0;
+    } else if (rateType === 'WSale') {
+      price = selectedBatch?.wholesale ?? (product as any).wholesalePrice ?? (product as any).wholesale ?? product.purchasePrice ?? 0;
+    } else if (rateType === 'Special1') {
+      price = (product as any).specialPrice1 ?? product.purchasePrice ?? 0;
+    } else if (rateType === 'Special2') {
+      price = (product as any).specialPrice2 ?? product.purchasePrice ?? 0;
+    } else {
+      price = selectedBatch?.wholesale ?? (product as any).wholesalePrice ?? (product as any).wholesale ?? product.purchasePrice ?? 0;
     }
     const uid = product.unitId ?? 'pcs';
     const uname = product.unitName ?? 'Pcs';
-    const availableUnits: UnitOption[] = [{ id: uid, name: uname }];
+
+    const availableUnits: UnitOption[] = [];
+
+    if (product.unitOfMeasureId) {
+      const mainUnitId = typeof product.unitOfMeasureId === 'object' ? product.unitOfMeasureId._id : product.unitOfMeasureId;
+      const mainUnitName = typeof product.unitOfMeasureId === 'object' ? (product.unitOfMeasureId.shortCode || product.unitOfMeasureId.name || 'Main') : 'Main';
+      availableUnits.push({
+        id: mainUnitId,
+        name: mainUnitName,
+        isMultiUnit: false,
+        price: price,
+      });
+    } else {
+      availableUnits.push({
+        id: uid,
+        name: uname,
+        isMultiUnit: false,
+        price: price,
+      });
+    }
+
+    if (product.multiUnits && product.multiUnits.length > 0) {
+      product.multiUnits.forEach((mu) => {
+        const muUnitId = typeof mu.unitId === 'object' ? mu.unitId?._id : mu.unitId;
+        const muUnitName = typeof mu.unitId === 'object' ? (mu.unitId?.shortCode || mu.unitId?.name || 'Unit') : 'Unit';
+        if (muUnitId) {
+          const muRetail = mu.retail ?? 0;
+          const muWholesale = mu.wholesale ?? 0;
+          const muSp1 = mu.specialPrice1 ?? 0;
+          const muSp2 = mu.specialPrice2 ?? 0;
+          let muPrice = 0;
+          if (rateType === 'WSale') muPrice = muWholesale;
+          else if (rateType === 'Special1') muPrice = muSp1;
+          else if (rateType === 'Special2') muPrice = muSp2;
+          else muPrice = muRetail;
+          if (!muPrice) muPrice = muRetail || muWholesale || 0;
+          availableUnits.push({
+            id: muUnitId,
+            name: muUnitName,
+            isMultiUnit: true,
+            conversion: mu.conversion,
+            price: muPrice,
+            wholesale: muWholesale,
+            retail: muRetail,
+            specialPrice1: muSp1,
+            specialPrice2: muSp2,
+            multiUnitId: mu.multiUnitId,
+          });
+        }
+      });
+    }
 
     if (!rowSnapshotRef.current) {
       rowCommittedRef.current = true;
     }
 
+    const selectedUnit = availableUnits.length > 0 ? availableUnits[0] : null;
+    const effectiveUid = selectedUnit?.id || uid;
+    const effectiveUname = selectedUnit?.name || uname;
+    const effectivePrice = parseFloat((selectedUnit?.price ?? price).toFixed(2));
+    const purchaseRate = selectedBatch?.purchasePrice ?? (product.purchasePrice ?? 0);
+
     setLines((prev) =>
       prev.map((line) => {
         if (line.id !== lineId) return line;
         const qty = line.quantity || 1;
-        const gross = qty * price;
+        const gross = qty * effectivePrice;
         const disc = line.discAmount;
         const net = gross - disc;
         const vatRate = vatType === 'NonVat' ? 0 : 5;
@@ -884,29 +1199,102 @@ export default function SalesReturn() {
           productCode: product.code ?? '',
           name: product.name ?? '',
           imei: product.imei ?? '',
-          unitId: uid,
-          unitName: uname,
+          unitId: effectiveUid,
+          unitName: effectiveUname,
           availableUnits,
+          batchNumber: selectedBatch?.batchNumber || '',
           quantity: qty,
-          price,
-          purchasePrice: product.purchasePrice ?? 0,
+          price: effectivePrice,
+          purchasePrice: purchaseRate,
           gross,
           vatAmount,
           total,
+          multiUnitId: selectedUnit?.isMultiUnit ? selectedUnit.multiUnitId : undefined,
         };
       })
     );
   }, [vatType, rateType]);
 
+  const handleProductSelect = useCallback(async (lineId: string, product: ProductOption) => {
+    const batches = await getBatchesForProduct(product._id);
+    const batchEnabled = (product as any).allowBatches !== false;
+    if (batchEnabled && batches.length > 1) {
+      // Multiple batches — show batch picker
+      setAvailableBatches(batches);
+      setPendingProductLineId(lineId);
+      setPendingProduct(product);
+      setFocusedBatchIndex(0);
+      setBatchDialogOpen(true);
+    } else {
+      // No batches or single batch — apply directly
+      const singleBatch = batchEnabled && batches.length === 1 ? batches[0] : undefined;
+      applyProductToLine(lineId, product, singleBatch);
+    }
+  }, [getBatchesForProduct, applyProductToLine]);
+
+  const handleBatchSelect = useCallback((batch: typeof availableBatches[0]) => {
+    if (pendingProductLineId && pendingProduct) {
+      applyProductToLine(pendingProductLineId, pendingProduct, batch);
+    }
+    setBatchDialogOpen(false);
+    setPendingProductLineId(null);
+    setPendingProduct(null);
+  }, [pendingProductLineId, pendingProduct, applyProductToLine]);
+
+  const handleBatchDialogKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (!batchDialogOpen || availableBatches.length === 0) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setFocusedBatchIndex((prev) => (prev < availableBatches.length - 1 ? prev + 1 : prev));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setFocusedBatchIndex((prev) => (prev > 0 ? prev - 1 : 0));
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (availableBatches[focusedBatchIndex]) handleBatchSelect(availableBatches[focusedBatchIndex]);
+    } else if (e.key === 'Escape') {
+      setBatchDialogOpen(false);
+    }
+  }, [batchDialogOpen, availableBatches, focusedBatchIndex, handleBatchSelect]);
+
   const handleUnitChange = useCallback((lineId: string, unitId: string) => {
     setLines((prev) =>
       prev.map((line) => {
         if (line.id !== lineId) return line;
-        const u = line.availableUnits.find((x) => x.id === unitId);
-        return { ...line, unitId, unitName: u?.name ?? line.unitName };
+        const selectedUnit = line.availableUnits.find((x) => x.id === unitId);
+        if (!selectedUnit) return line;
+
+        // Pick price based on selected unit
+        let newPrice = selectedUnit.price ?? line.price;
+        if (selectedUnit.isMultiUnit) {
+          if (rateType === 'WSale' && selectedUnit.wholesale) newPrice = selectedUnit.wholesale;
+          else if (rateType === 'Special1' && selectedUnit.specialPrice1) newPrice = selectedUnit.specialPrice1;
+          else if (rateType === 'Special2' && selectedUnit.specialPrice2) newPrice = selectedUnit.specialPrice2;
+          else if (rateType === 'Retail' && selectedUnit.retail) newPrice = selectedUnit.retail;
+        }
+        newPrice = parseFloat(newPrice.toFixed(2));
+
+        const qty = line.quantity || 1;
+        const gross = qty * newPrice;
+        const disc = line.discAmount;
+        const net = gross - disc;
+        const vatRate = vatType === 'NonVat' ? 0 : 5;
+        const vatAmount = parseFloat((net * (vatRate / 100)).toFixed(2));
+        const total = parseFloat((net + vatAmount).toFixed(2));
+
+        return {
+          ...line,
+          unitId,
+          unitName: selectedUnit.name,
+          price: newPrice,
+          gross,
+          vatAmount,
+          total,
+          multiUnitId: selectedUnit.isMultiUnit ? selectedUnit.multiUnitId : undefined,
+        };
       })
     );
-  }, []);
+  }, [vatType, rateType]);
 
   const handleUnitKeyDown = useCallback((e: React.KeyboardEvent, lineId: string) => {
     if (e.key === 'Enter') {
@@ -1070,6 +1458,142 @@ export default function SalesReturn() {
   };
   calculations.grandTotal = calculations.subTotal - calculations.otherDiscount + calculations.otherCharges + calculations.roundOff;
 
+  const handlePreSaveCheck = useCallback(async () => {
+    const validLines = lines.filter((l) => l.productId && l.quantity > 0 && l.price >= 0);
+    if (validLines.length === 0) {
+      setErrorDialogMessage('Add at least one item with quantity and price');
+      setErrorDialogOpen(true);
+      return;
+    }
+    if (!companyId || !financialYearId) {
+      setErrorDialogMessage('Company / Financial year not set');
+      setErrorDialogOpen(true);
+      return;
+    }
+
+    setLoading(true);
+    const warnings: string[] = [];
+
+    try {
+      if (returnType === 'ByRef') {
+        const checkedProducts = new Set<string>();
+        const hardErrors: string[] = [];
+        for (const l of validLines) {
+          const key = `${l.productId}-${l.batchNumber || ''}`;
+          if (checkedProducts.has(key)) continue;
+          checkedProducts.add(key);
+
+          const returnedQty = validLines
+            .filter((x) => x.productId === l.productId && ((l.batchNumber && x.batchNumber) ? x.batchNumber === l.batchNumber : true))
+            .reduce((sum, x) => sum + x.quantity, 0);
+
+          const matchingItems = refInvoiceItemsRef.current.filter((x) => {
+            const xPid = typeof x.productId === 'object' ? x.productId._id : String(x.productId);
+            const matchPid = xPid === l.productId;
+            const matchBatch = (l.batchNumber && x.batchNumber) ? (x.batchNumber === l.batchNumber) : true;
+            return matchPid && matchBatch;
+          });
+
+          if (matchingItems.length === 0) {
+            const lineIndex = lines.findIndex((line) => line.id === l.id);
+            const slNo = lineIndex >= 0 ? lineIndex + 1 : '';
+            const prefix = slNo ? `Sl No ${slNo}: ` : '';
+            hardErrors.push(
+              `${prefix}"${l.name}"${l.batchNumber ? ` (Batch: ${l.batchNumber})` : ''}: This item was not purchased in the original invoice.`
+            );
+            continue;
+          }
+
+          const originalQty = matchingItems.reduce((sum, x) => sum + x.quantity, 0);
+          const alreadyReturned = matchingItems.reduce((sum, x) => sum + ((x as any).returnedQuantity || 0), 0);
+          const remaining = Math.max(0, originalQty - alreadyReturned);
+
+          if (returnedQty > remaining) {
+            const lineIndex = lines.findIndex((line) => line.id === l.id);
+            const slNo = lineIndex >= 0 ? lineIndex + 1 : '';
+            const prefix = slNo ? `Sl No ${slNo}: ` : '';
+            hardErrors.push(
+              `${prefix}"${l.name}"${l.batchNumber ? ` (Batch: ${l.batchNumber})` : ''}: Returning ${returnedQty} units, but only ${remaining} units are returnable (purchased: ${originalQty}, already returned: ${alreadyReturned}).`
+            );
+          }
+        }
+
+        if (hardErrors.length > 0) {
+          setErrorDialogMessage(hardErrors.join('\n'));
+          setErrorDialogOpen(true);
+          setLoading(false);
+          return;
+        }
+      } else if (returnType === 'OnAccount' && customerId) {
+        // Group return quantities by productId (aggregate across all batches)
+        const returnQtyByProduct = new Map<string, number>();
+        for (const l of validLines) {
+          const prev = returnQtyByProduct.get(l.productId) || 0;
+          returnQtyByProduct.set(l.productId, prev + l.quantity);
+        }
+
+        // Get unique product IDs to check
+        const uniqueProductIds = Array.from(returnQtyByProduct.keys());
+        // Map productId to a display name from the first matching line
+        const productNameMap = new Map<string, string>();
+        for (const l of validLines) {
+          if (!productNameMap.has(l.productId)) {
+            productNameMap.set(l.productId, l.name);
+          }
+        }
+
+        await Promise.all(
+          uniqueProductIds.map(async (productId) => {
+            try {
+              const res = await salesApi.getProductCustomerHistory(companyId, productId, customerId || cashAccountId || undefined);
+              const { totalPurchased, totalReturned, netReturnable } = res.data.data;
+              const returnedQty = returnQtyByProduct.get(productId) || 0;
+              const productName = productNameMap.get(productId) || 'Unknown';
+
+              const isCashTx = !customerId && cashAccountId;
+              if (returnedQty > netReturnable) {
+                if (totalPurchased === 0) {
+                  warnings.push(
+                    isCashTx
+                      ? `"${productName}": Returning ${returnedQty} units, but there is no cash purchase history for this product.`
+                      : `"${productName}": Returning ${returnedQty} units, but the customer has no purchase history for this product.`
+                  );
+                } else {
+                  warnings.push(
+                    isCashTx
+                      ? `"${productName}": Returning ${returnedQty} units, but only ${netReturnable} units are returnable in cash transactions (purchased: ${totalPurchased}, already returned: ${totalReturned}).`
+                      : `"${productName}": Returning ${returnedQty} units, but the customer can only return ${netReturnable} units (purchased: ${totalPurchased}, already returned: ${totalReturned}).`
+                  );
+                }
+              }
+            } catch {
+              // ignore
+            }
+          })
+        );
+      }
+
+      if (warnings.length > 0) {
+        setWarningsList(warnings);
+        setWarningDialogOpen(true);
+      } else {
+        if (returnId) {
+          setEditConfirmOpen(true);
+        } else {
+          setSaveDialogOpen(true);
+        }
+      }
+    } catch {
+      if (returnId) {
+        setEditConfirmOpen(true);
+      } else {
+        setSaveDialogOpen(true);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [companyId, financialYearId, returnType, customerId, cashAccountId, lines, returnId]);
+
   const handleSave = useCallback(async () => {
     if (returnType === 'ByRef' && !originalInvoiceIdForReturn) {
       setErrorDialogMessage('By Ref: please select items from a sales invoice first (Enter Sales Invoice No).');
@@ -1110,16 +1634,22 @@ export default function SalesReturn() {
           unitPrice: l.price,
           discount: l.discAmount,
           discountPercent: l.discPercent,
+          unitId: l.unitId || undefined,
           unitName: l.unitName || undefined,
+          multiUnitId: l.multiUnitId || undefined,
+          batchNumber: l.batchNumber || undefined,
         })),
         otherDiscount: calculations.otherDiscount,
         otherCharges: calculations.otherCharges,
         roundOff: calculations.roundOff,
         narration: narration || undefined,
       };
-      const res = await salesApi.createSalesReturn(payload);
+      const res = returnId
+        ? await salesApi.updateSalesReturn(returnId, payload)
+        : await salesApi.createSalesReturn(payload);
       setSaveDialogOpen(false);
-      setSavedDialogMessage(`Sales Return ${res.data.data.invoiceNo} saved successfully.`);
+      setEditConfirmOpen(false);
+      setSavedDialogMessage(`Sales Return ${res.data.data.invoiceNo} ${returnId ? 'updated' : 'saved'} successfully.`);
       setSavedDialogOpen(true);
       loadReturnIds();
       setLines([emptyLine()]);
@@ -1131,6 +1661,7 @@ export default function SalesReturn() {
       setOtherCharges(0);
       setRoundOff(0);
       setOriginalInvoiceIdForReturn(null);
+      setOriginalInvoiceNo(null);
       loadNextInvoiceNo();
     } catch (e: unknown) {
       setErrorDialogMessage((e as { response?: { data?: { message?: string } } })?.response?.data?.message || 'Save failed');
@@ -1138,7 +1669,7 @@ export default function SalesReturn() {
     } finally {
       setLoading(false);
     }
-  }, [companyId, financialYearId, date, returnType, originalInvoiceIdForReturn, customerId, customerName, customerAddress, cashAccountId, vatType, taxMode, lines, otherDiscount, otherCharges, roundOff, narration, calculations, loadNextInvoiceNo]);
+  }, [companyId, financialYearId, date, returnType, originalInvoiceIdForReturn, customerId, customerName, customerAddress, cashAccountId, vatType, taxMode, lines, otherDiscount, otherCharges, roundOff, narration, calculations, loadNextInvoiceNo, returnId]);
 
   const handleClear = useCallback(() => {
     setLines([emptyLine()]);
@@ -1155,6 +1686,7 @@ export default function SalesReturn() {
     setRoundOff(0);
     setRefInvoiceData(null);
     setOriginalInvoiceIdForReturn(null);
+    setOriginalInvoiceNo(null);
     loadNextInvoiceNo();
   }, [loadNextInvoiceNo]);
 
@@ -1196,6 +1728,9 @@ export default function SalesReturn() {
   }, [returnId, companyId, handleClear]);
 
   const toggleRefItem = (itemId: string) => {
+    const item = refInvoiceData?.items.find((i) => i._id === itemId);
+    const remainingQty = item ? ((item as any).remainingReturnableQuantity !== undefined ? (item as any).remainingReturnableQuantity : item.quantity) : 0;
+    if (remainingQty <= 0) return;
     setSelectedRefItemIds((prev) => {
       const next = new Set(prev);
       if (next.has(itemId)) next.delete(itemId);
@@ -1205,7 +1740,17 @@ export default function SalesReturn() {
   };
   const selectAllRefItems = (checked: boolean) => {
     if (!refInvoiceData) return;
-    setSelectedRefItemIds(checked ? new Set(refInvoiceData.items.map((i) => i._id)) : new Set());
+    if (checked) {
+      const eligibleIds = refInvoiceData.items
+        .filter((i) => {
+          const remainingQty = (i as any).remainingReturnableQuantity !== undefined ? (i as any).remainingReturnableQuantity : i.quantity;
+          return remainingQty > 0;
+        })
+        .map((i) => i._id);
+      setSelectedRefItemIds(new Set(eligibleIds));
+    } else {
+      setSelectedRefItemIds(new Set());
+    }
   };
 
   const selectedRefTotal = refInvoiceData
@@ -1213,27 +1758,46 @@ export default function SalesReturn() {
     : 0;
 
   return (
-    <Box sx={{ p: 2, minHeight: '100%', bgcolor: '#f1f5f9' }} onClick={() => dispatch(setDrawerOpen(false))}>
-      <Typography variant="h6" sx={{ fontWeight: 700, color: '#0f766e', mb: 1.5 }}>
+    <Box sx={{ p: 1.25, minHeight: '100%', bgcolor: '#f1f5f9' }} onClick={() => dispatch(setDrawerOpen(false))}>
+      <Typography variant="h6" sx={{ fontWeight: 700, color: '#0f766e', mb: 1, fontSize: '0.95rem' }}>
         Sales Return
       </Typography>
 
       {/* Header - B2C style */}
-      <Paper elevation={0} sx={{ px: 2, py: 1.5, mb: 1, borderRadius: 2, bgcolor: 'white', border: '1px solid #e0e7ef' }}>
-        <Grid container spacing={1.5} alignItems="center">
+      <Paper elevation={0} sx={{ px: 1.25, py: 0.8, mb: 0.7, borderRadius: 1.5, bgcolor: 'white', border: '1px solid #e0e7ef' }}>
+        <Grid container spacing={1} alignItems="center">
           <Grid item xs={6} sm={3} md={1.8} lg={1.3}>
-            <Box sx={{ bgcolor: '#0f766e', borderRadius: 1.5, px: 1.5, py: 0.6, textAlign: 'center' }}>
-              <Typography sx={{ color: 'rgba(255,255,255,0.7)', fontSize: '0.65rem', fontWeight: 500, lineHeight: 1, letterSpacing: 0.5 }}>RETURN NO</Typography>
-              <Typography sx={{ color: 'white', fontWeight: 800, fontSize: '0.9rem', lineHeight: 1.3 }}>{invoiceNo}</Typography>
+            <Box sx={{ bgcolor: '#0f766e', borderRadius: 1.2, px: 1, py: 0.35, textAlign: 'center' }}>
+              <Typography sx={{ color: 'rgba(255,255,255,0.7)', fontSize: '0.58rem', fontWeight: 500, lineHeight: 1, letterSpacing: 0.5 }}>RETURN NO</Typography>
+              <Typography sx={{ color: 'white', fontWeight: 800, fontSize: '0.78rem', lineHeight: 1.2 }}>{invoiceNo}</Typography>
             </Box>
           </Grid>
+          {returnType === 'ByRef' && originalInvoiceNo && (
+            <Grid item xs={6} sm={3} md={2.2} lg={1.8}>
+              <Box sx={{ bgcolor: '#0284c7', borderRadius: 1.2, px: 1, py: 0.35, textAlign: 'center' }}>
+                <Typography sx={{ color: 'rgba(255,255,255,0.7)', fontSize: '0.58rem', fontWeight: 500, lineHeight: 1, letterSpacing: 0.5 }}>AGAINST INVOICE</Typography>
+                <Typography sx={{ color: 'white', fontWeight: 800, fontSize: '0.78rem', lineHeight: 1.2 }}>{originalInvoiceNo}</Typography>
+              </Box>
+            </Grid>
+          )}
           <Grid item xs={6} sm={3} md={2} lg={1.7}>
-            <DateInput label="Date" value={date} onChange={setDate} size="small" />
+            <DateInput
+              label="Date"
+              value={date}
+              onChange={setDate}
+              size="small"
+              sx={{
+                '& .MuiOutlinedInput-root': { height: 28, borderRadius: 1.2, fontSize: '0.72rem' },
+                '& .MuiInputBase-input': { py: '2px !important', fontSize: '0.72rem' },
+                '& .MuiInputLabel-root': { fontSize: '0.70rem' },
+              }}
+            />
           </Grid>
           <Grid item xs={7.5} sm={4.6875} md={3.90625} lg={3.4375}>
             <Autocomplete
               size="small"
               options={customers}
+              disabled={returnType === 'ByRef' && !!originalInvoiceIdForReturn}
               getOptionLabel={(opt) => opt.name || ''}
               filterOptions={(options, state) => {
                 const q = (state.inputValue || '').trim().toLowerCase();
@@ -1288,9 +1852,9 @@ export default function SalesReturn() {
                     }
                   }}
                   sx={{
-                    '& .MuiOutlinedInput-root': { borderRadius: 1.5 },
-                    '& .MuiInputBase-input': { fontSize: '0.75rem' },
-                    '& .MuiInputLabel-root': { fontSize: '0.75rem' },
+                    '& .MuiOutlinedInput-root': { borderRadius: 1.2, height: 28, minHeight: 28 },
+                    '& .MuiInputBase-input': { fontSize: '0.72rem', py: '2px !important' },
+                    '& .MuiInputLabel-root': { fontSize: '0.70rem' },
                   }}
                 />
               )}
@@ -1312,12 +1876,12 @@ export default function SalesReturn() {
                 }
               }}
               InputLabelProps={{ shrink: true }}
-              InputProps={{ readOnly: !!customerId }}
+              InputProps={{ readOnly: !!customerId || (returnType === 'ByRef' && !!originalInvoiceIdForReturn) }}
               sx={{
-                '& .MuiOutlinedInput-root': { borderRadius: 1.5 },
-                '& .MuiInputBase-input': { fontSize: '0.75rem' },
-                '& .MuiInputLabel-root': { fontSize: '0.75rem' },
-                ...(customerId ? { '& .MuiOutlinedInput-root': { bgcolor: '#f1f5f9', borderRadius: 1.5 } } : {}),
+                '& .MuiOutlinedInput-root': { borderRadius: 1.2, height: 28, minHeight: 28 },
+                '& .MuiInputBase-input': { fontSize: '0.72rem', py: '2px !important' },
+                '& .MuiInputLabel-root': { fontSize: '0.70rem' },
+                ...((customerId || (returnType === 'ByRef' && !!originalInvoiceIdForReturn)) ? { '& .MuiOutlinedInput-root': { bgcolor: '#f1f5f9', borderRadius: 1.2, height: 28, minHeight: 28 } } : {}),
               }}
             />
           </Grid>
@@ -1326,7 +1890,7 @@ export default function SalesReturn() {
               variant="outlined"
               size="small"
               onClick={() => setAddressDialogOpen(true)}
-              sx={{ height: 38, textTransform: 'none', borderRadius: 1.5, borderColor: '#cbd5e1', color: '#475569', '&:hover': { borderColor: '#94a3b8', bgcolor: '#f8fafc' } }}
+              sx={{ height: 26, fontSize: '0.72rem', px: 1, textTransform: 'none', borderRadius: 1.2, borderColor: '#cbd5e1', color: '#475569', '&:hover': { borderColor: '#94a3b8', bgcolor: '#f8fafc' } }}
             >
               Address
             </Button>
@@ -1350,10 +1914,10 @@ export default function SalesReturn() {
                 }
               }}
               InputLabelProps={{ shrink: true }}
-              sx={{ minWidth: 130, '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }}
+              sx={{ minWidth: 95, height: 26, '& .MuiOutlinedInput-root': { borderRadius: 1.2, height: 26, fontSize: '0.72rem' }, '& .MuiInputLabel-root': { fontSize: '0.70rem' }, '& .MuiSelect-select': { py: '2px !important' } }}
             >
-              <MenuItem value="inclusive">Include</MenuItem>
-              <MenuItem value="exclusive">Exclude</MenuItem>
+              <MenuItem value="inclusive" sx={{ fontSize: '0.72rem' }}>Include</MenuItem>
+              <MenuItem value="exclusive" sx={{ fontSize: '0.72rem' }}>Exclude</MenuItem>
             </TextField>
           </Grid>
           <Grid item xs={6} sm={3} md={2} lg={1.5}>
@@ -1379,16 +1943,16 @@ export default function SalesReturn() {
                 }
               }}
               InputLabelProps={{ shrink: true }}
-              sx={{ minWidth: 130, '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }}
+              sx={{ minWidth: 95, height: 26, '& .MuiOutlinedInput-root': { borderRadius: 1.2, height: 26, fontSize: '0.72rem' }, '& .MuiInputLabel-root': { fontSize: '0.70rem' }, '& .MuiSelect-select': { py: '2px !important' } }}
             >
-              <MenuItem value="OnAccount">On Account</MenuItem>
-              <MenuItem value="ByRef">By Ref</MenuItem>
+              <MenuItem value="OnAccount" sx={{ fontSize: '0.72rem' }}>On Account</MenuItem>
+              <MenuItem value="ByRef" sx={{ fontSize: '0.72rem' }}>By Ref</MenuItem>
             </TextField>
           </Grid>
           <Grid item xs={12} sm={6} md={5} lg={3.5}>
-            <Box sx={{ display: 'flex', gap: 0.5, height: 40, alignItems: 'center' }}>
+            <Box sx={{ display: 'flex', gap: 0.5, height: 28, alignItems: 'center' }}>
               {/* Navigation Group */}
-              <Box sx={{ display: 'flex', gap: 0.5, flex: 1.2 }}>
+              <Box sx={{ display: 'flex', gap: 0.4, flex: 1.2 }}>
                 {[
                   { icon: <FirstIcon />, handler: handleFirstReturn, tip: 'First' },
                   { icon: <PrevIcon />, handler: handlePrevReturn, tip: 'Previous' },
@@ -1400,7 +1964,7 @@ export default function SalesReturn() {
                       variant="contained"
                       size="small"
                       onClick={nav.handler}
-                      sx={{ flex: 1, py: 0.5, minWidth: 0, borderRadius: 1.5, bgcolor: '#0f766e', '&:hover': { bgcolor: '#0d9488' }, boxShadow: 'none' }}
+                      sx={{ flex: 1, py: 0.15, height: 22, minWidth: 0, borderRadius: 1.2, bgcolor: '#0f766e', '&:hover': { bgcolor: '#0d9488' }, boxShadow: 'none', '& .MuiSvgIcon-root': { fontSize: 15 } }}
                     >
                       {nav.icon}
                     </Button>
@@ -1408,17 +1972,17 @@ export default function SalesReturn() {
                 ))}
               </Box>
 
-              <Divider orientation="vertical" flexItem sx={{ mx: 0.5, my: 1 }} />
+              <Divider orientation="vertical" flexItem sx={{ mx: 0.4, my: 0.5 }} />
 
               {/* Hold Group */}
-              <Box sx={{ display: 'flex', gap: 0.5, flex: 1 }}>
+              <Box sx={{ display: 'flex', gap: 0.4, flex: 1 }}>
                 <Tooltip title="Hold this return for later">
                   <Button
                     variant="contained"
                     size="small"
                     onClick={handleHoldReturn}
-                    sx={{ flex: 1.2, py: 0.4, minWidth: 0, borderRadius: 1.5, bgcolor: '#f59e0b', '&:hover': { bgcolor: '#d97706' }, boxShadow: 'none', fontSize: '0.75rem', fontWeight: 600, textTransform: 'none' }}
-                    startIcon={<HoldIcon sx={{ fontSize: 16 }} />}
+                    sx={{ flex: 1.2, py: 0.2, height: 24, minWidth: 0, borderRadius: 1.2, bgcolor: '#f59e0b', '&:hover': { bgcolor: '#d97706' }, boxShadow: 'none', fontSize: '0.70rem', fontWeight: 600, textTransform: 'none' }}
+                    startIcon={<HoldIcon sx={{ fontSize: 14 }} />}
                   >
                     Hold
                   </Button>
@@ -1428,7 +1992,7 @@ export default function SalesReturn() {
                     variant="contained"
                     size="small"
                     onClick={() => setHoldListDialogOpen(true)}
-                    sx={{ flex: 0.5, py: 0.4, minWidth: 0, borderRadius: 1.5, bgcolor: '#64748b', '&:hover': { bgcolor: '#475569' }, boxShadow: 'none' }}
+                    sx={{ flex: 0.5, py: 0.2, height: 24, minWidth: 0, borderRadius: 1.2, bgcolor: '#64748b', '&:hover': { bgcolor: '#475569' }, boxShadow: 'none', '& .MuiSvgIcon-root': { fontSize: 15 } }}
                   >
                     <HoldListIcon fontSize="small" />
                   </Button>
@@ -1482,7 +2046,7 @@ export default function SalesReturn() {
                       placeholder="Enter or select invoice no"
                       fullWidth
                       InputLabelProps={{ shrink: true }}
-                      sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }}
+                      sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.2, height: 28, minHeight: 28 }, '& .MuiInputBase-input': { fontSize: '0.72rem', py: '2px !important' }, '& .MuiInputLabel-root': { fontSize: '0.70rem' } }}
                     />
                   )}
                   slotProps={{
@@ -1510,7 +2074,7 @@ export default function SalesReturn() {
                   size="small"
                   onClick={fetchRefInvoice}
                   disabled={refInvoiceLoading}
-                  sx={{ height: 40, textTransform: 'none', borderRadius: 1.5, bgcolor: '#0f766e', '&:hover': { bgcolor: '#115e59' } }}
+                  sx={{ height: 28, fontSize: '0.72rem', px: 1, textTransform: 'none', borderRadius: 1.2, bgcolor: '#0f766e', '&:hover': { bgcolor: '#115e59' } }}
                 >
                   {refInvoiceLoading ? 'Loading...' : 'Load'}
                 </Button>
@@ -1518,8 +2082,8 @@ export default function SalesReturn() {
             </>
           )}
         </Grid>
-        <Divider sx={{ my: 1.5 }} />
-        <Grid container spacing={1.5} alignItems="center">
+        <Divider sx={{ my: 0.6 }} />
+        <Grid container spacing={1} alignItems="center">
           <Grid item xs={6} sm={3} md={2} lg={1.8}>
             <TextField
               size="small"
@@ -1547,65 +2111,195 @@ export default function SalesReturn() {
                   });
                 }
               }}
-              sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }}
+              sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.2, height: 26, fontSize: '0.72rem' }, '& .MuiInputLabel-root': { fontSize: '0.70rem' }, '& .MuiSelect-select': { py: '2px !important' } }}
             >
-              <MenuItem value="Retail">Retail</MenuItem>
-              <MenuItem value="WSale">WSale</MenuItem>
-              <MenuItem value="Special1">Special Price 1</MenuItem>
-              <MenuItem value="Special2">Special Price 2</MenuItem>
+              <MenuItem value="Retail" sx={{ fontSize: '0.72rem' }}>Retail</MenuItem>
+              <MenuItem value="WSale" sx={{ fontSize: '0.72rem' }}>WSale</MenuItem>
+              <MenuItem value="Special1" sx={{ fontSize: '0.72rem' }}>Special Price 1</MenuItem>
+              <MenuItem value="Special2" sx={{ fontSize: '0.72rem' }}>Special Price 2</MenuItem>
             </TextField>
           </Grid>
           <Grid item xs={6} sm={3} md={2} lg={1.5}>
-            <Box sx={{ border: '1px solid #e2e8f0', borderRadius: 1.5, px: 1.2, py: 0.5, bgcolor: '#f8fafc', height: '100%' }}>
-              <Typography sx={{ fontSize: '0.7rem', fontWeight: 600, color: '#64748b', letterSpacing: 0.3, mb: 0.2 }}>VAT TYPE</Typography>
-              <RadioGroup row value={vatType} onChange={(e) => setVatType(e.target.value as 'Vat' | 'NonVat')}>
-                <FormControlLabel value="Vat" control={<Radio size="small" sx={{ p: 0.3 }} />} label="Vat" sx={{ mr: 1, '& .MuiFormControlLabel-label': { fontSize: '0.78rem' } }} />
-                <FormControlLabel value="NonVat" control={<Radio size="small" sx={{ p: 0.3 }} />} label="Non Vat" sx={{ '& .MuiFormControlLabel-label': { fontSize: '0.78rem' } }} />
-              </RadioGroup>
+            <Box sx={{
+              border: '1px solid #cbd5e1',
+              borderRadius: 1.5,
+              px: 0.8,
+              py: 0.4,
+              bgcolor: 'white',
+              boxShadow: '0 1px 2px rgba(0,0,0,0.03)',
+              height: '100%',
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'center'
+            }}>
+              <Typography sx={{ fontSize: '0.60rem', fontWeight: 700, color: '#475569', letterSpacing: 0.5, mb: 0.25, textTransform: 'uppercase' }}>
+                VAT Type
+              </Typography>
+              <Box role="radiogroup" aria-label="VAT Type" sx={{ display: 'flex', bgcolor: '#f1f5f9', borderRadius: 1.2, p: '2px', gap: '2px', border: '1px solid #e2e8f0' }}>
+                <Box
+                  role="radio"
+                  aria-checked={vatType === 'Vat'}
+                  tabIndex={0}
+                  onClick={() => setVatType('Vat')}
+                  onKeyDown={(e) => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); setVatType('Vat'); } }}
+                  sx={{
+                    flex: 1,
+                    textAlign: 'center',
+                    py: 0.35,
+                    borderRadius: 1,
+                    cursor: 'pointer',
+                    fontSize: '0.68rem',
+                    fontWeight: vatType === 'Vat' ? 700 : 600,
+                    color: vatType === 'Vat' ? '#ffffff' : '#64748b',
+                    bgcolor: vatType === 'Vat' ? '#0f766e' : 'transparent',
+                    boxShadow: vatType === 'Vat' ? '0 1px 3px rgba(15,118,110,0.35)' : 'none',
+                    transition: 'all 0.15s ease',
+                    userSelect: 'none',
+                    '&:hover': { bgcolor: vatType === 'Vat' ? '#0d655e' : 'rgba(0,0,0,0.04)' }
+                  }}
+                >
+                  VAT
+                </Box>
+                <Box
+                  role="radio"
+                  aria-checked={vatType === 'NonVat'}
+                  tabIndex={0}
+                  onClick={() => setVatType('NonVat')}
+                  onKeyDown={(e) => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); setVatType('NonVat'); } }}
+                  sx={{
+                    flex: 1,
+                    textAlign: 'center',
+                    py: 0.35,
+                    borderRadius: 1,
+                    cursor: 'pointer',
+                    fontSize: '0.68rem',
+                    fontWeight: vatType === 'NonVat' ? 700 : 600,
+                    color: vatType === 'NonVat' ? '#ffffff' : '#64748b',
+                    bgcolor: vatType === 'NonVat' ? '#475569' : 'transparent',
+                    boxShadow: vatType === 'NonVat' ? '0 1px 3px rgba(71,85,105,0.35)' : 'none',
+                    transition: 'all 0.15s ease',
+                    userSelect: 'none',
+                    '&:hover': { bgcolor: vatType === 'NonVat' ? '#334155' : 'rgba(0,0,0,0.04)' }
+                  }}
+                >
+                  Non-VAT
+                </Box>
+              </Box>
             </Box>
           </Grid>
           <Grid item xs={6} sm={3} md={2} lg={1.5}>
-            <Box sx={{ border: '1px solid #e2e8f0', borderRadius: 1.5, px: 1.2, py: 0.5, bgcolor: '#f8fafc', height: '100%' }}>
-              <Typography sx={{ fontSize: '0.7rem', fontWeight: 600, color: '#64748b', letterSpacing: 0.3, mb: 0.2 }}>PAYMENT</Typography>
-              <RadioGroup row value={paymentType} onChange={(e) => {
-                const val = e.target.value as 'Cash' | 'Credit';
-                if (val === 'Credit' && !customerId) return;
-                setPaymentType(val);
-                if (val === 'Cash') {
-                  setCustomerId(null);
-                  setCustomerName('CASH');
-                  setCustomerAddress('');
-                }
-              }}>
-                <FormControlLabel value="Cash" control={<Radio size="small" sx={{ p: 0.3 }} />} label="Cash" sx={{ mr: 1, '& .MuiFormControlLabel-label': { fontSize: '0.78rem' } }} />
-                <FormControlLabel value="Credit" control={<Radio size="small" sx={{ p: 0.3 }} />} label="Credit" disabled={!customerId} sx={{ '& .MuiFormControlLabel-label': { fontSize: '0.78rem' } }} />
-              </RadioGroup>
+            <Box sx={{
+              border: '1px solid #cbd5e1',
+              borderRadius: 1.5,
+              px: 0.8,
+              py: 0.4,
+              bgcolor: 'white',
+              boxShadow: '0 1px 2px rgba(0,0,0,0.03)',
+              height: '100%',
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'center'
+            }}>
+              <Typography sx={{ fontSize: '0.60rem', fontWeight: 700, color: '#475569', letterSpacing: 0.5, mb: 0.25, textTransform: 'uppercase' }}>
+                Payment
+              </Typography>
+              <Box role="radiogroup" aria-label="Payment Type" sx={{ display: 'flex', bgcolor: '#f1f5f9', borderRadius: 1.2, p: '2px', gap: '2px', border: '1px solid #e2e8f0' }}>
+                <Box
+                  role="radio"
+                  aria-checked={paymentType === 'Cash'}
+                  tabIndex={0}
+                  onClick={() => {
+                    setPaymentType('Cash');
+                    setCustomerId(null);
+                    setCustomerName('CASH');
+                    setCustomerAddress('');
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === ' ' || e.key === 'Enter') {
+                      e.preventDefault();
+                      setPaymentType('Cash');
+                      setCustomerId(null);
+                      setCustomerName('CASH');
+                      setCustomerAddress('');
+                    }
+                  }}
+                  sx={{
+                    flex: 1,
+                    textAlign: 'center',
+                    py: 0.35,
+                    borderRadius: 1,
+                    cursor: 'pointer',
+                    fontSize: '0.68rem',
+                    fontWeight: paymentType === 'Cash' ? 700 : 600,
+                    color: paymentType === 'Cash' ? '#ffffff' : '#64748b',
+                    bgcolor: paymentType === 'Cash' ? '#16a34a' : 'transparent',
+                    boxShadow: paymentType === 'Cash' ? '0 1px 3px rgba(22,163,74,0.35)' : 'none',
+                    transition: 'all 0.15s ease',
+                    userSelect: 'none',
+                    '&:hover': { bgcolor: paymentType === 'Cash' ? '#15803d' : 'rgba(0,0,0,0.04)' }
+                  }}
+                >
+                  Cash
+                </Box>
+                <Box
+                  role="radio"
+                  aria-checked={paymentType === 'Credit'}
+                  tabIndex={!customerId ? -1 : 0}
+                  onClick={() => {
+                    if (customerId) setPaymentType('Credit');
+                  }}
+                  onKeyDown={(e) => {
+                    if (customerId && (e.key === ' ' || e.key === 'Enter')) {
+                      e.preventDefault();
+                      setPaymentType('Credit');
+                    }
+                  }}
+                  sx={{
+                    flex: 1,
+                    textAlign: 'center',
+                    py: 0.35,
+                    borderRadius: 1,
+                    cursor: !customerId ? 'not-allowed' : 'pointer',
+                    opacity: !customerId ? 0.4 : 1,
+                    fontSize: '0.68rem',
+                    fontWeight: paymentType === 'Credit' ? 700 : 600,
+                    color: paymentType === 'Credit' ? '#ffffff' : '#64748b',
+                    bgcolor: paymentType === 'Credit' ? '#d97706' : 'transparent',
+                    boxShadow: paymentType === 'Credit' ? '0 1px 3px rgba(217,119,6,0.35)' : 'none',
+                    transition: 'all 0.15s ease',
+                    userSelect: 'none',
+                    '&:hover': { bgcolor: paymentType === 'Credit' ? '#b45309' : (!customerId ? 'transparent' : 'rgba(0,0,0,0.04)') }
+                  }}
+                >
+                  Credit
+                </Box>
+              </Box>
             </Box>
           </Grid>
         </Grid>
 
         {/* Product Info Section */}
-        <Grid container spacing={1.5} alignItems="stretch" sx={{ mt: 0.5 }}>
+        <Grid container spacing={1} alignItems="stretch" sx={{ mt: 0.3 }}>
           <Grid item xs={12} md={12} lg={12}>
             <Box sx={{
-              borderRadius: 1.5, px: 1.5, py: 0.8, height: '100%', display: 'flex', alignItems: 'center', gap: 1.5,
+              borderRadius: 1.2, px: 1, py: 0.4, height: '100%', display: 'flex', alignItems: 'center', gap: 1,
               background: selectedProductInfo ? 'linear-gradient(135deg, #f0fdfa 0%, #ecfdf5 50%, #f0fdf4 100%)' : '#f8fafc',
               border: selectedProductInfo ? '1px solid #99f6e4' : '1px dashed #cbd5e1',
               transition: 'all 0.2s',
             }}>
               {selectedProductInfo ? (
-                <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'nowrap', alignItems: 'center', overflow: 'hidden', flex: 1 }}>
+                <Box sx={{ display: 'flex', gap: 1, flexWrap: 'nowrap', alignItems: 'center', overflow: 'hidden', flex: 1 }}>
                   <Box sx={{ minWidth: 0 }}>
-                    <Typography sx={{ fontSize: '0.62rem', lineHeight: 1, color: '#64748b', fontWeight: 500 }}>P.Rate</Typography>
-                    <Typography sx={{ fontSize: '0.85rem', fontWeight: 700, lineHeight: 1.3 }}>
+                    <Typography sx={{ fontSize: '0.55rem', lineHeight: 1, color: '#64748b', fontWeight: 500 }}>P.Rate</Typography>
+                    <Typography sx={{ fontSize: '0.72rem', fontWeight: 700, lineHeight: 1.2 }}>
                       {activeMultiUnitInfo && activeMultiUnitInfo.pcsInside
                         ? (selectedProductInfo.purchaseRate * activeMultiUnitInfo.pcsInside).toFixed(2)
                         : selectedProductInfo.purchaseRate.toFixed(2)}
                     </Typography>
                   </Box>
-                  <Box sx={{ minWidth: 0, px: 1, py: 0.3, bgcolor: '#fef2f2', borderRadius: 1 }}>
-                    <Typography sx={{ fontSize: '0.62rem', lineHeight: 1, color: '#dc2626', fontWeight: 600 }}>Stock</Typography>
-                    <Typography sx={{ fontSize: '1rem', fontWeight: 800, lineHeight: 1.3, color: '#dc2626' }}>
+                  <Box sx={{ minWidth: 0, px: 0.7, py: 0.15, bgcolor: '#fef2f2', borderRadius: 0.8 }}>
+                    <Typography sx={{ fontSize: '0.55rem', lineHeight: 1, color: '#dc2626', fontWeight: 600 }}>Stock</Typography>
+                    <Typography sx={{ fontSize: '0.80rem', fontWeight: 800, lineHeight: 1.2, color: '#dc2626' }}>
                       {(() => {
                         const basePieces = selectedProductInfo.totalStock ?? selectedProductInfo.stock;
                         const isNum = typeof basePieces === 'number';
@@ -1620,35 +2314,35 @@ export default function SalesReturn() {
                     </Typography>
                   </Box>
                   <Box sx={{ minWidth: 0 }}>
-                    <Typography sx={{ fontSize: '0.62rem', lineHeight: 1, color: '#64748b', fontWeight: 500 }}>Vendor</Typography>
-                    <Typography sx={{ fontSize: '0.82rem', fontWeight: 700, lineHeight: 1.3 }}>{selectedProductInfo.lastVendor ?? '-'}</Typography>
+                    <Typography sx={{ fontSize: '0.55rem', lineHeight: 1, color: '#64748b', fontWeight: 500 }}>Vendor</Typography>
+                    <Typography sx={{ fontSize: '0.70rem', fontWeight: 700, lineHeight: 1.2 }}>{selectedProductInfo.lastVendor ?? '-'}</Typography>
                   </Box>
                   {activeMultiUnitInfo && (
                     <>
-                      <Box sx={{ width: '1px', height: 28, bgcolor: '#0f766e', opacity: 0.2, flexShrink: 0 }} />
+                      <Box sx={{ width: '1px', height: 20, bgcolor: '#0f766e', opacity: 0.2, flexShrink: 0 }} />
                       {activeMultiUnitInfo.pcsInside != null && (
                         <Box sx={{ minWidth: 0 }}>
-                          <Typography sx={{ fontSize: '0.62rem', lineHeight: 1, color: '#64748b', fontWeight: 500 }}>Pcs Inside</Typography>
-                          <Typography sx={{ fontWeight: 700, fontSize: '0.85rem', lineHeight: 1.3, color: '#7c3aed' }}>{activeMultiUnitInfo.pcsInside}</Typography>
+                          <Typography sx={{ fontSize: '0.55rem', lineHeight: 1, color: '#64748b', fontWeight: 500 }}>Pcs Inside</Typography>
+                          <Typography sx={{ fontWeight: 700, fontSize: '0.72rem', lineHeight: 1.2, color: '#7c3aed' }}>{activeMultiUnitInfo.pcsInside}</Typography>
                         </Box>
                       )}
                       {activeMultiUnitInfo.wholesale != null && activeMultiUnitInfo.wholesale > 0 && (
                         <Box sx={{ minWidth: 0 }}>
-                          <Typography sx={{ fontSize: '0.62rem', lineHeight: 1, color: '#64748b', fontWeight: 500 }}>WSale</Typography>
-                          <Typography sx={{ fontWeight: 700, fontSize: '0.85rem', lineHeight: 1.3, color: '#1565c0' }}>{activeMultiUnitInfo.wholesale.toFixed(2)}</Typography>
+                          <Typography sx={{ fontSize: '0.55rem', lineHeight: 1, color: '#64748b', fontWeight: 500 }}>WSale</Typography>
+                          <Typography sx={{ fontWeight: 700, fontSize: '0.72rem', lineHeight: 1.2, color: '#1565c0' }}>{activeMultiUnitInfo.wholesale.toFixed(2)}</Typography>
                         </Box>
                       )}
                       {activeMultiUnitInfo.retail != null && activeMultiUnitInfo.retail > 0 && (
                         <Box sx={{ minWidth: 0 }}>
-                          <Typography sx={{ fontSize: '0.62rem', lineHeight: 1, color: '#64748b', fontWeight: 500 }}>Retail</Typography>
-                          <Typography sx={{ fontWeight: 700, fontSize: '0.85rem', lineHeight: 1.3, color: '#15803d' }}>{activeMultiUnitInfo.retail.toFixed(2)}</Typography>
+                          <Typography sx={{ fontSize: '0.55rem', lineHeight: 1, color: '#64748b', fontWeight: 500 }}>Retail</Typography>
+                          <Typography sx={{ fontWeight: 700, fontSize: '0.72rem', lineHeight: 1.2, color: '#15803d' }}>{activeMultiUnitInfo.retail.toFixed(2)}</Typography>
                         </Box>
                       )}
                     </>
                   )}
                 </Box>
               ) : (
-                <Typography sx={{ fontSize: '0.75rem', color: '#94a3b8', fontStyle: 'italic' }}>Select a product to view details</Typography>
+                <Typography sx={{ fontSize: '0.72rem', color: '#94a3b8', fontStyle: 'italic' }}>Select a product to view details</Typography>
               )}
             </Box>
           </Grid>
@@ -1656,9 +2350,9 @@ export default function SalesReturn() {
       </Paper>
 
       {/* Product Grid - B2C style */}
-      <Paper elevation={0} sx={{ mb: 1, width: '100%', overflow: 'hidden', border: '1px solid #e0e7ef', borderRadius: 2, bgcolor: 'white' }}>
+      <Paper elevation={0} sx={{ mb: 0.7, width: '100%', overflow: 'hidden', border: '1px solid #e0e7ef', borderRadius: 1.5, bgcolor: 'white' }}>
         <TableContainer
-          sx={{ minHeight: 320, maxHeight: 400, width: '100%', bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }}
+          sx={{ minHeight: 256, maxHeight: 320, width: '100%', bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }}
           onBlurCapture={(e) => {
             const container = e.currentTarget;
             setTimeout(() => {
@@ -1672,9 +2366,18 @@ export default function SalesReturn() {
             }, 100);
           }}
         >
-          <Table stickyHeader size="small" sx={{ minWidth: '100%', tableLayout: 'fixed', borderCollapse: 'separate', borderSpacing: 0, '& .MuiTableCell-root': { fontSize: '0.82rem' }, '& .MuiInputBase-input': { fontSize: '0.82rem' } }}>
+          <Table stickyHeader size="small" sx={{
+            minWidth: '100%',
+            tableLayout: 'fixed',
+            borderCollapse: 'separate',
+            borderSpacing: 0,
+            '& .MuiTableCell-root': { fontSize: '0.68rem', py: '2px', px: '3px', fontWeight: 700, borderBottom: '1px solid #cbd5e1' },
+            '& .MuiInputBase-input': { fontSize: '0.68rem', fontWeight: 700 },
+            '& .MuiAutocomplete-input': { fontSize: '0.68rem', fontWeight: 700 },
+            '& .MuiSelect-select': { fontSize: '0.68rem', fontWeight: 700 },
+          }}>
             <TableHead>
-              <TableRow>
+              <TableRow sx={{ '& th': { borderBottom: '2px solid #0b534d' } }}>
                 {[
                   { label: 'Sl', w: '2.5%' },
                   { label: 'Item Code', w: '6%' },
@@ -1691,9 +2394,10 @@ export default function SalesReturn() {
                   { label: '', w: '2.5%' },
                 ].map((col, ci) => (
                   <TableCell key={ci} sx={{
-                    bgcolor: '#0f766e', color: 'white', fontWeight: 600, fontSize: '0.75rem', width: col.w,
-                    p: '6px 4px', textAlign: ci >= 5 ? 'right' : 'center', letterSpacing: 0.3, textTransform: 'uppercase',
+                    bgcolor: '#0f766e', color: 'white', fontWeight: 700, fontSize: '0.65rem', width: col.w,
+                    p: '4px 3px', textAlign: ci >= 5 ? 'right' : 'center', letterSpacing: 0.2, textTransform: 'uppercase',
                     borderRight: ci < 12 ? '1px solid rgba(255,255,255,0.15)' : 'none',
+                    borderBottom: '2px solid #0b534d',
                   }}>
                     {col.label}
                   </TableCell>
@@ -1720,14 +2424,14 @@ export default function SalesReturn() {
                     setActiveLineId(line.id);
                   }}
                 >
-                  <TableCell sx={{ p: '3px', borderRight: '1px solid #f0f0f0', borderBottom: '1px solid #eef2f6', textAlign: 'center', fontWeight: 700, color: '#64748b', fontSize: '0.8rem', bgcolor: '#f1f5f9' }}>{idx + 1}</TableCell>
-                  <TableCell sx={{ p: '3px', borderRight: '1px solid #f0f0f0', borderBottom: '1px solid #eef2f6' }}>
-                    <TextField size="small" variant="outlined" value={line.productCode} fullWidth InputProps={{ readOnly: true }} sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.3, fontSize: '0.82rem' } }} />
+                  <TableCell sx={{ p: '2px', borderRight: '1px solid #cbd5e1', borderBottom: '1px solid #cbd5e1', textAlign: 'center', fontWeight: 800, color: '#64748b', fontSize: '0.68rem', bgcolor: '#f1f5f9' }}>{idx + 1}</TableCell>
+                  <TableCell sx={{ p: '2px', borderRight: '1px solid #cbd5e1', borderBottom: '1px solid #cbd5e1' }}>
+                    <TextField size="small" variant="outlined" value={line.productCode} fullWidth InputProps={{ readOnly: true }} sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 0.8, height: 24, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0, px: 0.5, fontSize: '0.68rem', fontWeight: 700 } }} />
                   </TableCell>
-                  <TableCell sx={{ p: '3px', borderRight: '1px solid #f0f0f0', borderBottom: '1px solid #eef2f6' }}>
-                    <TextField size="small" variant="outlined" value={line.imei} onChange={(e) => updateLine(line.id, 'imei', e.target.value)} onKeyDown={(e) => handleImeiKeyDown(e, line)} inputRef={(el) => { imeiInputRefs.current[line.id] = el; }} fullWidth placeholder="IMEI" sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.3, fontSize: '0.82rem' } }} />
+                  <TableCell sx={{ p: '2px', borderRight: '1px solid #cbd5e1', borderBottom: '1px solid #cbd5e1' }}>
+                    <TextField size="small" variant="outlined" value={line.imei} onChange={(e) => updateLine(line.id, 'imei', e.target.value)} onKeyDown={(e) => handleImeiKeyDown(e, line)} inputRef={(el) => { imeiInputRefs.current[line.id] = el; }} fullWidth placeholder="IMEI" InputProps={{ readOnly: returnType === 'ByRef' }} sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 0.8, height: 24, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0, px: 0.5, fontSize: '0.68rem', fontWeight: 700 } }} />
                   </TableCell>
-                  <TableCell sx={{ p: '3px', borderRight: '1px solid #f0f0f0', borderBottom: '1px solid #eef2f6' }}>
+                  <TableCell sx={{ p: '2px', borderRight: '1px solid #cbd5e1', borderBottom: '1px solid #cbd5e1' }}>
                     {returnType === 'OnAccount' ? (
                       <Autocomplete
                         size="small"
@@ -1757,20 +2461,20 @@ export default function SalesReturn() {
                             onFocus={() => handleItemNameFocus(line)}
                             onBlur={() => handleItemNameBlur(line)}
                             onKeyDown={(e) => handleItemNameKeyDown(e, line)}
-                            sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.3, fontSize: '0.82rem' } }}
+                            sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 0.8, height: 24, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0, px: 0.5, fontSize: '0.68rem', fontWeight: 700 } }}
                           />
                         )}
                         ListboxProps={{
                           sx: {
                             p: 0,
-                            maxHeight: 250,
+                            maxHeight: 220,
                             overflowX: 'hidden',
                             overflowY: 'auto',
                             '&::-webkit-scrollbar': { display: 'none' },
                             msOverflowStyle: 'none',
                             scrollbarWidth: 'none',
                             '& .MuiAutocomplete-option': {
-                              minHeight: 'auto', py: 0.75, px: 2, fontSize: '0.82rem', bgcolor: 'transparent',
+                              minHeight: 'auto', py: 0.5, px: 1.5, fontSize: '0.68rem', fontWeight: 700, bgcolor: 'transparent',
                               '&[data-focus="true"]': { bgcolor: '#0f766e !important', color: '#ffffff !important' },
                               '&[aria-selected="true"]': { bgcolor: '#0f766e !important', color: '#ffffff !important' },
                               '&.Mui-focused': { bgcolor: '#0f766e !important', color: '#ffffff !important' },
@@ -1796,11 +2500,12 @@ export default function SalesReturn() {
                         onKeyDown={(e) => handleItemNameKeyDown(e, line)}
                         fullWidth
                         placeholder="Item name"
-                        sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.3, fontSize: '0.82rem' } }}
+                        InputProps={{ readOnly: returnType === 'ByRef' }}
+                        sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 0.8, height: 24, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0, px: 0.5, fontSize: '0.68rem', fontWeight: 700 } }}
                       />
                     )}
                   </TableCell>
-                  <TableCell sx={{ p: '3px', borderRight: '1px solid #f0f0f0', borderBottom: '1px solid #eef2f6' }} onClick={(e) => e.stopPropagation()}>
+                  <TableCell sx={{ p: '2px', borderRight: '1px solid #cbd5e1', borderBottom: '1px solid #cbd5e1' }} onClick={(e) => e.stopPropagation()}>
                     <TextField
                       size="small"
                       select
@@ -1809,20 +2514,20 @@ export default function SalesReturn() {
                       onChange={(e) => handleUnitChange(line.id, e.target.value)}
                       onKeyDown={(e) => handleUnitKeyDown(e, line.id)}
                       fullWidth
-                      disabled={line.availableUnits.length === 0}
+                      disabled={returnType === 'ByRef' || line.availableUnits.length === 0}
                       inputRef={(el) => { unitInputRefs.current[line.id] = el; }}
-                      sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.3, fontSize: '0.82rem' } }}
+                      sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 0.8, height: 24, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0, px: 0.5, fontSize: '0.68rem', fontWeight: 700 } }}
                     >
                       {line.availableUnits.length === 0 ? (
-                        <MenuItem value="" sx={{ fontSize: '0.82rem' }}>-</MenuItem>
+                        <MenuItem value="" sx={{ fontSize: '0.68rem', fontWeight: 700, py: 0.5 }}>-</MenuItem>
                       ) : (
                         line.availableUnits.map((u) => (
-                          <MenuItem key={u.id} value={u.id} sx={{ fontSize: '0.82rem' }}>{u.name}</MenuItem>
+                          <MenuItem key={u.id} value={u.id} sx={{ fontSize: '0.68rem', fontWeight: 700, py: 0.5 }}>{u.name}</MenuItem>
                         ))
                       )}
                     </TextField>
                   </TableCell>
-                  <TableCell align="right" sx={{ p: '3px', borderRight: '1px solid #f0f0f0', borderBottom: '1px solid #eef2f6' }}>
+                  <TableCell align="right" sx={{ p: '2px', borderRight: '1px solid #cbd5e1', borderBottom: '1px solid #cbd5e1' }}>
                     <TextField
                       size="small"
                       variant="outlined"
@@ -1833,65 +2538,65 @@ export default function SalesReturn() {
                       onBlur={() => { const raw = editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'quantity' ? editingNumericCell.value : ''; updateLine(line.id, 'quantity', parseNumericInput(raw)); setEditingNumericCell(null); }}
                       onKeyDown={(e) => handleQtyKeyDown(e, line)}
                       inputRef={(el) => { qtyInputRefs.current[line.id] = el; }}
-                      inputProps={{ min: 0, style: { textAlign: 'center' }, inputMode: 'decimal' }}
+                      inputProps={{ min: 0, style: { textAlign: 'center', fontSize: '0.68rem', fontWeight: 700 }, inputMode: 'decimal' }}
                       fullWidth
-                      sx={{ ...numberInputStyle, '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.3, fontSize: '0.82rem' } }}
+                      sx={{ ...numberInputStyle, '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 0.8, height: 24, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0, px: 0.5, fontWeight: 700 } }}
                     />
                   </TableCell>
-                  <TableCell align="right" sx={{ p: '3px', borderRight: '1px solid #f0f0f0', borderBottom: '1px solid #eef2f6' }}>
+                  <TableCell align="right" sx={{ p: '2px', borderRight: '1px solid #cbd5e1', borderBottom: '1px solid #cbd5e1' }}>
                     <TextField
                       size="small"
                       variant="outlined"
                       type="number"
                       value={editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'price' ? editingNumericCell.value : (line.price === 0 ? '' : String(line.price))}
-                      onFocus={() => { setEditingNumericCell({ lineId: line.id, field: 'price', value: line.price === 0 ? '' : String(line.price) }); }}
+                      onFocus={() => { if (returnType !== 'ByRef') setEditingNumericCell({ lineId: line.id, field: 'price', value: line.price === 0 ? '' : String(line.price) }); }}
                       onChange={(e) => setEditingNumericCell((prev) => prev?.lineId === line.id && prev?.field === 'price' ? { ...prev, value: e.target.value } : prev)}
                       onBlur={() => { const raw = editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'price' ? editingNumericCell.value : ''; updateLine(line.id, 'price', parseNumericInput(raw)); setEditingNumericCell(null); }}
                       onKeyDown={(e) => handlePriceKeyDown(e, line)}
                       inputRef={(el) => { priceInputRefs.current[line.id] = el; }}
-                      inputProps={{ min: 0, style: { textAlign: 'right' }, inputMode: 'decimal' }}
+                      inputProps={{ min: 0, style: { textAlign: 'right', fontSize: '0.68rem', fontWeight: 700 }, inputMode: 'decimal', readOnly: returnType === 'ByRef' }}
                       fullWidth
-                      sx={{ ...numberInputStyle, '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.3, fontSize: '0.82rem' } }}
+                      sx={{ ...numberInputStyle, '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 0.8, height: 24, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0, px: 0.5, fontWeight: 700 } }}
                     />
                   </TableCell>
-                  <TableCell align="right" sx={{ p: '5px 6px', borderRight: '1px solid #f0f0f0', borderBottom: '1px solid #eef2f6', fontSize: '0.82rem', fontWeight: 500, color: '#475569' }}>{line.gross.toFixed(2)}</TableCell>
-                  <TableCell align="right" sx={{ p: '3px', borderRight: '1px solid #f0f0f0', borderBottom: '1px solid #eef2f6' }}>
+                  <TableCell align="right" sx={{ p: '3px 4px', borderRight: '1px solid #cbd5e1', borderBottom: '1px solid #cbd5e1', fontSize: '0.68rem', fontWeight: 700, color: '#334155' }}>{line.gross.toFixed(2)}</TableCell>
+                  <TableCell align="right" sx={{ p: '2px', borderRight: '1px solid #cbd5e1', borderBottom: '1px solid #cbd5e1' }}>
                     <TextField
                       size="small"
                       variant="outlined"
                       type="number"
                       value={editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'discPercent' ? editingNumericCell.value : (line.discPercent === 0 ? '' : String(line.discPercent))}
-                      onFocus={() => { setEditingNumericCell({ lineId: line.id, field: 'discPercent', value: line.discPercent === 0 ? '' : String(line.discPercent) }); }}
+                      onFocus={() => { if (returnType !== 'ByRef') setEditingNumericCell({ lineId: line.id, field: 'discPercent', value: line.discPercent === 0 ? '' : String(line.discPercent) }); }}
                       onChange={(e) => setEditingNumericCell((prev) => prev?.lineId === line.id && prev?.field === 'discPercent' ? { ...prev, value: e.target.value } : prev)}
                       onBlur={() => { const raw = editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'discPercent' ? editingNumericCell.value : ''; updateLine(line.id, 'discPercent', parseNumericInput(raw)); setEditingNumericCell(null); }}
                       onKeyDown={(e) => handleDiscPercentKeyDown(e, line)}
                       inputRef={(el) => { discPercentInputRefs.current[line.id] = el; }}
-                      inputProps={{ min: 0, max: 100, style: { textAlign: 'center' }, inputMode: 'decimal' }}
+                      inputProps={{ min: 0, max: 100, style: { textAlign: 'center', fontSize: '0.68rem', fontWeight: 700 }, inputMode: 'decimal', readOnly: returnType === 'ByRef' }}
                       fullWidth
-                      sx={{ ...numberInputStyle, '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.3, fontSize: '0.82rem' } }}
+                      sx={{ ...numberInputStyle, '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 0.8, height: 24, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0, px: 0.5, fontWeight: 700 } }}
                     />
                   </TableCell>
-                  <TableCell align="right" sx={{ p: '3px', borderRight: '1px solid #f0f0f0', borderBottom: '1px solid #eef2f6' }}>
+                  <TableCell align="right" sx={{ p: '2px', borderRight: '1px solid #cbd5e1', borderBottom: '1px solid #cbd5e1' }}>
                     <TextField
                       size="small"
                       variant="outlined"
                       type="number"
                       value={editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'discAmount' ? editingNumericCell.value : (line.discAmount === 0 ? '' : String(line.discAmount))}
-                      onFocus={() => { setEditingNumericCell({ lineId: line.id, field: 'discAmount', value: line.discAmount === 0 ? '' : String(line.discAmount) }); }}
+                      onFocus={() => { if (returnType !== 'ByRef') setEditingNumericCell({ lineId: line.id, field: 'discAmount', value: line.discAmount === 0 ? '' : String(line.discAmount) }); }}
                       onChange={(e) => setEditingNumericCell((prev) => prev?.lineId === line.id && prev?.field === 'discAmount' ? { ...prev, value: e.target.value } : prev)}
                       onBlur={() => { const raw = editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'discAmount' ? editingNumericCell.value : ''; updateLine(line.id, 'discAmount', parseNumericInput(raw)); setEditingNumericCell(null); }}
                       onKeyDown={(e) => handleDiscAmountKeyDown(e, line)}
                       inputRef={(el) => { discAmountInputRefs.current[line.id] = el; }}
-                      inputProps={{ min: 0, style: { textAlign: 'right' }, inputMode: 'decimal' }}
+                      inputProps={{ min: 0, style: { textAlign: 'right', fontSize: '0.68rem', fontWeight: 700 }, inputMode: 'decimal', readOnly: returnType === 'ByRef' }}
                       fullWidth
-                      sx={{ ...numberInputStyle, '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.3, fontSize: '0.82rem' } }}
+                      sx={{ ...numberInputStyle, '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 0.8, height: 24, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0, px: 0.5, fontWeight: 700 } }}
                     />
                   </TableCell>
-                  <TableCell align="right" sx={{ p: '5px 6px', borderRight: '1px solid #f0f0f0', borderBottom: '1px solid #eef2f6', fontSize: '0.82rem', fontWeight: 500, color: '#64748b' }}>{line.vatAmount.toFixed(2)}</TableCell>
-                  <TableCell align="right" sx={{ p: '5px 6px', borderRight: '1px solid #f0f0f0', borderBottom: '1px solid #eef2f6', fontWeight: 700, fontSize: '0.85rem', color: '#0f766e' }}>{line.total.toFixed(2)}</TableCell>
-                  <TableCell sx={{ p: '3px', borderBottom: '1px solid #eef2f6', textAlign: 'center' }}>
-                    <IconButton size="small" onClick={() => removeLine(line.id)} sx={{ p: 0.3, color: '#ef4444', '&:hover': { bgcolor: '#fee2e2' } }}>
-                      <DeleteIcon sx={{ fontSize: '0.85rem' }} />
+                  <TableCell align="right" sx={{ p: '3px 4px', borderRight: '1px solid #cbd5e1', borderBottom: '1px solid #cbd5e1', fontSize: '0.68rem', fontWeight: 700, color: '#64748b' }}>{line.vatAmount.toFixed(2)}</TableCell>
+                  <TableCell align="right" sx={{ p: '3px 4px', borderRight: '1px solid #cbd5e1', borderBottom: '1px solid #cbd5e1', fontWeight: 800, fontSize: '0.72rem', color: '#0f766e' }}>{line.total.toFixed(2)}</TableCell>
+                  <TableCell sx={{ p: '2px', borderBottom: '1px solid #cbd5e1', textAlign: 'center' }}>
+                    <IconButton size="small" onClick={() => removeLine(line.id)} disabled={returnType === 'ByRef'} sx={{ p: 0.2, color: '#ef4444', '&:hover': { bgcolor: '#fee2e2' }, '&.Mui-disabled': { color: '#cbd5e1' } }}>
+                      <DeleteIcon sx={{ fontSize: '0.72rem' }} />
                     </IconButton>
                   </TableCell>
                 </TableRow>
@@ -1902,53 +2607,53 @@ export default function SalesReturn() {
       </Paper>
 
       {/* Bottom - B2C style: Adjustments + Grand Total */}
-      <Paper elevation={0} sx={{ p: 2, mb: 1, borderRadius: 2, bgcolor: 'white', border: '1px solid #e0e7ef' }}>
-        <Grid container spacing={2}>
+      <Paper elevation={0} sx={{ p: 1.25, mb: 0.7, borderRadius: 1.5, bgcolor: 'white', border: '1px solid #e0e7ef' }}>
+        <Grid container spacing={1}>
           <Grid item xs={12} md={5} lg={3.5}>
-            <Box sx={{ bgcolor: '#f8fafc', borderRadius: 2, border: '1px solid #e2e8f0', p: 1.5 }}>
-              <Typography sx={{ fontWeight: 700, fontSize: '0.8rem', color: '#475569', mb: 1.2, letterSpacing: 0.3, textTransform: 'uppercase' }}>Adjustments</Typography>
-              <Grid container spacing={1}>
+            <Box sx={{ bgcolor: '#f8fafc', borderRadius: 1.5, border: '1px solid #e2e8f0', p: 1.25 }}>
+              <Typography sx={{ fontWeight: 700, fontSize: '0.78rem', color: '#475569', mb: 0.8, letterSpacing: 0.3, textTransform: 'uppercase' }}>Adjustments</Typography>
+              <Grid container spacing={0.85}>
                 <Grid item xs={6}>
-                  <TextField size="small" label="Other Disc %" type="number" value={editingNumericCell?.field === 'otherDiscPercent' && !editingNumericCell?.lineId ? editingNumericCell.value : (otherDiscPercent === 0 ? '' : String(otherDiscPercent))} onFocus={() => setEditingNumericCell({ field: 'otherDiscPercent', value: otherDiscPercent === 0 ? '' : String(otherDiscPercent) })} onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherDiscPercent' ? { ...prev, value: e.target.value } : prev)} onBlur={() => { const raw = editingNumericCell?.field === 'otherDiscPercent' ? editingNumericCell.value : ''; handleOtherDiscPercentChange(parseNumericInput(raw)); setEditingNumericCell(null); }} inputProps={{ inputMode: 'decimal', max: 100 }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />
+                  <TextField size="small" label="Other Disc %" type="number" value={editingNumericCell?.field === 'otherDiscPercent' && !editingNumericCell?.lineId ? editingNumericCell.value : (otherDiscPercent === 0 ? '' : String(otherDiscPercent))} onFocus={() => setEditingNumericCell({ field: 'otherDiscPercent', value: otherDiscPercent === 0 ? '' : String(otherDiscPercent) })} onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherDiscPercent' ? { ...prev, value: e.target.value } : prev)} onBlur={() => { const raw = editingNumericCell?.field === 'otherDiscPercent' ? editingNumericCell.value : ''; handleOtherDiscPercentChange(parseNumericInput(raw)); setEditingNumericCell(null); }} inputProps={{ inputMode: 'decimal', max: 100 }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.2, height: 32, minHeight: 32 }, '& .MuiInputBase-input': { fontSize: '0.84rem', py: '4px !important' }, '& .MuiInputLabel-root': { fontSize: '0.78rem' } }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField size="small" label="Other Discount" type="number" value={editingNumericCell?.field === 'otherDiscount' && !editingNumericCell?.lineId ? editingNumericCell.value : (otherDiscount === 0 ? '' : String(otherDiscount))} onFocus={() => setEditingNumericCell({ field: 'otherDiscount', value: otherDiscount === 0 ? '' : String(otherDiscount) })} onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherDiscount' ? { ...prev, value: e.target.value } : prev)} onBlur={() => { const raw = editingNumericCell?.field === 'otherDiscount' ? editingNumericCell.value : ''; setOtherDiscount(parseNumericInput(raw)); setOtherDiscPercent(0); setEditingNumericCell(null); }} inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />
+                  <TextField size="small" label="Other Discount" type="number" value={editingNumericCell?.field === 'otherDiscount' && !editingNumericCell?.lineId ? editingNumericCell.value : (otherDiscount === 0 ? '' : String(otherDiscount))} onFocus={() => setEditingNumericCell({ field: 'otherDiscount', value: otherDiscount === 0 ? '' : String(otherDiscount) })} onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherDiscount' ? { ...prev, value: e.target.value } : prev)} onBlur={() => { const raw = editingNumericCell?.field === 'otherDiscount' ? editingNumericCell.value : ''; setOtherDiscount(parseNumericInput(raw)); setOtherDiscPercent(0); setEditingNumericCell(null); }} inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.2, height: 32, minHeight: 32 }, '& .MuiInputBase-input': { fontSize: '0.84rem', py: '4px !important' }, '& .MuiInputLabel-root': { fontSize: '0.78rem' } }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField size="small" label="Other Charges" type="number" value={editingNumericCell?.field === 'otherCharges' && !editingNumericCell?.lineId ? editingNumericCell.value : (otherCharges === 0 ? '' : String(otherCharges))} onFocus={() => setEditingNumericCell({ field: 'otherCharges', value: otherCharges === 0 ? '' : String(otherCharges) })} onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherCharges' ? { ...prev, value: e.target.value } : prev)} onBlur={() => { const raw = editingNumericCell?.field === 'otherCharges' ? editingNumericCell.value : ''; setOtherCharges(parseNumericInput(raw)); setEditingNumericCell(null); }} inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />
+                  <TextField size="small" label="Other Charges" type="number" value={editingNumericCell?.field === 'otherCharges' && !editingNumericCell?.lineId ? editingNumericCell.value : (otherCharges === 0 ? '' : String(otherCharges))} onFocus={() => setEditingNumericCell({ field: 'otherCharges', value: otherCharges === 0 ? '' : String(otherCharges) })} onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherCharges' ? { ...prev, value: e.target.value } : prev)} onBlur={() => { const raw = editingNumericCell?.field === 'otherCharges' ? editingNumericCell.value : ''; setOtherCharges(parseNumericInput(raw)); setEditingNumericCell(null); }} inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.2, height: 32, minHeight: 32 }, '& .MuiInputBase-input': { fontSize: '0.84rem', py: '4px !important' }, '& .MuiInputLabel-root': { fontSize: '0.78rem' } }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField size="small" label="Round Off" type="number" value={editingNumericCell?.field === 'roundOff' && !editingNumericCell?.lineId ? editingNumericCell.value : (roundOff === 0 ? '' : String(roundOff))} onFocus={() => setEditingNumericCell({ field: 'roundOff', value: roundOff === 0 ? '' : String(roundOff) })} onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'roundOff' ? { ...prev, value: e.target.value } : prev)} onBlur={() => { const raw = editingNumericCell?.field === 'roundOff' ? editingNumericCell.value : ''; setRoundOff(parseNumericInput(raw)); setEditingNumericCell(null); }} inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />
+                  <TextField size="small" label="Round Off" type="number" value={editingNumericCell?.field === 'roundOff' && !editingNumericCell?.lineId ? editingNumericCell.value : (roundOff === 0 ? '' : String(roundOff))} onFocus={() => setEditingNumericCell({ field: 'roundOff', value: roundOff === 0 ? '' : String(roundOff) })} onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'roundOff' ? { ...prev, value: e.target.value } : prev)} onBlur={() => { const raw = editingNumericCell?.field === 'roundOff' ? editingNumericCell.value : ''; setRoundOff(parseNumericInput(raw)); setEditingNumericCell(null); }} inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.2, height: 32, minHeight: 32 }, '& .MuiInputBase-input': { fontSize: '0.84rem', py: '4px !important' }, '& .MuiInputLabel-root': { fontSize: '0.78rem' } }} />
                 </Grid>
                 <Grid item xs={12}>
-                  <TextField size="small" label="Narration" value={narration} onChange={(e) => setNarration(e.target.value)} inputRef={narrationRef} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); setTimeout(() => saveButtonRef.current?.focus(), 50); } }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />
+                  <TextField size="small" label="Narration" value={narration} onChange={(e) => setNarration(e.target.value)} inputRef={narrationRef} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); setTimeout(() => saveButtonRef.current?.focus(), 50); } }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.2, height: 32, minHeight: 32 }, '& .MuiInputBase-input': { fontSize: '0.84rem', py: '4px !important' }, '& .MuiInputLabel-root': { fontSize: '0.78rem' } }} />
                 </Grid>
               </Grid>
             </Box>
           </Grid>
           <Grid item xs={12} md={3.5} lg={5}>
             <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
-              <Box sx={{ background: 'linear-gradient(135deg, #0f766e 0%, #115e59 100%)', borderRadius: 2, p: 2, mb: 1.5, textAlign: 'center' }}>
-                <Typography sx={{ color: 'rgba(255,255,255,0.7)', fontSize: '0.72rem', fontWeight: 600, letterSpacing: 1, textTransform: 'uppercase', mb: 0.3 }}>Grand Total</Typography>
-                <Typography sx={{ color: 'white', fontWeight: 900, fontSize: '2.2rem', lineHeight: 1.1, letterSpacing: -0.5 }}>{calculations.grandTotal.toFixed(2)}</Typography>
+              <Box sx={{ background: 'linear-gradient(135deg, #0f766e 0%, #115e59 100%)', borderRadius: 1.5, p: 1, mb: 0.8, textAlign: 'center' }}>
+                <Typography sx={{ color: 'rgba(255,255,255,0.7)', fontSize: '0.60rem', fontWeight: 600, letterSpacing: 1, textTransform: 'uppercase', mb: 0.1 }}>Grand Total</Typography>
+                <Typography sx={{ color: 'white', fontWeight: 900, fontSize: '1.55rem', lineHeight: 1.1, letterSpacing: -0.5 }}>{calculations.grandTotal.toFixed(2)}</Typography>
               </Box>
-              <Box sx={{ bgcolor: '#f8fafc', borderRadius: 2, border: '1px solid #e2e8f0', p: 1.5, flex: 1 }}>
-                <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
-                  <Typography sx={{ fontSize: '0.78rem', color: '#64748b', fontWeight: 500 }}>This Bill</Typography>
-                  <Typography sx={{ fontSize: '0.95rem', fontWeight: 800, color: '#1e293b' }}>{calculations.subTotal.toFixed(2)}</Typography>
+              <Box sx={{ bgcolor: '#f8fafc', borderRadius: 1.5, border: '1px solid #e2e8f0', p: 1, flex: 1 }}>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
+                  <Typography sx={{ fontSize: '0.68rem', color: '#64748b', fontWeight: 500 }}>This Bill</Typography>
+                  <Typography sx={{ fontSize: '0.80rem', fontWeight: 800, color: '#1e293b' }}>{calculations.subTotal.toFixed(2)}</Typography>
                 </Box>
-                <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
-                  <Typography sx={{ fontSize: '0.78rem', color: '#64748b', fontWeight: 500 }}>Total VAT</Typography>
-                  <Typography sx={{ fontSize: '0.95rem', fontWeight: 800, color: '#1e293b' }}>{calculations.totalVat.toFixed(2)}</Typography>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
+                  <Typography sx={{ fontSize: '0.68rem', color: '#64748b', fontWeight: 500 }}>Total VAT</Typography>
+                  <Typography sx={{ fontSize: '0.80rem', fontWeight: 800, color: '#1e293b' }}>{calculations.totalVat.toFixed(2)}</Typography>
                 </Box>
                 {[
                   { label: 'Round Off', value: roundOff },
                   { label: 'Other Discount', value: otherDiscount },
                   { label: 'Other Charges', value: otherCharges },
                 ].map((item) => (
-                  <Box key={item.label} sx={{ display: 'flex', justifyContent: 'space-between', py: 0.2 }}>
-                    <Typography sx={{ fontSize: '0.72rem', color: '#94a3b8' }}>{item.label}</Typography>
-                    <Typography sx={{ fontSize: '0.72rem', color: '#64748b', fontWeight: 500 }}>{item.value.toFixed(2)}</Typography>
+                  <Box key={item.label} sx={{ display: 'flex', justifyContent: 'space-between', py: 0.15 }}>
+                    <Typography sx={{ fontSize: '0.64rem', color: '#94a3b8' }}>{item.label}</Typography>
+                    <Typography sx={{ fontSize: '0.64rem', color: '#64748b', fontWeight: 500 }}>{item.value.toFixed(2)}</Typography>
                   </Box>
                 ))}
               </Box>
@@ -1958,15 +2663,15 @@ export default function SalesReturn() {
       </Paper>
 
       {/* Action buttons - B2C style */}
-      <Paper elevation={0} sx={{ p: 1.5, width: '100%', borderRadius: 2, bgcolor: 'white', border: '1px solid #e0e7ef' }}>
-        <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', alignItems: 'center' }}>
+      <Paper elevation={0} sx={{ p: 0.8, width: '100%', borderRadius: 1.5, bgcolor: 'white', border: '1px solid #e0e7ef' }}>
+        <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap', alignItems: 'center' }}>
           <Button
             ref={saveButtonRef}
             variant="contained"
             startIcon={<SaveIcon />}
-            onClick={() => setSaveDialogOpen(true)}
-            disabled={loading || (returnType === 'ByRef' && !originalInvoiceIdForReturn)}
-            sx={{ minWidth: 100, py: 0.8, fontSize: '0.82rem', fontWeight: 600, textTransform: 'none', borderRadius: 1.5, boxShadow: 'none', bgcolor: '#16a34a', color: '#fff', '&:hover': { bgcolor: '#15803d' }, '&.Mui-disabled': { bgcolor: '#d1d5db', color: '#9ca3af' } }}
+            onClick={handlePreSaveCheck}
+            disabled={loading || !!returnId || (returnType === 'ByRef' && !originalInvoiceIdForReturn)}
+            sx={{ minWidth: 70, py: 0.35, height: 28, fontSize: '0.75rem', fontWeight: 600, textTransform: 'none', borderRadius: 1.2, boxShadow: 'none', bgcolor: '#16a34a', color: '#fff', '& .MuiSvgIcon-root': { fontSize: 16 }, '&:hover': { bgcolor: '#15803d' }, '&.Mui-disabled': { bgcolor: '#d1d5db', color: '#9ca3af' } }}
           >
             Save
           </Button>
@@ -1975,7 +2680,7 @@ export default function SalesReturn() {
             startIcon={<PrintIcon />}
             onClick={() => window.print()}
             disabled={lines.filter((l) => l.productId && l.quantity > 0).length === 0}
-            sx={{ minWidth: 100, py: 0.8, fontSize: '0.82rem', fontWeight: 600, textTransform: 'none', borderRadius: 1.5, boxShadow: 'none', bgcolor: '#16a34a', color: '#fff', '&:hover': { bgcolor: '#15803d' }, '&.Mui-disabled': { bgcolor: '#d1d5db', color: '#9ca3af' } }}
+            sx={{ minWidth: 70, py: 0.35, height: 28, fontSize: '0.75rem', fontWeight: 600, textTransform: 'none', borderRadius: 1.2, boxShadow: 'none', bgcolor: '#16a34a', color: '#fff', '& .MuiSvgIcon-root': { fontSize: 16 }, '&:hover': { bgcolor: '#15803d' }, '&.Mui-disabled': { bgcolor: '#d1d5db', color: '#9ca3af' } }}
           >
             Print
           </Button>
@@ -1983,7 +2688,7 @@ export default function SalesReturn() {
             variant="contained"
             startIcon={<ClearIcon />}
             onClick={handleClear}
-            sx={{ minWidth: 100, py: 0.8, fontSize: '0.82rem', fontWeight: 600, textTransform: 'none', borderRadius: 1.5, boxShadow: 'none', bgcolor: '#16a34a', color: '#fff', '&:hover': { bgcolor: '#15803d' } }}
+            sx={{ minWidth: 70, py: 0.35, height: 28, fontSize: '0.75rem', fontWeight: 600, textTransform: 'none', borderRadius: 1.2, boxShadow: 'none', bgcolor: '#16a34a', color: '#fff', '& .MuiSvgIcon-root': { fontSize: 16 }, '&:hover': { bgcolor: '#15803d' } }}
           >
             Clear
           </Button>
@@ -1991,9 +2696,9 @@ export default function SalesReturn() {
           <Button
             variant="contained"
             startIcon={<EditIcon />}
-            onClick={() => setSearchDialogOpen(true)}
-            disabled={loading}
-            sx={{ minWidth: 90, py: 0.8, fontSize: '0.82rem', fontWeight: 600, textTransform: 'none', borderRadius: 1.5, boxShadow: 'none', bgcolor: '#16a34a', color: '#fff', '&:hover': { bgcolor: '#15803d' }, '&.Mui-disabled': { bgcolor: '#d1d5db', color: '#9ca3af' } }}
+            onClick={handlePreSaveCheck}
+            disabled={!returnId || loading}
+            sx={{ minWidth: 65, py: 0.35, height: 28, fontSize: '0.75rem', fontWeight: 600, textTransform: 'none', borderRadius: 1.2, boxShadow: 'none', bgcolor: '#16a34a', color: '#fff', '& .MuiSvgIcon-root': { fontSize: 16 }, '&:hover': { bgcolor: '#15803d' }, '&.Mui-disabled': { bgcolor: '#d1d5db', color: '#9ca3af' } }}
           >
             Edit
           </Button>
@@ -2002,7 +2707,7 @@ export default function SalesReturn() {
             startIcon={<DeleteIcon />}
             onClick={() => setDeleteDialogOpen(true)}
             disabled={!returnId}
-            sx={{ minWidth: 100, py: 0.8, fontSize: '0.82rem', fontWeight: 600, textTransform: 'none', borderRadius: 1.5, boxShadow: 'none', bgcolor: '#16a34a', color: '#fff', '&:hover': { bgcolor: '#15803d' }, '&.Mui-disabled': { bgcolor: '#d1d5db', color: '#9ca3af' } }}
+            sx={{ minWidth: 70, py: 0.35, height: 28, fontSize: '0.75rem', fontWeight: 600, textTransform: 'none', borderRadius: 1.2, boxShadow: 'none', bgcolor: '#16a34a', color: '#fff', '& .MuiSvgIcon-root': { fontSize: 16 }, '&:hover': { bgcolor: '#15803d' }, '&.Mui-disabled': { bgcolor: '#d1d5db', color: '#9ca3af' } }}
           >
             Delete
           </Button>
@@ -2011,7 +2716,7 @@ export default function SalesReturn() {
             variant="contained"
             startIcon={<SearchIcon />}
             onClick={() => setSearchDialogOpen(true)}
-            sx={{ minWidth: 140, py: 0.8, fontSize: '0.82rem', fontWeight: 600, textTransform: 'none', borderRadius: 1.5, boxShadow: 'none', bgcolor: '#16a34a', color: '#fff', '&:hover': { bgcolor: '#15803d' } }}
+            sx={{ minWidth: 100, py: 0.35, height: 28, fontSize: '0.75rem', fontWeight: 600, textTransform: 'none', borderRadius: 1.2, boxShadow: 'none', bgcolor: '#16a34a', color: '#fff', '& .MuiSvgIcon-root': { fontSize: 16 }, '&:hover': { bgcolor: '#15803d' } }}
           >
             Search Return
           </Button>
@@ -2114,11 +2819,53 @@ export default function SalesReturn() {
       <Dialog open={errorDialogOpen} onClose={() => setErrorDialogOpen(false)} PaperProps={{ sx: { borderRadius: 2, minWidth: 350 } }}>
         <DialogTitle sx={{ fontWeight: 700, fontSize: '1rem', color: '#dc2626' }}>Error</DialogTitle>
         <DialogContent>
-          <Typography sx={{ fontSize: '0.9rem', color: '#475569' }}>{errorDialogMessage}</Typography>
+          <Typography sx={{ fontSize: '0.9rem', color: '#475569', whiteSpace: 'pre-line' }}>{errorDialogMessage}</Typography>
         </DialogContent>
         <DialogActions sx={{ px: 2, pb: 2 }}>
           <Button variant="contained" onClick={() => setErrorDialogOpen(false)} sx={{ textTransform: 'none', borderRadius: 1.5, bgcolor: '#dc2626', '&:hover': { bgcolor: '#b91c1c' }, boxShadow: 'none' }}>
             OK
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Return Warning Dialog */}
+      <Dialog open={warningDialogOpen} onClose={() => setWarningDialogOpen(false)} PaperProps={{ sx: { borderRadius: 2, maxWidth: 500 } }}>
+        <DialogTitle sx={{ fontWeight: 700, fontSize: '1rem', color: '#d97706', display: 'flex', alignItems: 'center', gap: 1 }}>
+          <WarningIcon /> Warning: Quantity Exceeds Purchase
+        </DialogTitle>
+        <DialogContent>
+          <Typography sx={{ fontSize: '0.85rem', color: '#64748b', mb: 1.5 }}>
+            The following items exceed the quantity purchased by this customer:
+          </Typography>
+          <ul style={{ paddingLeft: 20, margin: 0 }}>
+            {warningsList.map((w, index) => (
+              <li key={index} style={{ fontSize: '0.85rem', color: '#1e293b', marginBottom: 6 }}>
+                {w}
+              </li>
+            ))}
+          </ul>
+          <Typography sx={{ fontSize: '0.85rem', color: '#64748b', mt: 2, fontWeight: 500 }}>
+            Do you want to proceed anyway?
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 2, pb: 2 }}>
+          <Button onClick={() => setWarningDialogOpen(false)} sx={{ textTransform: 'none', borderRadius: 1.5, color: '#64748b' }}>
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            color="warning"
+            onClick={() => {
+              setWarningDialogOpen(false);
+              if (returnId) {
+                setEditConfirmOpen(true);
+              } else {
+                setSaveDialogOpen(true);
+              }
+            }}
+            sx={{ textTransform: 'none', borderRadius: 1.5, bgcolor: '#d97706', '&:hover': { bgcolor: '#b45309' }, boxShadow: 'none' }}
+          >
+            Proceed
           </Button>
         </DialogActions>
       </Dialog>
@@ -2131,6 +2878,20 @@ export default function SalesReturn() {
         </DialogContent>
         <DialogActions sx={{ px: 2, pb: 2 }}>
           <Button onClick={() => setSaveDialogOpen(false)} sx={{ textTransform: 'none', borderRadius: 1.5, color: '#64748b' }}>Cancel</Button>
+          <Button variant="contained" onClick={handleSave} sx={{ textTransform: 'none', borderRadius: 1.5, bgcolor: '#0f766e', '&:hover': { bgcolor: '#115e59' }, boxShadow: 'none' }}>
+            Confirm
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Edit Confirmation Dialog */}
+      <Dialog open={editConfirmOpen} onClose={() => setEditConfirmOpen(false)} PaperProps={{ sx: { borderRadius: 2 } }}>
+        <DialogTitle sx={{ fontWeight: 700, fontSize: '1rem' }}>Confirm Edit</DialogTitle>
+        <DialogContent>
+          <Typography sx={{ fontSize: '0.9rem', color: '#475569' }}>Update this sales return with the current form values?</Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 2, pb: 2 }}>
+          <Button onClick={() => setEditConfirmOpen(false)} sx={{ textTransform: 'none', borderRadius: 1.5, color: '#64748b' }}>Cancel</Button>
           <Button variant="contained" onClick={handleSave} sx={{ textTransform: 'none', borderRadius: 1.5, bgcolor: '#0f766e', '&:hover': { bgcolor: '#115e59' }, boxShadow: 'none' }}>
             Confirm
           </Button>
@@ -2185,8 +2946,16 @@ export default function SalesReturn() {
             <>
               <Box sx={{ mb: 2 }}>
                 <MuiFormControlLabel
-                  control={<Checkbox checked={selectedRefItemIds.size === refInvoiceData.items.length} onChange={(e) => selectAllRefItems(e.target.checked)} />}
-                  label="Select All"
+                  control={<Checkbox checked={
+                    refInvoiceData.items.filter(i => {
+                      const remaining = (i as any).remainingReturnableQuantity !== undefined ? (i as any).remainingReturnableQuantity : i.quantity;
+                      return remaining > 0;
+                    }).length > 0 && selectedRefItemIds.size === refInvoiceData.items.filter(i => {
+                      const remaining = (i as any).remainingReturnableQuantity !== undefined ? (i as any).remainingReturnableQuantity : i.quantity;
+                      return remaining > 0;
+                    }).length
+                  } onChange={(e) => selectAllRefItems(e.target.checked)} />}
+                  label="Select All (Returnable)"
                   sx={{ '& .MuiFormControlLabel-label': { fontWeight: 600, color: '#475569' } }}
                 />
               </Box>
@@ -2196,7 +2965,10 @@ export default function SalesReturn() {
                     <TableRow>
                       <TableCell padding="checkbox" sx={{ bgcolor: '#0f766e', color: 'white', fontWeight: 600, fontSize: '0.75rem' }}></TableCell>
                       <TableCell sx={{ bgcolor: '#0f766e', color: 'white', fontWeight: 600, fontSize: '0.75rem' }}>Item</TableCell>
-                      <TableCell align="right" sx={{ bgcolor: '#0f766e', color: 'white', fontWeight: 600, fontSize: '0.75rem' }}>Qty</TableCell>
+                      <TableCell sx={{ bgcolor: '#0f766e', color: 'white', fontWeight: 600, fontSize: '0.75rem' }}>Batch#</TableCell>
+                      <TableCell align="right" sx={{ bgcolor: '#0f766e', color: 'white', fontWeight: 600, fontSize: '0.75rem' }}>Purchased</TableCell>
+                      <TableCell align="right" sx={{ bgcolor: '#0f766e', color: 'white', fontWeight: 600, fontSize: '0.75rem' }}>Returned</TableCell>
+                      <TableCell align="right" sx={{ bgcolor: '#0f766e', color: 'white', fontWeight: 600, fontSize: '0.75rem' }}>Returnable</TableCell>
                       <TableCell align="right" sx={{ bgcolor: '#0f766e', color: 'white', fontWeight: 600, fontSize: '0.75rem' }}>Price</TableCell>
                       <TableCell align="right" sx={{ bgcolor: '#0f766e', color: 'white', fontWeight: 600, fontSize: '0.75rem' }}>Total</TableCell>
                     </TableRow>
@@ -2204,13 +2976,19 @@ export default function SalesReturn() {
                   <TableBody>
                     {refInvoiceData.items.map((it) => {
                       const name = typeof it.productId === 'object' && (it.productId as { name?: string }).name ? (it.productId as { name: string }).name : (it.description || '');
+                      const returnedQty = (it as any).returnedQuantity || 0;
+                      const remainingQty = (it as any).remainingReturnableQuantity !== undefined ? (it as any).remainingReturnableQuantity : it.quantity;
+                      const isSelected = selectedRefItemIds.has(it._id);
                       return (
-                        <TableRow key={it._id} hover onClick={() => toggleRefItem(it._id)} sx={{ cursor: 'pointer', '&:hover': { bgcolor: '#f0fdfa' } }}>
+                        <TableRow key={it._id} hover onClick={() => toggleRefItem(it._id)} sx={{ cursor: 'pointer', '&:hover': { bgcolor: '#f0fdfa' }, opacity: remainingQty <= 0 ? 0.6 : 1 }}>
                           <TableCell padding="checkbox">
-                            <Checkbox checked={selectedRefItemIds.has(it._id)} onChange={() => toggleRefItem(it._id)} sx={{ color: '#0f766e', '&.Mui-checked': { color: '#0f766e' } }} />
+                            <Checkbox checked={isSelected} disabled={remainingQty <= 0} onChange={() => toggleRefItem(it._id)} sx={{ color: '#0f766e', '&.Mui-checked': { color: '#0f766e' } }} />
                           </TableCell>
                           <TableCell>{name}</TableCell>
+                          <TableCell sx={{ fontSize: '0.78rem', color: it.batchNumber ? '#0f766e' : '#94a3b8', fontStyle: it.batchNumber ? 'normal' : 'italic' }}>{it.batchNumber || '-'}</TableCell>
                           <TableCell align="right">{it.quantity}</TableCell>
+                          <TableCell align="right">{returnedQty}</TableCell>
+                          <TableCell align="right" sx={{ fontWeight: 600, color: remainingQty > 0 ? '#10b981' : '#ef4444' }}>{remainingQty}</TableCell>
                           <TableCell align="right">{it.unitPrice?.toFixed(2)}</TableCell>
                           <TableCell align="right" sx={{ fontWeight: 600, color: '#0f766e' }}>{it.totalAmount?.toFixed(2)}</TableCell>
                         </TableRow>
@@ -2230,6 +3008,74 @@ export default function SalesReturn() {
           <Button variant="contained" onClick={confirmSelectRefItems} sx={{ textTransform: 'none', borderRadius: 1.5, bgcolor: '#0f766e', '&:hover': { bgcolor: '#115e59' } }}>
             Confirm
           </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Batch Selection Dialog */}
+      <Dialog
+        open={batchDialogOpen}
+        onClose={() => setBatchDialogOpen(false)}
+        onKeyDown={handleBatchDialogKeyDown}
+        maxWidth="sm"
+        fullWidth
+        PaperProps={{ sx: { borderRadius: 2 } }}
+      >
+        <DialogTitle sx={{ bgcolor: '#f8fafc', borderBottom: '1px solid #e2e8f0', py: 1.5 }}>
+          <Typography sx={{ fontWeight: 700, fontSize: '0.95rem', color: '#1e293b' }}>Select Batch</Typography>
+          {pendingProduct && (
+            <Typography sx={{ fontSize: '0.82rem', color: '#64748b', mt: 0.3 }}>{pendingProduct.name}</Typography>
+          )}
+        </DialogTitle>
+        <DialogContent sx={{ p: 0 }}>
+          <TableContainer sx={{ maxHeight: 300 }}>
+            <Table stickyHeader size="small">
+              <TableHead>
+                <TableRow>
+                  {['Batch No', 'Expiry', 'Stock', 'P.Rate', rateType === 'WSale' ? 'W.Sale' : 'Retail', 'Action'].map((label, ci) => (
+                    <TableCell key={ci} align={ci >= 2 && ci <= 4 ? 'right' : ci === 5 ? 'center' : 'left'}
+                      sx={{ bgcolor: '#f0fdfa', fontWeight: 600, fontSize: '0.72rem', color: '#0f766e', py: 1, textTransform: 'uppercase', letterSpacing: 0.3 }}>
+                      {label}
+                    </TableCell>
+                  ))}
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {availableBatches.map((batch, index) => (
+                  <TableRow
+                    key={batch.batchNumber}
+                    ref={(el) => { batchRowRefs.current[index] = el; }}
+                    hover
+                    sx={{
+                      cursor: 'pointer',
+                      '&:hover': { bgcolor: '#f0fdfa' },
+                      bgcolor: index === focusedBatchIndex ? '#ccfbf1 !important' : (index % 2 === 0 ? '#ffffff' : '#fafafa'),
+                      outline: index === focusedBatchIndex ? '2px solid #0f766e' : 'none',
+                      transition: 'all 0.1s',
+                    }}
+                    onClick={() => handleBatchSelect(batch)}
+                  >
+                    <TableCell sx={{ fontSize: '0.8rem', color: '#334155', py: 0.75 }}>
+                      {batch.batchNumber.length > 15 ? batch.batchNumber.substring(0, 15) + '...' : batch.batchNumber}
+                    </TableCell>
+                    <TableCell sx={{ fontSize: '0.8rem', color: '#475569', py: 0.75 }}>{(batch as any).expiryDate || '-'}</TableCell>
+                    <TableCell align="right" sx={{ fontSize: '0.8rem', color: '#1e293b', py: 0.75, fontWeight: 600 }}>{batch.quantity}</TableCell>
+                    <TableCell align="right" sx={{ fontSize: '0.8rem', color: '#64748b', py: 0.75 }}>{batch.purchasePrice.toFixed(2)}</TableCell>
+                    <TableCell align="right" sx={{ fontSize: '0.8rem', color: '#1e293b', py: 0.75, fontWeight: 600 }}>{(rateType === 'WSale' ? batch.wholesale : batch.retail).toFixed(2)}</TableCell>
+                    <TableCell align="center" sx={{ py: 0.75 }}>
+                      <Button size="small" variant="contained"
+                        onClick={(e) => { e.stopPropagation(); handleBatchSelect(batch); }}
+                        sx={{ minWidth: 'auto', px: 1.5, py: 0.25, fontSize: '0.7rem', borderRadius: 1, boxShadow: 'none', bgcolor: '#0f766e', '&:hover': { bgcolor: '#115e59' } }}>
+                        Select
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </DialogContent>
+        <DialogActions sx={{ bgcolor: '#f8fafc', borderTop: '1px solid #e2e8f0', px: 2, py: 1 }}>
+          <Button onClick={() => setBatchDialogOpen(false)} sx={{ textTransform: 'none', borderRadius: 1.5, color: '#64748b' }}>Cancel</Button>
         </DialogActions>
       </Dialog>
 

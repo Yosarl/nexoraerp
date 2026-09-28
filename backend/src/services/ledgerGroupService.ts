@@ -10,7 +10,7 @@ export async function listByCompany(companyId: string, search?: string): Promise
       { code: new RegExp(search, 'i') },
     ];
   }
-  return LedgerGroup.find(filter).sort({ type: 1, code: 1 }).lean() as unknown as ILedgerGroup[];
+  return LedgerGroup.find(filter).populate('parentGroupId', 'name code').sort({ type: 1, code: 1 }).lean() as unknown as ILedgerGroup[];
 }
 
 export async function getById(groupId: string, companyId: string): Promise<ILedgerGroup | null> {

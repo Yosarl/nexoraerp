@@ -36,12 +36,17 @@ export async function getLedgerReport(
       res.status(400).json({ success: false, message: 'companyId, financialYearId, ledgerAccountId, fromDate, toDate required' });
       return;
     }
+    const fromDateObj = new Date(fromDate);
+    fromDateObj.setHours(0, 0, 0, 0);
+    const toDateObj = new Date(toDate);
+    toDateObj.setHours(23, 59, 59, 999);
+
     const data = await ledgerService.getLedgerReport(
       companyId,
       financialYearId,
       ledgerAccountId,
-      new Date(fromDate),
-      new Date(toDate)
+      fromDateObj,
+      toDateObj
     );
     res.json({ success: true, data });
   } catch (err) {

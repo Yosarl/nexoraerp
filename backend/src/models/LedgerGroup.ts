@@ -1,6 +1,18 @@
 import mongoose, { Document, Schema } from 'mongoose';
 
-export type LedgerGroupType = 'Asset' | 'Liability' | 'Equity' | 'Income' | 'Expense';
+export type LedgerGroupType =
+  | 'Asset'
+  | 'Liability'
+  | 'Equity'
+  | 'Income'
+  | 'Expense'
+  | 'Duties and Taxes'
+  | 'ASSET'
+  | 'LIABILITY'
+  | 'EQUITY'
+  | 'INCOME'
+  | 'EXPENSE'
+  | 'DUTIES AND TAXES';
 
 export interface ILedgerGroup extends Document {
   companyId: mongoose.Types.ObjectId;
@@ -26,7 +38,14 @@ const LedgerGroupSchema = new Schema<ILedgerGroup>(
     name: { type: String, required: true },
     code: { type: String, required: true },
     parentGroupId: { type: Schema.Types.ObjectId, ref: 'LedgerGroup' },
-    type: { type: String, enum: ['Asset', 'Liability', 'Equity', 'Income', 'Expense'], required: true },
+    type: {
+      type: String,
+      enum: [
+        'Asset', 'Liability', 'Equity', 'Income', 'Expense', 'Duties and Taxes',
+        'ASSET', 'LIABILITY', 'EQUITY', 'INCOME', 'EXPENSE', 'DUTIES AND TAXES'
+      ],
+      required: true
+    },
     isCash: { type: Boolean },
     isBank: { type: Boolean },
     isReceivables: { type: Boolean },

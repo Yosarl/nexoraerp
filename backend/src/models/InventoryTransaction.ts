@@ -23,6 +23,7 @@ export interface IInventoryTransaction extends Document {
   costPrice: number;
   referenceType?: string;
   referenceId?: mongoose.Types.ObjectId;
+  batchNumber?: string;
   narration?: string;
   createdBy?: mongoose.Types.ObjectId;
   createdAt: Date;
@@ -44,6 +45,7 @@ const InventoryTransactionSchema = new Schema<IInventoryTransaction>(
     costPrice: { type: Number, default: 0 },
     referenceType: { type: String },
     referenceId: { type: Schema.Types.ObjectId },
+    batchNumber: { type: String },
     narration: { type: String },
     createdBy: { type: Schema.Types.ObjectId, ref: 'User' },
   },

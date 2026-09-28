@@ -1,11 +1,10 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { useSelector, useDispatch } from 'react-redux';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useSelector } from 'react-redux';
+import { useNavigate } from 'react-router-dom';
 import type { RootState } from '../store';
-import { setDrawerOpen } from '../store/slices/appSlice';
-import { productApi, ledgerAccountApi, stockApi, purchaseApi } from '../services/api';
+import { productApi, ledgerAccountApi } from '../services/api';
 import { getCurrentDate } from '../components/DateInput';
-import { LineItem, Customer, CashAccount, HeldInvoice, Product, UnitOption } from '../types/sales';
+import { LineItem, Customer, Product, UnitOption } from '../types/sales';
 
 export interface SalesEntryConfig {
     entryType: 'b2c' | 'return' | 'quotation';
@@ -26,13 +25,11 @@ export interface SalesEntryConfig {
 export const VAT_RATE = 5;
 
 export function useSalesEntry(config: SalesEntryConfig) {
-    const { entryType, api, holdStorageKey } = config;
+    const { entryType: _entryType, api, holdStorageKey: _holdStorageKey } = config;
 
     const companyId = useSelector((s: RootState) => s.app.selectedCompanyId);
     const financialYearId = useSelector((s: RootState) => s.app.selectedFinancialYearId);
-    const dispatch = useDispatch();
     const navigate = useNavigate();
-    const routeLocation = useLocation();
 
     // Basic State
     const [invoiceNo, setInvoiceNo] = useState('');
@@ -232,7 +229,7 @@ export function useSalesEntry(config: SalesEntryConfig) {
             billingAddress, setBillingAddress, billingPhone, setBillingPhone, shippingName, setShippingName, shippingAddress, setShippingAddress, shippingPhone, setShippingPhone,
             otherDiscount, setOtherDiscount, otherDiscPercent, setOtherDiscPercent, otherCharges, setOtherCharges,
             freightCharge, setFreightCharge, roundOff, setRoundOff, narration, setNarration, cashReceived, setCashReceived,
-            oldBalance, products, setProducts, lines, setLines, invoiceIds, setInvoiceIds, loading, setLoading, isSaved, setIsSaved, activeLineId, setActiveLineId, returnType, setReturnType,
+            oldBalance, setOldBalance, products, setProducts, lines, setLines, invoiceIds, setInvoiceIds, loading, setLoading, isSaved, setIsSaved, activeLineId, setActiveLineId, returnType, setReturnType,
             errorDialogOpen, setErrorDialogOpen, errorDialogMessage, setErrorDialogMessage,
         },
         helpers: {

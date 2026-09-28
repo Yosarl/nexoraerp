@@ -1,36 +1,40 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useForm, Controller } from 'react-hook-form';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Box,
-  Button,
-  TextField,
   Typography,
-  Paper,
-  Grid,
-  MenuItem,
-  FormControlLabel,
-  Checkbox,
+  TextField,
   Autocomplete,
   Dialog,
   DialogTitle,
   DialogContent,
   DialogActions,
-  Tabs,
-  Tab,
+  Button,
+  Snackbar,
+  Alert,
 } from '@mui/material';
 import {
-  Save as SaveIcon,
-  Clear as ClearIcon,
-  Edit as EditIcon,
-  Delete as DeleteIcon,
+  KeyboardArrowDown as ArrowDownIcon,
+  KeyboardArrowUp as ArrowUpIcon,
+  Lock as LockIcon,
 } from '@mui/icons-material';
 import { useAppSelector } from '../store/hooks';
 import { ledgerAccountApi, ledgerGroupApi } from '../services/api';
+import { isPrimaryHead } from '../pages/GroupCreate';
 import DateInput from './DateInput';
 
-type Group = { _id: string; name: string; code: string; type: string; isReceivables?: boolean; isPayables?: boolean };
-type UnderOption = { _id: string; name: string };
+type Group = {
+  _id: string;
+  name: string;
+  code: string;
+  type: string;
+  isReceivables?: boolean;
+  isPayables?: boolean;
+  isBank?: boolean;
+  parentGroupId?: string | { _id: string; name?: string; code?: string };
+};
+type UnderOption = { _id: string; name: string; code?: string; type?: string; isBank?: boolean };
 type LedgerOption = { _id: string; name: string; code: string };
 
 interface FormData {
@@ -39,39 +43,44 @@ interface FormData {
   code: string;
   groupId: string;
   address: string;
-  location: string;
-  pincode: string;
   mobile: string;
   TRN: string;
   state: string;
-  stateCode: string;
-  costCentre: string;
-  creditLimit: string;
-  creditDays: string;
   openingBalanceCr: string;
   openingBalanceDr: string;
-  serviceItem: boolean;
-  sacHsn: string;
-  taxable: boolean;
+  creditLimit: string;
+  creditDays: string;
+  phone: string;
+  email: string;
   area: string;
   route: string;
-  day: string;
-  district: string;
   agency: string;
   regDate: string;
   discPercent: string;
-  category: string;
   rateType: string;
   remarks: string;
-  rating: string;
-  story: string;
-  empCode: string;
-  salesMan: string;
-  person: string;
-  agent2: string;
-  phone: string;
-  email: string;
-  paymentTerms: string;
+  serviceItem: boolean;
+  taxable: boolean;
+  againstRef: boolean;
+
+  // Bank Details
+  accountHolderName: string;
+  accountNumber: string;
+  iban: string;
+  swiftCode: string;
+  bankName: string;
+  branch: string;
+
+  // VAT Registration Details
+  vatRegistrationType: string;
+  vatRegistrationDate: string;
+
+  // Mailing Details
+  mailingName: string;
+  mailingBank: string;
+  country: string;
+  poBox: string;
+  localLanguageDetails: string;
 }
 
 const defaultFormValues: FormData = {
@@ -80,39 +89,41 @@ const defaultFormValues: FormData = {
   code: '',
   groupId: '',
   address: '',
-  location: '',
-  pincode: '',
   mobile: '',
   TRN: '',
-  state: '',
-  stateCode: '',
-  costCentre: '',
-  creditLimit: '',
-  creditDays: '',
+  state: 'Dubai',
   openingBalanceCr: '',
   openingBalanceDr: '',
-  serviceItem: false,
-  sacHsn: '',
-  taxable: false,
+  creditLimit: '',
+  creditDays: '',
+  phone: '',
+  email: '',
   area: '',
   route: '',
-  day: '',
-  district: '',
   agency: '',
   regDate: new Date().toISOString().slice(0, 10),
   discPercent: '',
-  category: '',
   rateType: '',
   remarks: '',
-  rating: '',
-  story: '',
-  empCode: '',
-  salesMan: '',
-  person: '',
-  agent2: '',
-  phone: '',
-  email: '',
-  paymentTerms: '',
+  serviceItem: false,
+  taxable: false,
+  againstRef: true,
+
+  accountHolderName: '',
+  accountNumber: '',
+  iban: '',
+  swiftCode: '',
+  bankName: '',
+  branch: '',
+
+  vatRegistrationType: '',
+  vatRegistrationDate: '',
+
+  mailingName: '',
+  mailingBank: '',
+  country: 'UAE',
+  poBox: '',
+  localLanguageDetails: '',
 };
 
 const UAE_EMIRATES = [
@@ -125,9 +136,19 @@ const UAE_EMIRATES = [
   'Fujairah',
 ];
 
+const COUNTRIES = [
+  'UAE',
+  'Saudi Arabia',
+  'Kuwait',
+  'Qatar',
+  'Bahrain',
+  'Oman',
+  'Other',
+];
+
 export default function LedgerRegForm({
   ledgerType,
-  title = 'Ledger Registration',
+  title,
 }: {
   ledgerType: 'Customer' | 'Supplier' | null;
   title?: string;
@@ -136,64 +157,316 @@ export default function LedgerRegForm({
   const financialYearId = useAppSelector((s) => s.app.selectedFinancialYearId);
   const routeLocation = useLocation();
   const routeNavigate = useNavigate();
-  const prefillAppliedRef = useRef<string | null>(null);
-  const savedLedgerNameRef = useRef<string | null>(null);
+  const [searchParams] = useSearchParams();
+
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [ledgerOptions, setLedgerOptions] = useState<LedgerOption[]>([]);
   const [ledgerSearch, setLedgerSearch] = useState('');
   const [underOptions, setUnderOptions] = useState<UnderOption[]>([]);
   const [receivablesId, setReceivablesId] = useState<string | null>(null);
   const [payablesId, setPayablesId] = useState<string | null>(null);
+  const [bankGroupId, setBankGroupId] = useState<string | null>(null);
+
   const [message, setMessage] = useState('');
-  const [successDialog, setSuccessDialog] = useState<'saved' | 'edited' | 'deleted' | null>(null);
+  const [bottomToast, setBottomToast] = useState<{ message: string; severity: 'success' | 'info' | 'error' } | null>(null);
+  const [bottomBanner, setBottomBanner] = useState<string | null>(null);
   const [confirmSaveOpen, setConfirmSaveOpen] = useState(false);
   const [pendingFormData, setPendingFormData] = useState<FormData | null>(null);
   const [pendingAction, setPendingAction] = useState<'save' | 'edit' | null>(null);
   const [errorDialogOpen, setErrorDialogOpen] = useState(false);
   const [errorDialogMessage, setErrorDialogMessage] = useState('');
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
-  const [customerTabValue, setCustomerTabValue] = useState(0);
-  const [ledgerNameDropdownOpen, setLedgerNameDropdownOpen] = useState(false);
+  const [additionalDetailsOpen, setAdditionalDetailsOpen] = useState(false);
 
-  // Refs for Customer Main tab Enter-key flow and initial focus
+  const prefillAppliedRef = useRef<string | null>(null);
+  const savedLedgerNameRef = useRef<string | null>(null);
   const ledgerNameInputRef = useRef<HTMLInputElement>(null);
-  const aliasNameRef = useRef<HTMLInputElement>(null);
-  const mobileRef = useRef<HTMLInputElement>(null);
-  const vatNoRef = useRef<HTMLInputElement>(null);
-  const addressRef = useRef<HTMLInputElement>(null);
-  const oldBalanceDrRef = useRef<HTMLInputElement>(null);
-  const oldBalanceCrRef = useRef<HTMLInputElement>(null);
-  const emirateSelectRef = useRef<HTMLInputElement>(null);
-  const saveButtonRef = useRef<HTMLButtonElement>(null);
+  const underInputRef = useRef<HTMLInputElement>(null);
 
   // Change Led Name Dialog
   const [changeNameDialogOpen, setChangeNameDialogOpen] = useState(false);
   const [changeNameCode, setChangeNameCode] = useState('');
   const [changeNameValue, setChangeNameValue] = useState('');
   const [changeNameSaving, setChangeNameSaving] = useState(false);
-  const underDisabled = ledgerType === 'Customer' || ledgerType === 'Supplier';
-  const defaultGroupId =
-    ledgerType === 'Customer' ? receivablesId
-      : ledgerType === 'Supplier' ? payablesId
-        : '';
+  const [currentLedgerType, setCurrentLedgerType] = useState<string | null>(null);
 
-  const { register, handleSubmit, formState: { errors }, reset, setValue, watch, control } = useForm<FormData>({
+  const { register, handleSubmit, reset, setValue, watch, control } = useForm<FormData>({
     defaultValues: defaultFormValues,
   });
 
   const groupIdValue = watch('groupId');
   const isEditMode = !!selectedId;
 
-  const listType = ledgerType === null ? undefined : ledgerType;
+  const isUnderLocked =
+    ledgerType === 'Customer' ||
+    ledgerType === 'Supplier' ||
+    currentLedgerType === 'Customer' ||
+    currentLedgerType === 'Supplier';
 
-  // Focus Ledger Name when Customer form Main tab is shown
+  const selectedUnderOption = underOptions.find((o) => o._id === groupIdValue);
+  const isBankSelected = Boolean(
+    selectedUnderOption?.isBank ||
+    (bankGroupId && groupIdValue === bankGroupId) ||
+    selectedUnderOption?.name?.toLowerCase().includes('bank') ||
+    (isEditMode && (watch('accountNumber') || watch('iban') || watch('bankName')))
+  );
+
+  const isCashSelected = Boolean(
+    !isBankSelected && (
+      selectedUnderOption
+        ? (selectedUnderOption.code?.toUpperCase() === 'CASH' ||
+           selectedUnderOption.name?.toLowerCase().includes('cash') ||
+           selectedUnderOption.type?.toLowerCase() === 'cash')
+        : (isEditMode && currentLedgerType?.toLowerCase() === 'cash')
+    )
+  );
+
+  const displayTitle =
+    title ||
+    (ledgerType === 'Customer'
+      ? 'Customer Registration'
+      : ledgerType === 'Supplier'
+        ? 'Supplier Registration'
+        : isBankSelected
+          ? 'Bank Ledger Registration'
+          : isCashSelected
+            ? 'Cash Ledger Registration'
+            : 'Other Ledger Registration');
+
+  const listType = ledgerType ? ledgerType : (isBankSelected ? 'Bank' : isCashSelected ? 'Cash' : undefined);
+
+  const formRef = useRef<HTMLFormElement>(null);
+  const saveBtnRef = useRef<HTMLButtonElement>(null);
+  const clearBtnRef = useRef<HTMLButtonElement>(null);
+  const updateBtnRef = useRef<HTMLButtonElement>(null);
+  const deleteBtnRef = useRef<HTMLButtonElement>(null);
+
+  // Dialog buttons refs for keyboard focus and arrow key navigation
+  const dialogYesBtnRef = useRef<HTMLButtonElement>(null);
+  const dialogNoBtnRef = useRef<HTMLButtonElement>(null);
+  const deleteYesBtnRef = useRef<HTMLButtonElement>(null);
+  const deleteNoBtnRef = useRef<HTMLButtonElement>(null);
+
+  // Auto-focus the Save/Yes button when confirmation dialog opens
   useEffect(() => {
-    if (ledgerType === 'Customer' && customerTabValue === 0) {
-      const t = setTimeout(() => ledgerNameInputRef.current?.focus(), 100);
+    if (confirmSaveOpen) {
+      const t = setTimeout(() => {
+        dialogYesBtnRef.current?.focus();
+      }, 50);
       return () => clearTimeout(t);
     }
-  }, [ledgerType, customerTabValue]);
+  }, [confirmSaveOpen]);
 
+  // Auto-focus the Delete button when delete dialog opens
+  useEffect(() => {
+    if (deleteConfirmOpen) {
+      const t = setTimeout(() => {
+        deleteYesBtnRef.current?.focus();
+      }, 50);
+      return () => clearTimeout(t);
+    }
+  }, [deleteConfirmOpen]);
+
+  // Focus Ledger Name on initial load or when company changes
+  useEffect(() => {
+    if (!companyId) return;
+    const focusInput = () => {
+      if (ledgerNameInputRef.current) {
+        ledgerNameInputRef.current.focus();
+      }
+    };
+    const t1 = setTimeout(focusInput, 80);
+    const t2 = setTimeout(focusInput, 250);
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
+  }, [companyId]);
+
+  // Query all visible, enabled interactive fields in form order
+  const getNavigableFields = useCallback((): HTMLElement[] => {
+    if (!formRef.current) return [];
+    const elements = Array.from(
+      formRef.current.querySelectorAll<HTMLElement>(
+        'input:not([type="hidden"]):not([disabled]):not([readonly]), select:not([disabled]), textarea:not([disabled])'
+      )
+    );
+    return elements.filter((el) => {
+      return (
+        el.offsetParent !== null &&
+        window.getComputedStyle(el).display !== 'none' &&
+        window.getComputedStyle(el).visibility !== 'hidden' &&
+        el.tabIndex !== -1 &&
+        !el.closest('.MuiDialog-root') &&
+        !el.closest('[role="dialog"]')
+      );
+    });
+  }, []);
+
+  // Navigate to next field on Enter, or focus Save button if at the end (without opening dialog)
+  const focusNextField = useCallback(
+    (currentElement: HTMLElement) => {
+      const fields = getNavigableFields();
+      let currentIndex = fields.indexOf(currentElement);
+      if (currentIndex === -1) {
+        const inputChild = currentElement.querySelector<HTMLElement>('input, select, textarea');
+        if (inputChild) {
+          currentIndex = fields.indexOf(inputChild);
+        } else {
+          const parentInput = currentElement.closest<HTMLElement>('input, select, textarea');
+          if (parentInput) {
+            currentIndex = fields.indexOf(parentInput);
+          }
+        }
+      }
+
+      if (currentIndex >= 0 && currentIndex < fields.length - 1) {
+        const nextField = fields[currentIndex + 1];
+        nextField.focus();
+        if (nextField instanceof HTMLInputElement || nextField instanceof HTMLTextAreaElement) {
+          nextField.select?.();
+        }
+      } else if (currentIndex >= fields.length - 1) {
+        // Last field finished: cleanly focus Save (or Update) button without triggering submission
+        setTimeout(() => {
+          if (isEditMode) {
+            updateBtnRef.current?.focus();
+          } else {
+            saveBtnRef.current?.focus();
+          }
+        }, 10);
+      }
+    },
+    [getNavigableFields, isEditMode]
+  );
+
+  // Navigate to previous field on Shift+Enter
+  const focusPrevField = useCallback(
+    (currentElement: HTMLElement) => {
+      const fields = getNavigableFields();
+      let currentIndex = fields.indexOf(currentElement);
+      if (currentIndex === -1) {
+        const inputChild = currentElement.querySelector<HTMLElement>('input, select, textarea');
+        if (inputChild) {
+          currentIndex = fields.indexOf(inputChild);
+        } else {
+          const parentInput = currentElement.closest<HTMLElement>('input, select, textarea');
+          if (parentInput) {
+            currentIndex = fields.indexOf(parentInput);
+          }
+        }
+      }
+
+      if (currentIndex > 0) {
+        const prevField = fields[currentIndex - 1];
+        prevField.focus();
+        if (prevField instanceof HTMLInputElement || prevField instanceof HTMLTextAreaElement) {
+          prevField.select?.();
+        }
+      }
+    },
+    [getNavigableFields]
+  );
+
+  // Form-wide Enter key handler: prevents unwanted form submission and navigates fields
+  const handleFormKeyDown = (e: React.KeyboardEvent<HTMLFormElement>) => {
+    // If inside a Dialog or Modal, do not intercept
+    const target = e.target as HTMLElement;
+    if (target.closest('.MuiDialog-root') || target.closest('[role="dialog"]')) {
+      return;
+    }
+
+    // Keyboard navigation when user is on action buttons
+    if (target.tagName === 'BUTTON') {
+      if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        if (target === saveBtnRef.current) {
+          clearBtnRef.current?.focus();
+        } else if (target === clearBtnRef.current) {
+          if (isEditMode) {
+            updateBtnRef.current?.focus();
+          } else {
+            saveBtnRef.current?.focus();
+          }
+        } else if (target === updateBtnRef.current) {
+          deleteBtnRef.current?.focus();
+        }
+        return;
+      }
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        if (target === deleteBtnRef.current) {
+          updateBtnRef.current?.focus();
+        } else if (target === updateBtnRef.current) {
+          clearBtnRef.current?.focus();
+        } else if (target === clearBtnRef.current) {
+          if (isEditMode) {
+            updateBtnRef.current?.focus();
+          } else {
+            saveBtnRef.current?.focus();
+          }
+        }
+        return;
+      }
+
+      // If user is already on a button (Save, Clear, Update, Delete), let Enter activate it!
+      if (e.key === 'Enter') {
+        return;
+      }
+    }
+
+    if (e.key === 'Enter') {
+      // If in textarea with Shift+Enter, allow newline
+      if (target.tagName === 'TEXTAREA' && e.shiftKey) {
+        return;
+      }
+
+      // Prevent default form submit on Enter!
+      e.preventDefault();
+
+      if (e.shiftKey) {
+        focusPrevField(target);
+      } else {
+        focusNextField(target);
+      }
+    }
+  };
+
+  // Keyboard navigation inside Confirmation Save Dialog
+  const handleConfirmDialogKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      dialogNoBtnRef.current?.focus();
+    } else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      dialogYesBtnRef.current?.focus();
+    } else if (e.key === 'y' || e.key === 'Y') {
+      e.preventDefault();
+      handleConfirmSave();
+    } else if (e.key === 'n' || e.key === 'N') {
+      e.preventDefault();
+      handleCancelSave();
+    }
+  };
+
+  // Keyboard navigation inside Delete Confirmation Dialog
+  const handleDeleteDialogKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      deleteNoBtnRef.current?.focus();
+    } else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      deleteYesBtnRef.current?.focus();
+    } else if (e.key === 'y' || e.key === 'Y') {
+      e.preventDefault();
+      handleDeleteConfirm();
+    } else if (e.key === 'n' || e.key === 'N') {
+      e.preventDefault();
+      setDeleteConfirmOpen(false);
+    }
+  };
+
+  // Load ledger accounts for search dropdown
   useEffect(() => {
     if (!companyId) return;
     const search = ledgerSearch.trim() || undefined;
@@ -203,99 +476,166 @@ export default function LedgerRegForm({
     });
   }, [companyId, listType, ledgerSearch]);
 
+  // Load ledger groups for "Under" / "Ledger Group" dropdown - ONLY account groups
   useEffect(() => {
     if (!companyId) return;
     ledgerGroupApi.list(companyId).then((res) => {
       const list = (res.data.data as Group[]) ?? [];
-      const recv = list.find(
+
+      // Filter out primary category heads so only operational account groups remain
+      const accountGroups = list.filter((g) => !isPrimaryHead(g));
+
+      // Match Customer / Receivables group with explicit priority:
+      const recv =
+        accountGroups.find((g) => {
+          const n = (g.name || '').trim().toLowerCase();
+          return n === 'customer' || n === 'customers';
+        }) ||
+        accountGroups.find((g) => (g.name || '').toLowerCase().includes('customer')) ||
+        accountGroups.find((g) => g.isReceivables === true) ||
+        accountGroups.find((g) => g.code?.toUpperCase() === 'RECV') ||
+        accountGroups.find((g) => (g.name || '').toLowerCase().includes('debtor')) ||
+        accountGroups.find((g) => (g.name || '').toLowerCase().includes('receiv'));
+
+      // Match Supplier / Payables group with explicit priority:
+      const pay =
+        accountGroups.find((g) => {
+          const n = (g.name || '').trim().toLowerCase();
+          return n === 'supplier' || n === 'suppliers';
+        }) ||
+        accountGroups.find((g) => (g.name || '').toLowerCase().includes('supplier')) ||
+        accountGroups.find((g) => g.isPayables === true) ||
+        accountGroups.find((g) => g.code?.toUpperCase() === 'PAY') ||
+        accountGroups.find((g) => (g.name || '').toLowerCase().includes('creditor')) ||
+        accountGroups.find((g) => (g.name || '').toLowerCase().includes('payab'));
+
+      const bnk = accountGroups.find(
         (g) =>
-          g.isReceivables === true ||
-          (g.code && g.code.toUpperCase() === 'RECV') ||
-          (g.name && g.name.toLowerCase().includes('receiv'))
+          g.isBank === true ||
+          (g.code && g.code.toUpperCase() === 'BANK') ||
+          (g.name && g.name.toLowerCase().includes('bank'))
       );
-      const pay = list.find(
-        (g) =>
-          g.isPayables === true ||
-          (g.code && g.code.toUpperCase() === 'PAY') ||
-          (g.name && g.name.toLowerCase().includes('payab'))
-      );
+
       const recvId = recv?._id ?? null;
       const payId = pay?._id ?? null;
+      const bnkId = bnk?._id ?? null;
       setReceivablesId(recvId);
       setPayablesId(payId);
-      const options: UnderOption[] = [];
-      if (recvId) options.push({ _id: recvId, name: 'Customer' });
-      if (payId) options.push({ _id: payId, name: 'Supplier' });
-      list.forEach((g) => {
-        if (g._id !== recvId && g._id !== payId) options.push({ _id: g._id, name: g.name });
-      });
+      setBankGroupId(bnkId);
+
+      const options: UnderOption[] = accountGroups.map((g) => ({
+        _id: g._id,
+        name: g.name,
+        code: g.code,
+        type: g.type,
+        isBank: Boolean(g.isBank || g.code?.toUpperCase() === 'BANK' || g.name?.toLowerCase().includes('bank')),
+      }));
+
+      // Sort account groups alphabetically by name
+      options.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+
       setUnderOptions(options);
-      if (ledgerType === 'Customer' && recvId) setValue('groupId', recvId);
-      if (ledgerType === 'Supplier' && payId) setValue('groupId', payId);
+
+      if (ledgerType === 'Customer' && recvId) {
+        setValue('groupId', recvId);
+      } else if (ledgerType === 'Supplier' && payId) {
+        setValue('groupId', payId);
+      }
     });
   }, [companyId, ledgerType, setValue]);
 
   const populateForm = useCallback(
     (ledger: Record<string, unknown>) => {
       const gid = (ledger.groupId as { _id?: string })?._id ?? ledger.groupId;
-      const ob = Array.isArray(ledger.openingBalances) && financialYearId
-        ? (ledger.openingBalances as Array<{ financialYearId: string; amount: number; isDebit: boolean }>).find(
-          (b) => String(b.financialYearId) === financialYearId
-        )
-        : null;
+      const ob =
+        Array.isArray(ledger.openingBalances) && financialYearId
+          ? (ledger.openingBalances as Array<{ financialYearId: string; amount: number; isDebit: boolean }>).find(
+              (b) => String(b.financialYearId) === financialYearId
+            )
+          : null;
+
       setValue('name', String(ledger.name ?? ''));
       setValue('aliasName', String(ledger.aliasName ?? ''));
       setValue('code', String(ledger.code ?? ''));
       setValue('groupId', String(gid ?? ''));
       setValue('address', String(ledger.address ?? ''));
-      setValue('location', String(ledger.location ?? ''));
-      setValue('pincode', String(ledger.pincode ?? ''));
       setValue('mobile', String(ledger.mobile ?? ''));
       setValue('TRN', String(ledger.TRN ?? ''));
-      setValue('state', String(ledger.state ?? ''));
-      setValue('stateCode', String(ledger.stateCode ?? ''));
-      setValue('costCentre', String(ledger.costCentre ?? ''));
-      setValue('creditLimit', ledger.creditLimit != null ? String(ledger.creditLimit) : '');
-      setValue('creditDays', ledger.creditDays != null ? String(ledger.creditDays) : '');
+      setValue('state', String(ledger.state ?? 'Dubai'));
       setValue('openingBalanceCr', ob && !ob.isDebit ? String(ob.amount) : '');
       setValue('openingBalanceDr', ob && ob.isDebit ? String(ob.amount) : '');
-      setValue('serviceItem', Boolean(ledger.serviceItem));
-      setValue('sacHsn', String(ledger.sacHsn ?? ''));
-      setValue('taxable', Boolean(ledger.taxable));
-      setValue('area', String(ledger.area ?? ''));
-      setValue('route', String(ledger.route ?? ''));
-      setValue('day', String(ledger.day ?? ''));
-      setValue('district', String(ledger.district ?? ''));
-      setValue('agency', String(ledger.agency ?? ''));
-      setValue('regDate', ledger.regDate ? new Date(ledger.regDate as string).toISOString().slice(0, 10) : '');
-      setValue('discPercent', ledger.discPercent != null ? String(ledger.discPercent) : '');
-      setValue('category', String(ledger.category ?? ''));
-      setValue('rateType', String(ledger.rateType ?? ''));
-      setValue('remarks', String(ledger.remarks ?? ''));
-      setValue('rating', String(ledger.rating ?? ''));
-      setValue('story', String(ledger.story ?? ''));
-      setValue('empCode', String(ledger.empCode ?? ''));
-      setValue('salesMan', String(ledger.salesMan ?? ''));
-      setValue('person', String(ledger.person ?? ''));
-      setValue('agent2', String(ledger.agent2 ?? ''));
+      setValue('creditLimit', ledger.creditLimit != null ? String(ledger.creditLimit) : '');
+      setValue('creditDays', ledger.creditDays != null ? String(ledger.creditDays) : '');
       setValue('phone', String(ledger.phone ?? ''));
       setValue('email', String(ledger.email ?? ''));
-      setValue('paymentTerms', String(ledger.paymentTerms ?? ''));
+      setValue('area', String(ledger.area ?? ''));
+      setValue('route', String(ledger.route ?? ''));
+      setValue('agency', String(ledger.agency ?? ''));
+      setValue('regDate', ledger.regDate ? new Date(ledger.regDate as string).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10));
+      setValue('discPercent', ledger.discPercent != null ? String(ledger.discPercent) : '');
+      setValue('rateType', String(ledger.rateType ?? ''));
+      setValue('remarks', String(ledger.remarks ?? ''));
+      setValue('serviceItem', Boolean(ledger.serviceItem));
+      setValue('taxable', Boolean(ledger.taxable));
+      setValue('againstRef', ledger.againstRef !== undefined ? Boolean(ledger.againstRef) : true);
+
+      // Bank Details
+      setValue('accountHolderName', String(ledger.accountHolderName ?? ''));
+      setValue('accountNumber', String(ledger.accountNumber ?? ''));
+      setValue('iban', String(ledger.iban ?? ''));
+      setValue('swiftCode', String(ledger.swiftCode ?? ''));
+      setValue('bankName', String(ledger.bankName ?? ''));
+      setValue('branch', String(ledger.branch ?? ''));
+
+      // VAT Details
+      setValue('vatRegistrationType', String(ledger.vatRegistrationType ?? ''));
+      setValue('vatRegistrationDate', ledger.vatRegistrationDate ? new Date(ledger.vatRegistrationDate as string).toISOString().slice(0, 10) : '');
+
+      // Mailing Details
+      setValue('mailingName', String(ledger.mailingName ?? ''));
+      setValue('mailingBank', String(ledger.mailingBank ?? ''));
+      setValue('country', String(ledger.country ?? 'UAE'));
+      setValue('poBox', String(ledger.poBox ?? ''));
+      setValue('localLanguageDetails', String(ledger.localLanguageDetails ?? ''));
+      setCurrentLedgerType(String(ledger.type ?? ''));
     },
     [financialYearId, setValue]
   );
 
   const clearForm = useCallback(() => {
     setSelectedId(null);
+    setCurrentLedgerType(null);
     setMessage('');
     setLedgerSearch('');
-    setCustomerTabValue(0);
-    reset(defaultFormValues);
-    if (ledgerType === 'Customer' && receivablesId) setValue('groupId', receivablesId);
-    if (ledgerType === 'Supplier' && payablesId) setValue('groupId', payablesId);
+    reset({
+      ...defaultFormValues,
+    });
+    if (ledgerType === 'Customer' && receivablesId) {
+      setValue('groupId', receivablesId);
+    } else if (ledgerType === 'Supplier' && payablesId) {
+      setValue('groupId', payablesId);
+    }
+    setTimeout(() => {
+      ledgerNameInputRef.current?.focus();
+    }, 80);
   }, [reset, setValue, ledgerType, receivablesId, payablesId]);
 
-  // Pre-fill name when navigated from SalesB2C (or similar) with a new customer name
+  // Support ?edit=<id> query parameter
+  useEffect(() => {
+    const editId = searchParams.get('edit');
+    if (editId && companyId && editId !== selectedId) {
+      ledgerAccountApi.get(editId, companyId).then((res) => {
+        const ledger = res.data.data as Record<string, unknown>;
+        if (ledger) {
+          setSelectedId(editId);
+          setLedgerSearch(String(ledger.name ?? ''));
+          populateForm(ledger);
+        }
+      });
+    }
+  }, [searchParams, companyId, selectedId, populateForm]);
+
+  // Pre-fill name when navigated with prefillName
   useEffect(() => {
     const state = routeLocation.state as { prefillName?: string; returnTo?: string } | null;
     if (state?.prefillName && state.prefillName !== prefillAppliedRef.current) {
@@ -309,18 +649,18 @@ export default function LedgerRegForm({
   const onLedgerSelect = (_: unknown, value: LedgerOption | string | null) => {
     if (!value) {
       setSelectedId(null);
+      setCurrentLedgerType(null);
       setValue('name', '');
       setLedgerSearch('');
       return;
     }
-    // If user typed a new name (string)
     if (typeof value === 'string') {
       setSelectedId(null);
+      setCurrentLedgerType(null);
       setValue('name', value);
       setLedgerSearch(value);
       return;
     }
-    // If user selected an existing ledger
     if (!companyId) return;
     ledgerAccountApi.get(value._id, companyId).then((res) => {
       const ledger = res.data.data as Record<string, unknown>;
@@ -332,6 +672,11 @@ export default function LedgerRegForm({
     });
   };
 
+  const handleGroupChange = (newGroupId: string) => {
+    if (isUnderLocked) return;
+    setValue('groupId', newGroupId, { shouldValidate: true });
+  };
+
   const onSubmit = (data: FormData) => {
     if (!companyId) return;
     if (!data.name || !data.name.trim()) {
@@ -339,9 +684,22 @@ export default function LedgerRegForm({
       setErrorDialogOpen(true);
       return;
     }
-    // Show confirmation dialog
-    setPendingFormData(data);
+    const finalGroupId = data.groupId || (ledgerType === 'Customer' ? (receivablesId ?? '') : ledgerType === 'Supplier' ? (payablesId ?? '') : '');
+    if (!finalGroupId) {
+      setErrorDialogMessage('Under group is required');
+      setErrorDialogOpen(true);
+      return;
+    }
+    setPendingFormData({ ...data, groupId: finalGroupId });
     setPendingAction('save');
+    setConfirmSaveOpen(true);
+  };
+
+  const onEdit = (data: FormData) => {
+    if (!companyId || !selectedId) return;
+    const finalGroupId = data.groupId || (ledgerType === 'Customer' ? (receivablesId ?? '') : ledgerType === 'Supplier' ? (payablesId ?? '') : '');
+    setPendingFormData({ ...data, groupId: finalGroupId });
+    setPendingAction('edit');
     setConfirmSaveOpen(true);
   };
 
@@ -351,57 +709,89 @@ export default function LedgerRegForm({
     const data = pendingFormData;
     setMessage('');
 
+    const effectiveGroupId = data.groupId || (ledgerType === 'Customer' ? (receivablesId ?? '') : ledgerType === 'Supplier' ? (payablesId ?? '') : '');
+    const matchedGroup = underOptions.find((o) => o._id === effectiveGroupId);
+
+    let targetType: 'Customer' | 'Supplier' | 'Bank' | 'Cash' | 'Expense' | 'Revenue' | 'Other' = 'Other';
+    if (ledgerType === 'Customer') {
+      targetType = 'Customer';
+    } else if (ledgerType === 'Supplier') {
+      targetType = 'Supplier';
+    } else if (isBankSelected || matchedGroup?.isBank || matchedGroup?.name?.toLowerCase().includes('bank')) {
+      targetType = 'Bank';
+    } else if (isCashSelected || matchedGroup?.name?.toLowerCase().includes('cash') || matchedGroup?.code?.toUpperCase() === 'CASH') {
+      targetType = 'Cash';
+    } else if (matchedGroup?.type === 'Expense' || matchedGroup?.name?.toLowerCase().includes('expense')) {
+      targetType = 'Expense';
+    } else if (
+      matchedGroup?.type === 'Income' ||
+      matchedGroup?.name?.toLowerCase().includes('revenue') ||
+      matchedGroup?.name?.toLowerCase().includes('income') ||
+      matchedGroup?.name?.toLowerCase().includes('sales')
+    ) {
+      targetType = 'Revenue';
+    } else {
+      targetType = 'Other';
+    }
+
     if (pendingAction === 'edit' && selectedId) {
-      // Edit existing ledger
       try {
         await ledgerAccountApi.update(selectedId, {
           companyId,
+          financialYearId: financialYearId || undefined,
+          openingBalanceDr: data.openingBalanceDr ? Number(data.openingBalanceDr) : undefined,
+          openingBalanceCr: data.openingBalanceCr ? Number(data.openingBalanceCr) : undefined,
           name: data.name,
           aliasName: data.aliasName || undefined,
-          groupId: data.groupId,
+          groupId: effectiveGroupId,
+          type: targetType,
           phone: data.phone || undefined,
           mobile: data.mobile || undefined,
           email: data.email || undefined,
           address: data.address || undefined,
-          location: data.location || undefined,
-          pincode: data.pincode || undefined,
           TRN: data.TRN || undefined,
           state: data.state || undefined,
-          stateCode: data.stateCode || undefined,
-          costCentre: data.costCentre || undefined,
           creditLimit: data.creditLimit ? Number(data.creditLimit) : undefined,
           creditDays: data.creditDays ? Number(data.creditDays) : undefined,
-          paymentTerms: data.paymentTerms || undefined,
           serviceItem: data.serviceItem,
-          sacHsn: data.sacHsn || undefined,
           taxable: data.taxable,
+          againstRef: data.againstRef,
           area: data.area || undefined,
           route: data.route || undefined,
-          day: data.day || undefined,
-          district: data.district || undefined,
           agency: data.agency || undefined,
           regDate: data.regDate || undefined,
           discPercent: data.discPercent ? Number(data.discPercent) : undefined,
-          category: data.category || undefined,
           rateType: data.rateType || undefined,
           remarks: data.remarks || undefined,
-          rating: data.rating || undefined,
-          story: data.story || undefined,
-          empCode: data.empCode || undefined,
-          salesMan: data.salesMan || undefined,
-          person: data.person || undefined,
-          agent2: data.agent2 || undefined,
+
+          // Bank Details
+          accountHolderName: data.accountHolderName || undefined,
+          accountNumber: data.accountNumber || undefined,
+          iban: data.iban || undefined,
+          swiftCode: data.swiftCode || undefined,
+          bankName: data.bankName || undefined,
+          branch: data.branch || undefined,
+
+          // VAT Details
+          vatRegistrationType: data.vatRegistrationType || undefined,
+          vatRegistrationDate: data.vatRegistrationDate || undefined,
+
+          // Mailing Details
+          country: data.country || undefined,
+          poBox: data.poBox || undefined,
+          localLanguageDetails: data.localLanguageDetails || undefined,
+          mailingName: data.mailingName || undefined,
+          mailingBank: data.mailingBank || undefined,
         });
         setPendingFormData(null);
         setPendingAction(null);
-        setSuccessDialog('edited');
+        triggerSuccess('edited');
       } catch (e: unknown) {
         const err = e as { response?: { data?: { message?: string } } };
         setErrorDialogMessage(err?.response?.data?.message ?? 'Failed to update ledger');
         setErrorDialogOpen(true);
       }
     } else {
-      // Create new ledger
       try {
         await ledgerAccountApi.create({
           companyId,
@@ -409,47 +799,52 @@ export default function LedgerRegForm({
           name: data.name,
           aliasName: data.aliasName || undefined,
           code: data.code || undefined,
-          groupId: data.groupId,
-          type: ledgerType ?? 'Other',
+          groupId: effectiveGroupId,
+          type: targetType,
           phone: data.phone || undefined,
           mobile: data.mobile || undefined,
           email: data.email || undefined,
           address: data.address || undefined,
-          location: data.location || undefined,
-          pincode: data.pincode || undefined,
           TRN: data.TRN || undefined,
           state: data.state || undefined,
-          stateCode: data.stateCode || undefined,
-          costCentre: data.costCentre || undefined,
           creditLimit: data.creditLimit ? Number(data.creditLimit) : undefined,
           creditDays: data.creditDays ? Number(data.creditDays) : undefined,
-          paymentTerms: data.paymentTerms || undefined,
           openingBalanceDr: data.openingBalanceDr ? Number(data.openingBalanceDr) : undefined,
           openingBalanceCr: data.openingBalanceCr ? Number(data.openingBalanceCr) : undefined,
           serviceItem: data.serviceItem,
-          sacHsn: data.sacHsn || undefined,
           taxable: data.taxable,
+          againstRef: data.againstRef,
           area: data.area || undefined,
           route: data.route || undefined,
-          day: data.day || undefined,
-          district: data.district || undefined,
           agency: data.agency || undefined,
           regDate: data.regDate || undefined,
           discPercent: data.discPercent ? Number(data.discPercent) : undefined,
-          category: data.category || undefined,
           rateType: data.rateType || undefined,
           remarks: data.remarks || undefined,
-          rating: data.rating || undefined,
-          story: data.story || undefined,
-          empCode: data.empCode || undefined,
-          salesMan: data.salesMan || undefined,
-          person: data.person || undefined,
-          agent2: data.agent2 || undefined,
+
+          // Bank Details
+          accountHolderName: data.accountHolderName || undefined,
+          accountNumber: data.accountNumber || undefined,
+          iban: data.iban || undefined,
+          swiftCode: data.swiftCode || undefined,
+          bankName: data.bankName || undefined,
+          branch: data.branch || undefined,
+
+          // VAT Details
+          vatRegistrationType: data.vatRegistrationType || undefined,
+          vatRegistrationDate: data.vatRegistrationDate || undefined,
+
+          // Mailing Details
+          country: data.country || undefined,
+          poBox: data.poBox || undefined,
+          localLanguageDetails: data.localLanguageDetails || undefined,
+          mailingName: data.mailingName || undefined,
+          mailingBank: data.mailingBank || undefined,
         });
         setPendingFormData(null);
         setPendingAction(null);
         savedLedgerNameRef.current = data.name.trim();
-        setSuccessDialog('saved');
+        triggerSuccess('saved');
       } catch (e: unknown) {
         const err = e as { response?: { data?: { message?: string } } };
         setErrorDialogMessage(err?.response?.data?.message ?? 'Failed to save ledger');
@@ -464,14 +859,6 @@ export default function LedgerRegForm({
     setPendingAction(null);
   };
 
-  const onEdit = (data: FormData) => {
-    if (!companyId || !selectedId) return;
-    // Show confirmation dialog
-    setPendingFormData(data);
-    setPendingAction('edit');
-    setConfirmSaveOpen(true);
-  };
-
   const onDelete = () => {
     if (!companyId || !selectedId) return;
     setDeleteConfirmOpen(true);
@@ -482,8 +869,7 @@ export default function LedgerRegForm({
     if (!companyId || !selectedId) return;
     try {
       await ledgerAccountApi.delete(selectedId, companyId);
-      setSuccessDialog('deleted');
-      clearForm();
+      triggerSuccess('deleted');
     } catch (e: unknown) {
       const err = e as { response?: { data?: { message?: string } } };
       setErrorDialogMessage(err?.response?.data?.message ?? 'Failed to delete ledger');
@@ -491,22 +877,38 @@ export default function LedgerRegForm({
     }
   };
 
-  const closeSuccessDialog = () => {
-    const shouldClearForm = successDialog === 'saved' || successDialog === 'edited';
-    setSuccessDialog(null);
-    // If we came from another page (e.g. SalesB2C) and just saved, navigate back with created ledger name
+  const triggerSuccess = (action: 'saved' | 'edited' | 'deleted') => {
+    const msg =
+      action === 'saved'
+        ? 'Ledger has been saved successfully.'
+        : action === 'edited'
+          ? 'Ledger has been updated successfully.'
+          : 'Ledger has been deleted successfully.';
+
+    setBottomToast({ message: msg, severity: 'success' });
+    setBottomBanner(msg);
+
     const state = routeLocation.state as { returnTo?: string } | null;
-    if (successDialog === 'saved' && state?.returnTo) {
+    if (action === 'saved' && state?.returnTo) {
       prefillAppliedRef.current = null;
       const createdName = savedLedgerNameRef.current;
       savedLedgerNameRef.current = null;
-      routeNavigate(state.returnTo, { state: createdName ? { createdLedgerName: createdName } : undefined });
+      setTimeout(() => {
+        routeNavigate(state.returnTo!, { state: createdName ? { createdLedgerName: createdName } : undefined });
+      }, 700);
       return;
     }
-    if (shouldClearForm) clearForm();
+
+    clearForm();
+    setTimeout(() => {
+      ledgerNameInputRef.current?.focus();
+    }, 100);
+
+    setTimeout(() => {
+      setBottomBanner(null);
+    }, 3500);
   };
 
-  // Change Led Name handlers
   const handleOpenChangeName = () => {
     if (!selectedId) return;
     const selectedLedger = ledgerOptions.find((o) => o._id === selectedId);
@@ -525,7 +927,6 @@ export default function LedgerRegForm({
         companyId,
         name: changeNameValue.trim(),
       });
-      // Update the local state
       setLedgerOptions((prev) =>
         prev.map((o) => (o._id === selectedId ? { ...o, name: changeNameValue.trim() } : o))
       );
@@ -533,7 +934,7 @@ export default function LedgerRegForm({
       setValue('name', changeNameValue.trim());
       setChangeNameDialogOpen(false);
       setMessage('Ledger name updated successfully');
-      setTimeout(() => setMessage(''), 2000);
+      setTimeout(() => setMessage(''), 2500);
     } catch (e: unknown) {
       const err = e as { response?: { data?: { message?: string } } };
       setErrorDialogMessage(err?.response?.data?.message ?? 'Failed to update name');
@@ -545,439 +946,1242 @@ export default function LedgerRegForm({
 
   if (!companyId) return <Typography color="error">Select a company first.</Typography>;
 
-  const isCustomerForm = ledgerType === 'Customer';
-
-  const actionButtons = (
-    <Box sx={{ mt: 3, display: 'flex', gap: 1.5, flexWrap: 'wrap' }}>
-      <Button ref={saveButtonRef} type="submit" variant="contained" disabled={isEditMode} startIcon={<SaveIcon />} sx={{ bgcolor: '#1976d2', '&:hover': { bgcolor: '#1565c0' }, minWidth: 110, py: 1, fontSize: '0.9rem' }}>SAVE</Button>
-      <Button type="button" variant="contained" onClick={clearForm} startIcon={<ClearIcon />} sx={{ bgcolor: '#00bcd4', '&:hover': { bgcolor: '#00acc1' }, minWidth: 110, py: 1, fontSize: '0.9rem' }}>CLEAR</Button>
-      <Button type="button" variant="contained" disabled={!isEditMode} onClick={() => handleSubmit(onEdit)()} startIcon={<EditIcon />} sx={{ bgcolor: '#607d8b', '&:hover': { bgcolor: '#546e7a' }, minWidth: 110, py: 1, fontSize: '0.9rem' }}>UPDATE</Button>
-      <Button type="button" variant="contained" disabled={!isEditMode} onClick={onDelete} startIcon={<DeleteIcon />} sx={{ bgcolor: '#f44336', '&:hover': { bgcolor: '#d32f2f' }, minWidth: 110, py: 1, fontSize: '0.9rem' }}>DELETE</Button>
-    </Box>
-  );
-
   return (
-    <Box>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-        <Typography variant="h4">{title}</Typography>
-        <Typography variant="body2" color="text.secondary">
-          {new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
-        </Typography>
-      </Box>
-      <Paper sx={{ p: 3 }}>
-        {message && (
-          <Typography color="success" sx={{ mb: 2, fontWeight: 'bold' }}>
-            {message}
-          </Typography>
-        )}
-        <form onSubmit={handleSubmit(isEditMode ? onEdit : onSubmit)}>
-          {isCustomerForm ? (
-            <>
-              <Tabs value={customerTabValue} onChange={(_: React.SyntheticEvent, v: number) => setCustomerTabValue(v)} sx={{ borderBottom: 1, borderColor: 'divider', mb: 2 }}>
-                <Tab label="Main" id="customer-tab-main" aria-controls="customer-tabpanel-main" />
-                <Tab label="Additional" id="customer-tab-additional" aria-controls="customer-tabpanel-additional" />
-              </Tabs>
-              <Box role="tabpanel" hidden={customerTabValue !== 0} id="customer-tabpanel-main" aria-labelledby="customer-tab-main">
-                <Grid container spacing={2}>
-                  <Grid item xs={12} sm={4} md={3}>
-                    <Controller name="regDate" control={control} render={({ field }) => <DateInput label="Date" value={field.value || ''} onChange={field.onChange} size="small" />} />
-                  </Grid>
-                  <Grid item xs={12} sm={8} md={9}>
-                    <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-start' }}>
-                      <Autocomplete
-                        size="small"
-                        freeSolo
-                        disabled={!!selectedId}
-                        options={ledgerOptions}
-                        getOptionLabel={(opt) => (typeof opt === 'string' ? opt : opt?.name ?? '')}
-                        value={selectedId ? ledgerOptions.find((o) => o._id === selectedId) ?? null : (ledgerSearch || null)}
-                        inputValue={ledgerSearch}
-                        onChange={onLedgerSelect}
-                        onOpen={() => setLedgerNameDropdownOpen(true)}
-                        onClose={() => setLedgerNameDropdownOpen(false)}
-                        onInputChange={(_, v, reason) => {
-                          setLedgerSearch(v);
-                          if (reason === 'input' && !selectedId) {
-                            setValue('name', v);
-                            setValue('aliasName', v);
-                          }
-                        }}
-                        renderInput={(params) => (
-                          <TextField
-                            {...params}
-                            inputRef={ledgerNameInputRef}
-                            label="Ledger Name"
-                            required
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter' && !ledgerNameDropdownOpen) {
-                                e.preventDefault();
-                                aliasNameRef.current?.focus();
-                              }
-                            }}
-                            sx={{ '& .MuiInputBase-input': { fontSize: '0.95rem' } }}
-                            InputLabelProps={{ shrink: true }}
-                          />
-                        )}
-                        renderOption={(props, option) => (
-                          <li {...props} key={option._id} style={{ padding: '10px 14px', fontSize: '0.95rem', minHeight: 40 }}>
-                            <Box><Typography variant="body1" fontWeight={500}>{option.name}</Typography><Typography variant="body2" color="text.secondary">{option.code}</Typography></Box>
-                          </li>
-                        )}
-                        slotProps={{ paper: { sx: { fontSize: '0.95rem', '& .MuiAutocomplete-listbox': { maxHeight: 320 } } } }}
-                        sx={{ flex: 1, '& .MuiOutlinedInput-root': { fontSize: '0.95rem' } }}
-                      />
-                      <Button variant="outlined" size="small" onClick={handleOpenChangeName} disabled={!selectedId} sx={{ minWidth: 'auto', px: 1, py: 0.9, fontSize: '0.7rem', whiteSpace: 'nowrap' }}>Change Name</Button>
-                    </Box>
-                  </Grid>
-                  <Grid item xs={12}>
-                    <TextField fullWidth select size="small" label="Under" required disabled={underDisabled} {...register('groupId', { required: 'Required' })} value={groupIdValue || defaultGroupId || ''} onChange={(e) => setValue('groupId', e.target.value, { shouldValidate: true })} error={!!errors.groupId} helperText={errors.groupId?.message} InputLabelProps={{ shrink: true }}>
-                      {underOptions.map((opt) => <MenuItem key={opt._id} value={opt._id}>{opt.name}</MenuItem>)}
-                    </TextField>
-                  </Grid>
-                  <Grid item xs={12}>
-                    <TextField fullWidth size="small" label="Account Code" {...register('code')} helperText="Auto-generated when empty" InputLabelProps={{ shrink: true }} disabled />
-                  </Grid>
-                  <Grid item xs={12}>
-                    <TextField fullWidth size="small" label="Alias Name" {...register('aliasName')} inputRef={aliasNameRef} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); mobileRef.current?.focus(); } }} InputLabelProps={{ shrink: true }} />
-                  </Grid>
-                  <Grid item xs={12}>
-                    <TextField fullWidth size="small" label="Mobile" {...register('mobile')} inputRef={mobileRef} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); vatNoRef.current?.focus(); } }} InputLabelProps={{ shrink: true }} />
-                  </Grid>
-                  <Grid item xs={12}>
-                    <TextField fullWidth size="small" label="VAT No" {...register('TRN')} inputRef={vatNoRef} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addressRef.current?.focus(); } }} InputLabelProps={{ shrink: true }} />
-                  </Grid>
-                  <Grid item xs={12}>
-                    <TextField fullWidth size="small" label="Address" multiline rows={2} {...register('address')} inputRef={addressRef} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); oldBalanceDrRef.current?.focus(); } }} InputLabelProps={{ shrink: true }} />
-                  </Grid>
-                  <Grid item xs={6}>
-                    <TextField fullWidth size="small" type="number" label="Old Balance Debit" {...register('openingBalanceDr')} inputRef={oldBalanceDrRef} inputProps={{ min: 0, step: 0.01 }} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); oldBalanceCrRef.current?.focus(); } }} InputLabelProps={{ shrink: true }} />
-                  </Grid>
-                  <Grid item xs={6}>
-                    <TextField fullWidth size="small" type="number" label="Old Balance Credit" {...register('openingBalanceCr')} inputRef={oldBalanceCrRef} inputProps={{ min: 0, step: 0.01 }} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); emirateSelectRef.current?.focus(); } }} InputLabelProps={{ shrink: true }} />
-                  </Grid>
-                  <Grid item xs={12}>
-                    <TextField fullWidth select size="small" label="Emirate" {...register('state')} value={watch('state') || ''} onChange={(e) => setValue('state', e.target.value)} inputRef={emirateSelectRef} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); saveButtonRef.current?.focus(); } }} InputLabelProps={{ shrink: true }}>
-                      <MenuItem value="">— Select —</MenuItem>
-                      {UAE_EMIRATES.map((em) => <MenuItem key={em} value={em}>{em}</MenuItem>)}
-                    </TextField>
-                  </Grid>
-                </Grid>
-                {actionButtons}
-              </Box>
-              <Box role="tabpanel" hidden={customerTabValue !== 1} id="customer-tabpanel-additional" aria-labelledby="customer-tab-additional">
-                <Grid container spacing={2}>
-                  <Grid item xs={6}><TextField fullWidth size="small" label="Location" {...register('location')} InputLabelProps={{ shrink: true }} /></Grid>
-                  <Grid item xs={6}><TextField fullWidth size="small" label="Pincode" {...register('pincode')} InputLabelProps={{ shrink: true }} /></Grid>
-                  <Grid item xs={6}><TextField fullWidth size="small" label="State Code" {...register('stateCode')} InputLabelProps={{ shrink: true }} /></Grid>
-                  <Grid item xs={6}><TextField fullWidth size="small" label="SAC/HSN" {...register('sacHsn')} InputLabelProps={{ shrink: true }} /></Grid>
-                  <Grid item xs={12}><TextField fullWidth size="small" label="Cost Centre" {...register('costCentre')} InputLabelProps={{ shrink: true }} /></Grid>
-                  <Grid item xs={6}><TextField fullWidth size="small" type="number" label="Credit Limit" {...register('creditLimit')} inputProps={{ min: 0, step: 0.01 }} InputLabelProps={{ shrink: true }} /></Grid>
-                  <Grid item xs={6}><TextField fullWidth size="small" type="number" label="Days" {...register('creditDays')} inputProps={{ min: 0 }} InputLabelProps={{ shrink: true }} /></Grid>
-                  <Grid item xs={6}><TextField fullWidth size="small" label="Area" {...register('area')} InputLabelProps={{ shrink: true }} /></Grid>
-                  <Grid item xs={6}><TextField fullWidth size="small" label="Route" {...register('route')} InputLabelProps={{ shrink: true }} /></Grid>
-                  <Grid item xs={6}><TextField fullWidth size="small" label="Day" {...register('day')} InputLabelProps={{ shrink: true }} /></Grid>
-                  <Grid item xs={12}><TextField fullWidth size="small" label="District" {...register('district')} InputLabelProps={{ shrink: true }} /></Grid>
-                  <Grid item xs={12}><TextField fullWidth size="small" label="Agency" {...register('agency')} InputLabelProps={{ shrink: true }} /></Grid>
-                  <Grid item xs={6}><TextField fullWidth size="small" type="number" label="Disc %" {...register('discPercent')} inputProps={{ min: 0, max: 100, step: 0.01 }} InputLabelProps={{ shrink: true }} /></Grid>
-                  <Grid item xs={6}><TextField fullWidth size="small" label="Category" {...register('category')} InputLabelProps={{ shrink: true }} /></Grid>
-                  <Grid item xs={6}><TextField fullWidth size="small" label="Rate Type" {...register('rateType')} InputLabelProps={{ shrink: true }} /></Grid>
-                  <Grid item xs={6}><TextField fullWidth size="small" label="Rating" {...register('rating')} InputLabelProps={{ shrink: true }} /></Grid>
-                  <Grid item xs={12}><TextField fullWidth size="small" label="Remarks" {...register('remarks')} InputLabelProps={{ shrink: true }} /></Grid>
-                  <Grid item xs={12}><TextField fullWidth size="small" label="Story" {...register('story')} InputLabelProps={{ shrink: true }} /></Grid>
-                  <Grid item xs={6}><TextField fullWidth size="small" label="EmpCode" {...register('empCode')} InputLabelProps={{ shrink: true }} /></Grid>
-                  <Grid item xs={6}><TextField fullWidth size="small" label="Sales Man" {...register('salesMan')} InputLabelProps={{ shrink: true }} /></Grid>
-                  <Grid item xs={6}><TextField fullWidth size="small" label="Person" {...register('person')} InputLabelProps={{ shrink: true }} /></Grid>
-                  <Grid item xs={6}><TextField fullWidth size="small" label="Agent2" {...register('agent2')} InputLabelProps={{ shrink: true }} /></Grid>
-                  <Grid item xs={6}><TextField fullWidth size="small" label="Tel No" {...register('phone')} InputLabelProps={{ shrink: true }} /></Grid>
-                  <Grid item xs={6}><TextField fullWidth size="small" label="E Mail" type="email" {...register('email')} InputLabelProps={{ shrink: true }} /></Grid>
-                  <Grid item xs={12}><TextField fullWidth size="small" label="Payment Terms" {...register('paymentTerms')} InputLabelProps={{ shrink: true }} /></Grid>
-                </Grid>
-              </Box>
-            </>
-          ) : (
-            <>
-          <Grid container spacing={2}>
-            <Grid item xs={12} md={6}>
-              <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>Ledger details</Typography>
-              <Grid container spacing={2}>
-                <Grid item xs={12}>
-                  <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-start' }}>
-                    <Autocomplete
-                      size="small"
-                      freeSolo
-                      disabled={!!selectedId}
-                      options={ledgerOptions}
-                      getOptionLabel={(opt) => (typeof opt === 'string' ? opt : opt?.name ?? '')}
-                      value={selectedId ? ledgerOptions.find((o) => o._id === selectedId) ?? null : (ledgerSearch || null)}
-                      inputValue={ledgerSearch}
-                      onChange={onLedgerSelect}
-                      onInputChange={(_, v, reason) => {
-                        setLedgerSearch(v);
-                        // Update the name field when typing
-                        if (reason === 'input') {
-                          if (!selectedId) {
-                            setValue('name', v);
-                          }
-                        }
-                      }}
-                      renderInput={(params) => (
-                        <TextField
-                          {...params}
-                          label="Led Name"
-                          required
-                          sx={{ '& .MuiInputBase-input': { fontSize: '0.95rem' } }}
-                          InputLabelProps={{ shrink: true }}
-                        />
-                      )}
-                      renderOption={(props, option) => (
-                        <li {...props} key={option._id} style={{ padding: '10px 14px', fontSize: '0.95rem', minHeight: 40 }}>
-                          <Box>
-                            <Typography variant="body1" fontWeight={500}>{option.name}</Typography>
-                            <Typography variant="body2" color="text.secondary">{option.code}</Typography>
-                          </Box>
-                        </li>
-                      )}
-                      slotProps={{
-                        paper: {
-                          sx: {
-                            fontSize: '0.95rem',
-                            '& .MuiAutocomplete-listbox': { maxHeight: 320 },
-                          },
-                        },
-                      }}
-                      sx={{
-                        flex: 1,
-                        '& .MuiOutlinedInput-root': { fontSize: '0.95rem' },
-                      }}
-                    />
-                    <Button
-                      variant="outlined"
-                      size="small"
-                      onClick={handleOpenChangeName}
-                      disabled={!selectedId}
-                      sx={{
-                        minWidth: 'auto',
-                        px: 1,
-                        py: 0.9,
-                        fontSize: '0.7rem',
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      Change Name
-                    </Button>
-                  </Box>
-                </Grid>
-                <Grid item xs={12}>
-                  <TextField fullWidth size="small" label="Alias Name" {...register('aliasName')} InputLabelProps={{ shrink: true }} />
-                </Grid>
-                <Grid item xs={6}>
-                  <TextField fullWidth size="small" label="Account Code" {...register('code')} helperText="Auto-generated when empty" InputLabelProps={{ shrink: true }} disabled />
-                </Grid>
-                <Grid item xs={6}>
-                  <TextField
-                    fullWidth
-                    select
-                    size="small"
-                    label="Under"
-                    required
-                    disabled={underDisabled}
-                    {...register('groupId', { required: 'Required' })}
-                    value={groupIdValue || defaultGroupId || ''}
-                    onChange={(e) => setValue('groupId', e.target.value, { shouldValidate: true })}
-                    error={!!errors.groupId}
-                    helperText={errors.groupId?.message}
-                    InputLabelProps={{ shrink: true }}
-                  >
-                    {underOptions.map((opt) => (
-                      <MenuItem key={opt._id} value={opt._id}>{opt.name}</MenuItem>
-                    ))}
-                  </TextField>
-                </Grid>
-                <Grid item xs={12}>
-                  <TextField fullWidth size="small" label="Address" multiline rows={2} {...register('address')} InputLabelProps={{ shrink: true }} />
-                </Grid>
-                <Grid item xs={6}>
-                  <TextField fullWidth size="small" label="Location" {...register('location')} InputLabelProps={{ shrink: true }} />
-                </Grid>
-                <Grid item xs={6}>
-                  <TextField fullWidth size="small" label="Pincode" {...register('pincode')} InputLabelProps={{ shrink: true }} />
-                </Grid>
-                <Grid item xs={12}>
-                  <TextField fullWidth size="small" label="Mobile" {...register('mobile')} InputLabelProps={{ shrink: true }} />
-                </Grid>
-                <Grid item xs={12}>
-                  <TextField fullWidth size="small" label="Vat No." {...register('TRN')} InputLabelProps={{ shrink: true }} />
-                </Grid>
-                <Grid item xs={6}>
-                  <TextField fullWidth size="small" label="State" {...register('state')} InputLabelProps={{ shrink: true }} />
-                </Grid>
-                <Grid item xs={6}>
-                  <TextField fullWidth size="small" label="Code" {...register('stateCode')} InputLabelProps={{ shrink: true }} />
-                </Grid>
-                <Grid item xs={12}>
-                  <TextField fullWidth size="small" label="Cost Centre" {...register('costCentre')} InputLabelProps={{ shrink: true }} />
-                </Grid>
-                <Grid item xs={6}>
-                  <TextField fullWidth size="small" type="number" label="Credit Limit" {...register('creditLimit')} inputProps={{ min: 0, step: 0.01 }} InputLabelProps={{ shrink: true }} />
-                </Grid>
-                <Grid item xs={6}>
-                  <TextField fullWidth size="small" type="number" label="Days" {...register('creditDays')} inputProps={{ min: 0 }} InputLabelProps={{ shrink: true }} />
-                </Grid>
-                <Grid item xs={6}>
-                  <TextField fullWidth size="small" type="number" label="Old Balance Cr (AED)" {...register('openingBalanceCr')} inputProps={{ min: 0, step: 0.01 }} InputLabelProps={{ shrink: true }} />
-                </Grid>
-                <Grid item xs={6}>
-                  <TextField fullWidth size="small" type="number" label="Old Balance Dr (AED)" {...register('openingBalanceDr')} inputProps={{ min: 0, step: 0.01 }} InputLabelProps={{ shrink: true }} />
-                </Grid>
-                <Grid item xs={12}>
-                  <FormControlLabel control={<Checkbox {...register('serviceItem')} />} label="Service Item" />
-                  <TextField size="small" label="SAC/HSN" {...register('sacHsn')} sx={{ ml: 2, width: 160 }} InputLabelProps={{ shrink: true }} />
-                </Grid>
-                <Grid item xs={12}>
-                  <FormControlLabel control={<Checkbox {...register('taxable')} />} label="Taxable" />
-                </Grid>
-              </Grid>
-            </Grid>
+    <Box
+      sx={{
+        py: { xs: 1, sm: 2 },
+        px: { xs: 0.5, sm: 1.5 },
+        bgcolor: '#f8f9fb',
+        minHeight: '100%',
+        fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+      }}
+    >
+      <style>{`
+        .bank-reg-container {
+          max-width: 900px;
+          margin: 0 auto;
+          background: #ffffff;
+          border-radius: 6px;
+          box-shadow: 0 3px 5px rgba(0, 0, 0, 0.06);
+          overflow: hidden;
+          border: 1px solid #e2e8f0;
+        }
+        .bank-reg-header {
+          background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
+          padding: 14px 22px;
+          color: white;
+        }
+        .bank-reg-header-content {
+          display: flex;
+          justify-content: space-between;
+          align-items: baseline;
+          flex-wrap: wrap;
+          gap: 6px;
+        }
+        .bank-reg-header h1 {
+          font-size: 18px;
+          font-weight: 600;
+          letter-spacing: -0.3px;
+          margin: 0;
+          color: #ffffff;
+        }
+        .bank-reg-header-date {
+          font-size: 11.5px;
+          opacity: 0.85;
+          color: #94a3b8;
+        }
+        .bank-reg-content {
+          padding: 18px 22px;
+        }
+        .bank-reg-form-section {
+          margin-bottom: 16px;
+        }
+        .bank-reg-section-header {
+          font-size: 11.5px;
+          font-weight: 700;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+          color: #1a2332;
+          margin-bottom: 10px;
+          padding-bottom: 6px;
+          border-bottom: 2px solid #3b82f6;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+        }
+        .bank-reg-form-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+          gap: 12px;
+          margin-bottom: 10px;
+        }
+        .bank-reg-form-grid.full {
+          grid-template-columns: 1fr;
+        }
+        .bank-reg-form-group {
+          display: flex;
+          flex-direction: column;
+        }
+        .bank-reg-form-label {
+          font-size: 11.5px;
+          font-weight: 600;
+          color: #1a2332;
+          margin-bottom: 4px;
+          display: flex;
+          align-items: center;
+          gap: 4px;
+        }
+        .bank-reg-required {
+          color: #ef4444;
+          font-weight: 700;
+        }
+        .bank-reg-hint {
+          font-size: 10.5px;
+          color: #94a3b8;
+          margin-top: 2px;
+        }
+        .bank-reg-input,
+        .bank-reg-select {
+          height: 28px;
+          padding: 4px 8px;
+          border: 1px solid #e2e8f0;
+          border-radius: 5px;
+          font-size: 12px;
+          font-family: inherit;
+          transition: all 0.2s ease;
+          background: white;
+          color: #1a2332;
+          width: 100%;
+          box-sizing: border-box;
+        }
+        .bank-reg-textarea {
+          padding: 5px 8px;
+          border: 1px solid #e2e8f0;
+          border-radius: 5px;
+          font-size: 12px;
+          font-family: inherit;
+          transition: all 0.2s ease;
+          background: white;
+          color: #1a2332;
+          width: 100%;
+          box-sizing: border-box;
+          resize: vertical;
+          min-height: 52px;
+        }
+        .bank-reg-input:hover,
+        .bank-reg-select:hover,
+        .bank-reg-textarea:hover {
+          border-color: #cbd5e1;
+        }
+        .bank-reg-input:focus,
+        .bank-reg-select:focus,
+        .bank-reg-textarea:focus {
+          outline: none;
+          border-color: #3b82f6;
+          box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
+        }
+        .bank-reg-input:disabled {
+          background-color: #f1f5f9;
+          color: #64748b;
+          cursor: not-allowed;
+        }
+        .bank-reg-actions {
+          display: flex;
+          gap: 8px;
+          padding-top: 14px;
+          border-top: 1px solid #e2e8f0;
+          margin-top: 18px;
+          flex-wrap: wrap;
+        }
+        .bank-reg-btn {
+          padding: 6px 14px;
+          border: none;
+          border-radius: 5px;
+          font-size: 12px;
+          font-weight: 600;
+          cursor: pointer;
+          transition: all 0.2s ease;
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          white-space: nowrap;
+        }
+        .bank-reg-btn:disabled {
+          opacity: 0.55;
+          cursor: not-allowed;
+        }
+        .bank-reg-btn:focus-visible,
+        .bank-reg-btn:focus {
+          outline: 2px solid #2563eb !important;
+          outline-offset: 1px !important;
+          box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.3) !important;
+        }
+        .bank-reg-btn-primary {
+          background: linear-gradient(135deg, #3b82f6 0%, #0284c7 100%);
+          color: white;
+          box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+        }
+        .bank-reg-btn-primary:hover:not(:disabled) {
+          transform: translateY(-1px);
+          box-shadow: 0 4px 8px rgba(59, 130, 246, 0.25);
+        }
+        .bank-reg-btn-clear {
+          background: #ef4444;
+          color: white;
+          box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+        }
+        .bank-reg-btn-clear:hover:not(:disabled) {
+          transform: translateY(-1px);
+          box-shadow: 0 4px 8px rgba(239, 68, 68, 0.25);
+        }
+        .bank-reg-btn-tertiary {
+          background: white;
+          color: #64748b;
+          border: 1px solid #e2e8f0;
+        }
+        .bank-reg-btn-tertiary:hover:not(:disabled) {
+          background: #f8f9fb;
+          color: #1a2332;
+          border-color: #cbd5e1;
+        }
+        .bank-reg-btn-danger {
+          background: #fee2e2;
+          color: #991b1b;
+        }
+        .bank-reg-btn-danger:hover:not(:disabled) {
+          background: #fecaca;
+        }
+        .bank-reg-icon {
+          font-size: 12px;
+          font-weight: bold;
+        }
 
-            <Grid item xs={12} md={6}>
-              <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>Additional details</Typography>
-              <Grid container spacing={2}>
-                <Grid item xs={6}>
-                  <TextField fullWidth size="small" label="Area" {...register('area')} InputLabelProps={{ shrink: true }} />
-                </Grid>
-                <Grid item xs={6}>
-                  <TextField fullWidth size="small" label="Route" {...register('route')} InputLabelProps={{ shrink: true }} />
-                </Grid>
-                <Grid item xs={6}>
-                  <TextField fullWidth size="small" label="Day" {...register('day')} InputLabelProps={{ shrink: true }} />
-                </Grid>
-                <Grid item xs={12}>
-                  <TextField fullWidth size="small" label="District" {...register('district')} InputLabelProps={{ shrink: true }} />
-                </Grid>
-                <Grid item xs={12}>
-                  <TextField fullWidth size="small" label="Agency" {...register('agency')} InputLabelProps={{ shrink: true }} />
-                </Grid>
-                <Grid item xs={12}>
-                  <Controller name="regDate" control={control} render={({ field }) => <DateInput label="Reg Date" value={field.value || ''} onChange={field.onChange} size="small" />} />
-                </Grid>
-                <Grid item xs={6}>
-                  <TextField fullWidth size="small" type="number" label="Disc %" {...register('discPercent')} inputProps={{ min: 0, max: 100, step: 0.01 }} InputLabelProps={{ shrink: true }} />
-                </Grid>
-                <Grid item xs={6}>
-                  <TextField fullWidth size="small" label="Category" {...register('category')} InputLabelProps={{ shrink: true }} />
-                </Grid>
-                <Grid item xs={6}>
-                  <TextField fullWidth size="small" label="Rate Type" {...register('rateType')} InputLabelProps={{ shrink: true }} />
-                </Grid>
-                <Grid item xs={6}>
-                  <TextField fullWidth size="small" label="Rating" {...register('rating')} InputLabelProps={{ shrink: true }} />
-                </Grid>
-                <Grid item xs={12}>
-                  <TextField fullWidth size="small" label="Remarks" {...register('remarks')} InputLabelProps={{ shrink: true }} />
-                </Grid>
-                <Grid item xs={12}>
-                  <TextField fullWidth size="small" label="Story" {...register('story')} InputLabelProps={{ shrink: true }} />
-                </Grid>
-                <Grid item xs={6}>
-                  <TextField fullWidth size="small" label="EmpCode" {...register('empCode')} InputLabelProps={{ shrink: true }} />
-                </Grid>
-                <Grid item xs={6}>
-                  <TextField fullWidth size="small" label="Sales Man" {...register('salesMan')} InputLabelProps={{ shrink: true }} />
-                </Grid>
-                <Grid item xs={6}>
-                  <TextField fullWidth size="small" label="Person" {...register('person')} InputLabelProps={{ shrink: true }} />
-                </Grid>
-                <Grid item xs={6}>
-                  <TextField fullWidth size="small" label="Agent2" {...register('agent2')} InputLabelProps={{ shrink: true }} />
-                </Grid>
-                <Grid item xs={6}>
-                  <TextField fullWidth size="small" label="Tel No" {...register('phone')} InputLabelProps={{ shrink: true }} />
-                </Grid>
-                <Grid item xs={6}>
-                  <TextField fullWidth size="small" label="E Mail" type="email" {...register('email')} InputLabelProps={{ shrink: true }} />
-                </Grid>
-                <Grid item xs={12}>
-                  <TextField fullWidth size="small" label="Payment Terms" {...register('paymentTerms')} InputLabelProps={{ shrink: true }} />
-                </Grid>
-              </Grid>
-            </Grid>
-          </Grid>
-          {actionButtons}
-          </>
+        /* 35% reduced compact sizing for MUI inputs inside the ledger registration window */
+        .bank-reg-container .MuiOutlinedInput-root {
+          min-height: 28px !important;
+          height: 28px !important;
+          border-radius: 5px !important;
+          font-size: 12px !important;
+          padding: 0 6px !important;
+          background-color: #ffffff;
+        }
+        .bank-reg-container .MuiOutlinedInput-root.Mui-disabled {
+          background-color: #f1f5f9 !important;
+        }
+        .bank-reg-container .MuiOutlinedInput-input {
+          padding: 4px 6px !important;
+          font-size: 12px !important;
+          height: auto !important;
+          color: #1a2332;
+        }
+        .bank-reg-container .MuiInputBase-input.Mui-disabled {
+          -webkit-text-fill-color: #334155 !important;
+          color: #334155 !important;
+          cursor: not-allowed;
+        }
+        .bank-reg-container .MuiAutocomplete-inputRoot {
+          padding: 0 6px !important;
+        }
+        .bank-reg-container .MuiAutocomplete-input {
+          padding: 3px 4px !important;
+          font-size: 12px !important;
+        }
+        .bank-reg-container .MuiAutocomplete-endAdornment {
+          top: calc(50% - 10px) !important;
+          right: 4px !important;
+        }
+        .bank-reg-container .MuiAutocomplete-endAdornment .MuiSvgIcon-root {
+          font-size: 16px !important;
+        }
+        .bank-reg-container .MuiAutocomplete-endAdornment .MuiIconButton-root {
+          padding: 2px !important;
+        }
+        .bank-reg-container .MuiIconButton-root {
+          padding: 2px !important;
+        }
+        .bank-reg-container .MuiSvgIcon-root {
+          font-size: 16px !important;
+        }
+        .bank-reg-container .MuiInputAdornment-root {
+          margin-left: 2px !important;
+        }
+
+        @media (max-width: 768px) {
+          .bank-reg-content { padding: 14px; }
+          .bank-reg-header { padding: 12px 14px; }
+          .bank-reg-actions button { width: 100%; justify-content: center; }
+        }
+      `}</style>
+
+      <div className="bank-reg-container">
+        {/* Header */}
+        <div className="bank-reg-header">
+          <div className="bank-reg-header-content">
+            <h1>{displayTitle}</h1>
+            <div className="bank-reg-header-date">
+              {new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}
+            </div>
+          </div>
+        </div>
+
+        {/* Content */}
+        <div className="bank-reg-content">
+          {message && (
+            <Box sx={{ mb: 2.5, p: 1.5, bgcolor: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '8px' }}>
+              <Typography sx={{ color: '#166534', fontSize: '0.9rem', fontWeight: 600 }}>{message}</Typography>
+            </Box>
           )}
-        </form>
-      </Paper>
 
-      {/* Confirmation Dialog */}
-      <Dialog open={confirmSaveOpen} onClose={handleCancelSave}>
-        <DialogTitle>Confirm {pendingAction === 'edit' ? 'Update' : 'Save'}</DialogTitle>
+          <form
+            ref={formRef}
+            onSubmit={(e) => {
+              e.preventDefault();
+            }}
+            onKeyDown={handleFormKeyDown}
+          >
+            {/* Basic Information Section */}
+            <div className="bank-reg-form-section">
+              <div className="bank-reg-section-header">Basic Information</div>
+
+              <div className="bank-reg-form-grid">
+                {/* Ledger Name */}
+                <div className="bank-reg-form-group">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                    <label className="bank-reg-form-label" style={{ margin: 0 }}>
+                      Ledger Name <span className="bank-reg-required">*</span>
+                    </label>
+                    {selectedId && (
+                      <button
+                        type="button"
+                        onClick={handleOpenChangeName}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          color: '#3b82f6',
+                          fontSize: '12px',
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                          textDecoration: 'underline',
+                          padding: 0,
+                        }}
+                      >
+                        Change Name
+                      </button>
+                    )}
+                  </div>
+                  <Autocomplete
+                    size="small"
+                    freeSolo
+                    disabled={!!selectedId}
+                    options={ledgerOptions}
+                    getOptionLabel={(opt) => (typeof opt === 'string' ? opt : opt?.name ?? '')}
+                    value={selectedId ? ledgerOptions.find((o) => o._id === selectedId) ?? null : ledgerSearch || null}
+                    inputValue={ledgerSearch}
+                    onChange={onLedgerSelect}
+                    onInputChange={(_, v, reason) => {
+                      setLedgerSearch(v);
+                      if (reason === 'input' && !selectedId) {
+                        setValue('name', v);
+                        setValue('aliasName', v);
+                        setValue('mailingName', v);
+                      }
+                    }}
+                    renderInput={(params) => (
+                      <TextField
+                        {...params}
+                        inputRef={ledgerNameInputRef}
+                        placeholder="Enter ledger name"
+                        required
+                        inputProps={{
+                          ...params.inputProps,
+                          onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              params.inputProps?.onKeyDown?.(e);
+                              setTimeout(() => {
+                                if (ledgerNameInputRef.current) {
+                                  focusNextField(ledgerNameInputRef.current);
+                                }
+                              }, 50);
+                            } else {
+                              params.inputProps?.onKeyDown?.(e);
+                            }
+                          },
+                        }}
+                        sx={{
+                          '& .MuiOutlinedInput-root': {
+                            borderRadius: '5px',
+                            backgroundColor: '#ffffff',
+                            '& fieldset': { borderColor: '#e2e8f0' },
+                            '&:hover fieldset': { borderColor: '#cbd5e1' },
+                            '&.Mui-focused fieldset': { borderColor: '#3b82f6' },
+                          },
+                        }}
+                      />
+                    )}
+                    renderOption={(props, option) => (
+                      <li {...props} key={option._id} style={{ padding: '5px 8px', fontSize: '0.8rem' }}>
+                        <Box>
+                          <Typography variant="body2" fontWeight={600} fontSize="0.8rem" color="#1a2332">{option.name}</Typography>
+                          <Typography variant="caption" fontSize="0.72rem" color="#64748b">{option.code}</Typography>
+                        </Box>
+                      </li>
+                    )}
+                  />
+                </div>
+
+                {/* Under Field */}
+                <div className="bank-reg-form-group">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                    <label className="bank-reg-form-label" style={{ margin: 0 }}>
+                      Under <span className="bank-reg-required">*</span>
+                    </label>
+                    {isUnderLocked && (
+                      <span
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 3,
+                          fontSize: '10px',
+                          fontWeight: 600,
+                          color: '#475569',
+                          background: '#f1f5f9',
+                          border: '1px solid #cbd5e1',
+                          padding: '1px 6px',
+                          borderRadius: '4px',
+                        }}
+                        title="Account group is locked for Customer / Supplier Registration"
+                      >
+                        <LockIcon sx={{ fontSize: 11, color: '#64748b' }} /> Locked
+                      </span>
+                    )}
+                  </div>
+                  <Autocomplete
+                    size="small"
+                    autoHighlight
+                    disabled={isUnderLocked}
+                    options={underOptions}
+                    getOptionLabel={(opt) => (typeof opt === 'string' ? opt : opt?.name ?? '')}
+                    isOptionEqualToValue={(option, val) => option._id === val._id}
+                    value={
+                      underOptions.find(
+                        (o) =>
+                          o._id ===
+                          (groupIdValue ||
+                            (ledgerType === 'Customer' ? receivablesId : ledgerType === 'Supplier' ? payablesId : ''))
+                      ) || null
+                    }
+                    onChange={(_, selectedOption) => {
+                      handleGroupChange(selectedOption?._id || '');
+                    }}
+                    renderInput={(params) => (
+                      <TextField
+                        {...params}
+                        inputRef={underInputRef}
+                        disabled={isUnderLocked}
+                        placeholder={isUnderLocked ? 'Locked' : 'Type to search and select group'}
+                        required
+                        inputProps={{
+                          ...params.inputProps,
+                          onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              params.inputProps?.onKeyDown?.(e);
+                              setTimeout(() => {
+                                if (underInputRef.current) {
+                                  focusNextField(underInputRef.current);
+                                }
+                              }, 60);
+                            } else {
+                              params.inputProps?.onKeyDown?.(e);
+                            }
+                          },
+                        }}
+                        sx={{
+                          '& .MuiOutlinedInput-root': {
+                            borderRadius: '5px',
+                            backgroundColor: isUnderLocked ? '#f1f5f9' : '#ffffff',
+                            cursor: isUnderLocked ? 'not-allowed' : 'default',
+                            '& fieldset': { borderColor: isUnderLocked ? '#cbd5e1' : '#e2e8f0' },
+                            '&:hover fieldset': { borderColor: isUnderLocked ? '#cbd5e1' : '#cbd5e1' },
+                            '&.Mui-focused fieldset': { borderColor: isUnderLocked ? '#cbd5e1' : '#3b82f6' },
+                            '&.Mui-disabled': {
+                              backgroundColor: '#f1f5f9',
+                              '& fieldset': { borderColor: '#cbd5e1' },
+                            },
+                          },
+                          '& .MuiInputBase-input.Mui-disabled': {
+                            WebkitTextFillColor: '#334155',
+                            color: '#334155',
+                            fontWeight: 600,
+                            cursor: 'not-allowed',
+                          },
+                        }}
+                      />
+                    )}
+                    renderOption={(props, option) => (
+                      <li {...props} key={option._id} style={{ padding: '5px 8px', fontSize: '0.8rem' }}>
+                        <Box sx={{ display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'center' }}>
+                          <Typography variant="body2" fontWeight={600} fontSize="0.8rem" color="#1a2332">
+                            {option.name}
+                          </Typography>
+                          {option.code && (
+                            <Typography
+                              variant="caption"
+                              sx={{
+                                bgcolor: '#f1f5f9',
+                                px: 0.75,
+                                py: 0.2,
+                                borderRadius: '3px',
+                                color: '#64748b',
+                                fontWeight: 600,
+                                fontSize: '0.7rem',
+                              }}
+                            >
+                              {option.code}
+                            </Typography>
+                          )}
+                        </Box>
+                      </li>
+                    )}
+                  />
+                  <div className="bank-reg-hint">
+                    {isUnderLocked
+                      ? `Default account group locked for ${ledgerType || 'this'} registration`
+                      : 'Classification group in Chart of Accounts (type to search)'}
+                  </div>
+                </div>
+              </div>
+
+              <div className="bank-reg-form-grid">
+                {/* Registration Date */}
+                <div className="bank-reg-form-group">
+                  <label className="bank-reg-form-label">Registration Date</label>
+                  <Controller
+                    name="regDate"
+                    control={control}
+                    render={({ field }) => (
+                      <DateInput
+                        label=""
+                        value={field.value || ''}
+                        onChange={field.onChange}
+                        size="small"
+                        fullWidth
+                      />
+                    )}
+                  />
+                </div>
+
+                {/* Account Code */}
+                <div className="bank-reg-form-group">
+                  <label className="bank-reg-form-label">Account Code</label>
+                  <input
+                    type="text"
+                    className="bank-reg-input"
+                    placeholder="Auto-generated if empty"
+                    {...register('code')}
+                    disabled
+                  />
+                  <div className="bank-reg-hint">Auto-generated when empty</div>
+                </div>
+              </div>
+
+              {/* Against Ref */}
+              <div className="bank-reg-form-grid" style={{ marginTop: 4, marginBottom: 4 }}>
+                <div className="bank-reg-form-group" style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <input
+                    type="checkbox"
+                    id="chk-against-ref"
+                    style={{ width: 14, height: 14, accentColor: '#3b82f6', cursor: 'pointer' }}
+                    {...register('againstRef')}
+                  />
+                  <label htmlFor="chk-against-ref" className="bank-reg-form-label" style={{ margin: 0, cursor: 'pointer', fontWeight: 600 }}>
+                    Against Ref
+                  </label>
+                </div>
+              </div>
+
+              {/* Cash Selected: Only show Basic Information section and Debit and Credit amount fields */}
+              {isCashSelected && (
+                <div className="bank-reg-form-grid">
+                  <div className="bank-reg-form-group">
+                    <label className="bank-reg-form-label">Debit Amount</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      className="bank-reg-input"
+                      placeholder="0.00"
+                      {...register('openingBalanceDr')}
+                    />
+                    <div className="bank-reg-hint">Opening debit balance</div>
+                  </div>
+
+                  <div className="bank-reg-form-group">
+                    <label className="bank-reg-form-label">Credit Amount</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      className="bank-reg-input"
+                      placeholder="0.00"
+                      {...register('openingBalanceCr')}
+                    />
+                    <div className="bank-reg-hint">Opening credit balance</div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Bank Details Section */}
+            {isBankSelected && (
+              <>
+                <div className="bank-reg-form-section">
+                  <div className="bank-reg-section-header">Bank Details</div>
+                  <div className="bank-reg-form-grid">
+                    <div className="bank-reg-form-group">
+                      <label className="bank-reg-form-label">A/c Holder's Name</label>
+                      <input
+                        type="text"
+                        className="bank-reg-input"
+                        placeholder="Account holder name"
+                        {...register('accountHolderName')}
+                      />
+                    </div>
+                    <div className="bank-reg-form-group">
+                      <label className="bank-reg-form-label">A/c No.</label>
+                      <input
+                        type="text"
+                        className="bank-reg-input"
+                        placeholder="Account number"
+                        {...register('accountNumber')}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="bank-reg-form-grid">
+                    <div className="bank-reg-form-group">
+                      <label className="bank-reg-form-label">IBAN</label>
+                      <input
+                        type="text"
+                        className="bank-reg-input"
+                        placeholder="International Bank Account Number"
+                        {...register('iban')}
+                      />
+                    </div>
+                    <div className="bank-reg-form-group">
+                      <label className="bank-reg-form-label">Bank/SWIFT Code</label>
+                      <input
+                        type="text"
+                        className="bank-reg-input"
+                        placeholder="SWIFT code"
+                        {...register('swiftCode')}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="bank-reg-form-grid">
+                    <div className="bank-reg-form-group">
+                      <label className="bank-reg-form-label">Bank Name</label>
+                      <input
+                        type="text"
+                        className="bank-reg-input"
+                        placeholder="Name of the bank"
+                        {...register('bankName')}
+                      />
+                    </div>
+                    <div className="bank-reg-form-group">
+                      <label className="bank-reg-form-label">Branch</label>
+                      <input
+                        type="text"
+                        className="bank-reg-input"
+                        placeholder="Branch name"
+                        {...register('branch')}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* VAT Registration Details Section */}
+                <div className="bank-reg-form-section">
+                  <div className="bank-reg-section-header">VAT Registration Details</div>
+                  <div className="bank-reg-form-grid">
+                    <div className="bank-reg-form-group">
+                      <label className="bank-reg-form-label">Registration Type</label>
+                      <select className="bank-reg-select" {...register('vatRegistrationType')}>
+                        <option value="">Select registration type</option>
+                        <option value="regular">Regular</option>
+                        <option value="simplified">Simplified</option>
+                      </select>
+                    </div>
+                    <div className="bank-reg-form-group">
+                      <label className="bank-reg-form-label">Date of VAT Registration</label>
+                      <input
+                        type="date"
+                        className="bank-reg-input"
+                        {...register('vatRegistrationDate')}
+                      />
+                    </div>
+                    <div className="bank-reg-form-group">
+                      <label className="bank-reg-form-label">TRN (Tax Registration Number)</label>
+                      <input
+                        type="text"
+                        className="bank-reg-input"
+                        placeholder="Enter TRN"
+                        {...register('TRN')}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Mailing Details Section */}
+                <div className="bank-reg-form-section">
+                  <div className="bank-reg-section-header">Mailing Details</div>
+                  <div className="bank-reg-form-grid">
+                    <div className="bank-reg-form-group">
+                      <label className="bank-reg-form-label">Name</label>
+                      <input
+                        type="text"
+                        className="bank-reg-input"
+                        placeholder="Mailing name"
+                        {...register('mailingName')}
+                      />
+                    </div>
+                    <div className="bank-reg-form-group">
+                      <label className="bank-reg-form-label">Bank</label>
+                      <input
+                        type="text"
+                        className="bank-reg-input"
+                        placeholder="Bank name"
+                        {...register('mailingBank')}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="bank-reg-form-grid full">
+                    <div className="bank-reg-form-group">
+                      <label className="bank-reg-form-label">Address</label>
+                      <textarea
+                        className="bank-reg-textarea"
+                        placeholder="Complete mailing address"
+                        {...register('address')}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="bank-reg-form-grid">
+                    <div className="bank-reg-form-group">
+                      <label className="bank-reg-form-label">Emirate</label>
+                      <select className="bank-reg-select" {...register('state')}>
+                        <option value="">Select emirate</option>
+                        {UAE_EMIRATES.map((em) => (
+                          <option key={em} value={em}>
+                            {em}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="bank-reg-form-group">
+                      <label className="bank-reg-form-label">Country</label>
+                      <select className="bank-reg-select" {...register('country')}>
+                        <option value="">Select country</option>
+                        {COUNTRIES.map((c) => (
+                          <option key={c} value={c}>
+                            {c}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="bank-reg-form-grid">
+                    <div className="bank-reg-form-group">
+                      <label className="bank-reg-form-label">PO Box</label>
+                      <input
+                        type="text"
+                        className="bank-reg-input"
+                        placeholder="P.O. Box number"
+                        {...register('poBox')}
+                      />
+                    </div>
+                    <div className="bank-reg-form-group">
+                      <label className="bank-reg-form-label">Mailing Details in Local Language</label>
+                      <input
+                        type="text"
+                        className="bank-reg-input"
+                        placeholder="Local language details"
+                        {...register('localLanguageDetails')}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* Standard Mode Content (when not Bank Details and not Cash) */}
+            {!isBankSelected && !isCashSelected && (
+              <>
+                <div className="bank-reg-form-section">
+                  <div className="bank-reg-section-header">Contact Information</div>
+                  <div className="bank-reg-form-grid">
+                    <div className="bank-reg-form-group">
+                      <label className="bank-reg-form-label">Business Name (Alias)</label>
+                      <input
+                        type="text"
+                        className="bank-reg-input"
+                        placeholder="Alias name"
+                        {...register('aliasName')}
+                      />
+                    </div>
+                    <div className="bank-reg-form-group">
+                      <label className="bank-reg-form-label">Mobile Number</label>
+                      <input
+                        type="text"
+                        className="bank-reg-input"
+                        placeholder="+971 50 xxx xxxx"
+                        {...register('mobile')}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="bank-reg-form-grid full">
+                    <div className="bank-reg-form-group">
+                      <label className="bank-reg-form-label">Address</label>
+                      <textarea
+                        className="bank-reg-textarea"
+                        placeholder="Enter complete address"
+                        {...register('address')}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="bank-reg-form-grid">
+                    <div className="bank-reg-form-group">
+                      <label className="bank-reg-form-label">VAT Number (TRN)</label>
+                      <input
+                        type="text"
+                        className="bank-reg-input"
+                        placeholder="e.g., 100567891234567"
+                        {...register('TRN')}
+                      />
+                    </div>
+                    <div className="bank-reg-form-group">
+                      <label className="bank-reg-form-label">Emirate</label>
+                      <select className="bank-reg-select" {...register('state')}>
+                        <option value="">Select emirate</option>
+                        {UAE_EMIRATES.map((em) => (
+                          <option key={em} value={em}>
+                            {em}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* Additional Details Section (Hidden when Cash is selected) */}
+            {!isCashSelected && (
+              <div className="bank-reg-form-section">
+                <div
+                  className="bank-reg-section-header"
+                  style={{ cursor: 'pointer', userSelect: 'none' }}
+                  onClick={() => setAdditionalDetailsOpen(!additionalDetailsOpen)}
+                >
+                  <span>
+                    Additional Details {additionalDetailsOpen ? '' : '(Click to expand)'}
+                  </span>
+                  <span style={{ display: 'inline-flex', alignItems: 'center' }}>
+                    {additionalDetailsOpen ? <ArrowUpIcon fontSize="small" /> : <ArrowDownIcon fontSize="small" />}
+                  </span>
+                </div>
+
+                {additionalDetailsOpen && (
+                  <Box sx={{ mt: 2, pt: 1 }}>
+                    <div className="bank-reg-form-grid">
+                      <div className="bank-reg-form-group">
+                        <label className="bank-reg-form-label">Opening Debit Balance</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          className="bank-reg-input"
+                          placeholder="0.00"
+                          {...register('openingBalanceDr')}
+                        />
+                      </div>
+                      <div className="bank-reg-form-group">
+                        <label className="bank-reg-form-label">Opening Credit Balance</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          className="bank-reg-input"
+                          placeholder="0.00"
+                          {...register('openingBalanceCr')}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="bank-reg-form-grid">
+                      <div className="bank-reg-form-group">
+                        <label className="bank-reg-form-label">Telephone Number</label>
+                        <input
+                          type="text"
+                          className="bank-reg-input"
+                          placeholder="Landline / Tel"
+                          {...register('phone')}
+                        />
+                      </div>
+                      <div className="bank-reg-form-group">
+                        <label className="bank-reg-form-label">Email Address</label>
+                        <input
+                          type="email"
+                          className="bank-reg-input"
+                          placeholder="name@example.com"
+                          {...register('email')}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="bank-reg-form-grid">
+                      <div className="bank-reg-form-group">
+                        <label className="bank-reg-form-label">Credit Limit (AED)</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          className="bank-reg-input"
+                          placeholder="0.00"
+                          {...register('creditLimit')}
+                        />
+                      </div>
+                      <div className="bank-reg-form-group">
+                        <label className="bank-reg-form-label">Credit Days</label>
+                        <input
+                          type="number"
+                          min="0"
+                          className="bank-reg-input"
+                          placeholder="0"
+                          {...register('creditDays')}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="bank-reg-form-grid">
+                      <div className="bank-reg-form-group">
+                        <label className="bank-reg-form-label">Area</label>
+                        <input
+                          type="text"
+                          className="bank-reg-input"
+                          placeholder="Area / Zone"
+                          {...register('area')}
+                        />
+                      </div>
+                      <div className="bank-reg-form-group">
+                        <label className="bank-reg-form-label">Route</label>
+                        <input
+                          type="text"
+                          className="bank-reg-input"
+                          placeholder="Route code or name"
+                          {...register('route')}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="bank-reg-form-grid">
+                      <div className="bank-reg-form-group">
+                        <label className="bank-reg-form-label">Agency</label>
+                        <input
+                          type="text"
+                          className="bank-reg-input"
+                          placeholder="Agency name"
+                          {...register('agency')}
+                        />
+                      </div>
+                      <div className="bank-reg-form-group">
+                        <label className="bank-reg-form-label">Discount %</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          max="100"
+                          className="bank-reg-input"
+                          placeholder="0.00"
+                          {...register('discPercent')}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="bank-reg-form-grid">
+                      <div className="bank-reg-form-group">
+                        <label className="bank-reg-form-label">Rate Type</label>
+                        <input
+                          type="text"
+                          className="bank-reg-input"
+                          placeholder="e.g., Retail, Wholesale"
+                          {...register('rateType')}
+                        />
+                      </div>
+                      <div className="bank-reg-form-group">
+                        <label className="bank-reg-form-label">Remarks</label>
+                        <input
+                          type="text"
+                          className="bank-reg-input"
+                          placeholder="Additional notes"
+                          {...register('remarks')}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="bank-reg-form-grid" style={{ marginTop: 6 }}>
+                      <div className="bank-reg-form-group" style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <input
+                          type="checkbox"
+                          id="chk-service-item"
+                          style={{ width: 14, height: 14, accentColor: '#3b82f6' }}
+                          {...register('serviceItem')}
+                        />
+                        <label htmlFor="chk-service-item" className="bank-reg-form-label" style={{ margin: 0, cursor: 'pointer' }}>
+                          Service Item
+                        </label>
+                      </div>
+
+                      <div className="bank-reg-form-group" style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <input
+                          type="checkbox"
+                          id="chk-taxable"
+                          style={{ width: 14, height: 14, accentColor: '#3b82f6' }}
+                          {...register('taxable')}
+                        />
+                        <label htmlFor="chk-taxable" className="bank-reg-form-label" style={{ margin: 0, cursor: 'pointer' }}>
+                          Taxable
+                        </label>
+                      </div>
+                    </div>
+                  </Box>
+                )}
+              </div>
+            )}
+
+            {/* Action Buttons */}
+            <div className="bank-reg-actions">
+              <button
+                ref={saveBtnRef}
+                type="button"
+                disabled={isEditMode}
+                onClick={() => handleSubmit(onSubmit)()}
+                className="bank-reg-btn bank-reg-btn-primary"
+              >
+                <span className="bank-reg-icon">✓</span> Save
+              </button>
+
+              <button
+                ref={clearBtnRef}
+                type="button"
+                onClick={clearForm}
+                className="bank-reg-btn bank-reg-btn-clear"
+              >
+                <span className="bank-reg-icon">×</span> Clear
+              </button>
+
+              <button
+                ref={updateBtnRef}
+                type="button"
+                disabled={!isEditMode}
+                onClick={() => handleSubmit(onEdit)()}
+                className="bank-reg-btn bank-reg-btn-tertiary"
+              >
+                Update
+              </button>
+
+              <button
+                ref={deleteBtnRef}
+                type="button"
+                disabled={!isEditMode}
+                onClick={onDelete}
+                className="bank-reg-btn bank-reg-btn-danger"
+              >
+                Delete
+              </button>
+            </div>
+
+            {/* Inline message below the window */}
+            {bottomBanner && (
+              <Box
+                sx={{
+                  mt: 2.5,
+                  p: 1.5,
+                  bgcolor: '#f0fdf4',
+                  border: '1px solid #86efac',
+                  borderRadius: '8px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 1.5,
+                  boxShadow: '0 1px 3px rgba(0, 0, 0, 0.05)',
+                }}
+              >
+                <Box
+                  sx={{
+                    width: 22,
+                    height: 22,
+                    borderRadius: '50%',
+                    bgcolor: '#16a34a',
+                    color: '#ffffff',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: '13px',
+                    fontWeight: 700,
+                    flexShrink: 0,
+                  }}
+                >
+                  ✓
+                </Box>
+                <Typography sx={{ color: '#15803d', fontSize: '0.92rem', fontWeight: 600 }}>
+                  {bottomBanner}
+                </Typography>
+              </Box>
+            )}
+          </form>
+        </div>
+      </div>
+
+      {/* Confirmation Save/Update Dialog */}
+      <Dialog
+        open={confirmSaveOpen}
+        onClose={handleCancelSave}
+        onKeyDown={handleConfirmDialogKeyDown}
+        TransitionProps={{
+          onEntered: () => {
+            dialogYesBtnRef.current?.focus();
+          },
+        }}
+        PaperProps={{ sx: { borderRadius: '12px', minWidth: 360, p: 1 } }}
+      >
+        <DialogTitle sx={{ fontWeight: 700, fontSize: '1.1rem', color: '#1e293b' }}>
+          Confirm {pendingAction === 'edit' ? 'Update' : 'Save'}
+        </DialogTitle>
         <DialogContent>
-          <Typography>
-            Do you want to {pendingAction === 'edit' ? 'update' : 'save'} this ledger?
+          <Typography sx={{ color: '#475569', fontSize: '0.95rem' }}>
+            Do you want to {pendingAction === 'edit' ? 'update' : 'save'} this ledger account?
           </Typography>
         </DialogContent>
-        <DialogActions>
-          <Button onClick={handleCancelSave} variant="outlined">
+        <DialogActions sx={{ px: 3, pb: 2, gap: 1 }}>
+          <Button
+            ref={dialogNoBtnRef}
+            onClick={handleCancelSave}
+            variant="outlined"
+            sx={{
+              textTransform: 'none',
+              borderRadius: '8px',
+              borderColor: '#cbd5e1',
+              color: '#64748b',
+              fontWeight: 600,
+              minWidth: 80,
+              '&:hover': { borderColor: '#94a3b8', bgcolor: '#f8fafc' },
+              '&:focus, &:focus-visible': {
+                outline: '3px solid #64748b',
+                outlineOffset: '2px',
+                borderColor: '#64748b',
+                bgcolor: '#f1f5f9',
+              },
+            }}
+          >
             No
           </Button>
-          <Button onClick={handleConfirmSave} variant="contained" autoFocus>
+          <Button
+            ref={dialogYesBtnRef}
+            onClick={handleConfirmSave}
+            variant="contained"
+            autoFocus
+            sx={{
+              textTransform: 'none',
+              borderRadius: '8px',
+              bgcolor: '#0284c7',
+              fontWeight: 600,
+              minWidth: 80,
+              '&:hover': { bgcolor: '#0369a1' },
+              '&:focus, &:focus-visible': {
+                outline: '3px solid #0284c7',
+                outlineOffset: '2px',
+                boxShadow: '0 0 0 4px rgba(2, 132, 199, 0.35)',
+              },
+            }}
+          >
             Yes
           </Button>
         </DialogActions>
       </Dialog>
 
-      {/* Success Dialog */}
-      <Dialog open={!!successDialog} onClose={closeSuccessDialog}>
-        <DialogTitle>
-          {successDialog === 'saved' ? 'Saved' : successDialog === 'edited' ? 'Edited' : 'Deleted'}
-        </DialogTitle>
-        <DialogContent>
-          <Typography>
-            {successDialog === 'saved'
-              ? 'Ledger has been saved successfully.'
-              : successDialog === 'edited'
-                ? 'Ledger has been updated successfully.'
-                : 'Ledger has been deleted successfully.'}
-          </Typography>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={closeSuccessDialog} variant="contained" autoFocus>
-            OK
-          </Button>
-        </DialogActions>
-      </Dialog>
+      {/* Bottom Floating Notification */}
+      <Snackbar
+        open={!!bottomToast}
+        autoHideDuration={3500}
+        onClose={() => setBottomToast(null)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+      >
+        <Alert
+          onClose={() => setBottomToast(null)}
+          severity={bottomToast?.severity || 'success'}
+          variant="filled"
+          sx={{
+            minWidth: 320,
+            borderRadius: '10px',
+            boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.2), 0 8px 10px -6px rgba(0, 0, 0, 0.1)',
+            fontWeight: 600,
+            fontSize: '0.95rem',
+            bgcolor: bottomToast?.severity === 'success' ? '#16a34a' : undefined,
+            color: '#ffffff',
+            display: 'flex',
+            alignItems: 'center',
+            py: 1,
+            px: 2.5,
+          }}
+        >
+          {bottomToast?.message}
+        </Alert>
+      </Snackbar>
 
       {/* Change Led Name Dialog */}
-      <Dialog open={changeNameDialogOpen} onClose={() => setChangeNameDialogOpen(false)} maxWidth="xs" fullWidth>
-        <DialogTitle>Change Ledger Name</DialogTitle>
+      <Dialog open={changeNameDialogOpen} onClose={() => setChangeNameDialogOpen(false)} maxWidth="xs" fullWidth PaperProps={{ sx: { borderRadius: '12px', p: 1 } }}>
+        <DialogTitle sx={{ fontWeight: 700, fontSize: '1.1rem', color: '#1e293b' }}>Change Ledger Name</DialogTitle>
         <DialogContent>
-          <TextField
-            fullWidth
-            size="small"
-            label="Led Code"
-            value={changeNameCode}
-            disabled
-            margin="normal"
-            InputLabelProps={{ shrink: true }}
-          />
-          <TextField
-            fullWidth
-            size="small"
-            label="Led Name"
-            value={changeNameValue}
-            onChange={(e) => setChangeNameValue(e.target.value)}
-            margin="normal"
-            required
-            autoFocus
-          />
+          <Box sx={{ mt: 1 }}>
+            <Typography component="label" sx={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: '#1e293b', mb: 0.75 }}>
+              Ledger Code
+            </Typography>
+            <TextField
+              fullWidth
+              size="small"
+              value={changeNameCode}
+              disabled
+              sx={{ mb: 2 }}
+            />
+            <Typography component="label" sx={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: '#1e293b', mb: 0.75 }}>
+              New Ledger Name
+            </Typography>
+            <TextField
+              fullWidth
+              size="small"
+              value={changeNameValue}
+              onChange={(e) => setChangeNameValue(e.target.value)}
+              required
+              autoFocus
+            />
+          </Box>
         </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setChangeNameDialogOpen(false)}>Cancel</Button>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setChangeNameDialogOpen(false)} sx={{ textTransform: 'none', color: '#64748b' }}>Cancel</Button>
           <Button
             variant="contained"
             onClick={handleChangeNameSave}
             disabled={changeNameSaving || !changeNameValue.trim()}
             autoFocus
+            sx={{ textTransform: 'none', borderRadius: '8px', bgcolor: '#0284c7', '&:hover': { bgcolor: '#0369a1' } }}
           >
             {changeNameSaving ? 'Updating...' : 'Update'}
           </Button>
@@ -985,25 +2189,78 @@ export default function LedgerRegForm({
       </Dialog>
 
       {/* Error Dialog */}
-      <Dialog open={errorDialogOpen} onClose={() => setErrorDialogOpen(false)} PaperProps={{ sx: { borderRadius: 2, minWidth: 350 } }}>
-        <DialogTitle sx={{ fontWeight: 700, fontSize: '1rem', color: '#dc2626' }}>Error</DialogTitle>
+      <Dialog open={errorDialogOpen} onClose={() => setErrorDialogOpen(false)} PaperProps={{ sx: { borderRadius: '12px', minWidth: 350, p: 1 } }}>
+        <DialogTitle sx={{ fontWeight: 700, fontSize: '1.05rem', color: '#dc2626' }}>Error</DialogTitle>
         <DialogContent>
           <Typography sx={{ fontSize: '0.9rem', color: '#475569' }}>{errorDialogMessage}</Typography>
         </DialogContent>
-        <DialogActions sx={{ px: 2, pb: 2 }}>
-          <Button variant="contained" onClick={() => setErrorDialogOpen(false)} autoFocus sx={{ textTransform: 'none', borderRadius: 1.5, bgcolor: '#dc2626', '&:hover': { bgcolor: '#b91c1c' }, boxShadow: 'none' }}>OK</Button>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button variant="contained" onClick={() => setErrorDialogOpen(false)} autoFocus sx={{ textTransform: 'none', borderRadius: '8px', bgcolor: '#dc2626', '&:hover': { bgcolor: '#b91c1c' }, boxShadow: 'none' }}>
+            OK
+          </Button>
         </DialogActions>
       </Dialog>
 
       {/* Delete Confirmation Dialog */}
-      <Dialog open={deleteConfirmOpen} onClose={() => setDeleteConfirmOpen(false)} PaperProps={{ sx: { borderRadius: 2, minWidth: 350 } }}>
-        <DialogTitle sx={{ fontWeight: 700, fontSize: '1rem', color: '#dc2626' }}>Delete Ledger</DialogTitle>
+      <Dialog
+        open={deleteConfirmOpen}
+        onClose={() => setDeleteConfirmOpen(false)}
+        onKeyDown={handleDeleteDialogKeyDown}
+        TransitionProps={{
+          onEntered: () => {
+            deleteYesBtnRef.current?.focus();
+          },
+        }}
+        PaperProps={{ sx: { borderRadius: '12px', minWidth: 350, p: 1 } }}
+      >
+        <DialogTitle sx={{ fontWeight: 700, fontSize: '1.05rem', color: '#dc2626' }}>Delete Ledger</DialogTitle>
         <DialogContent>
-          <Typography sx={{ fontSize: '0.9rem', color: '#475569' }}>Are you sure you want to delete this ledger? This action cannot be undone.</Typography>
+          <Typography sx={{ fontSize: '0.9rem', color: '#475569' }}>
+            Are you sure you want to delete this ledger? This action cannot be undone.
+          </Typography>
         </DialogContent>
-        <DialogActions sx={{ px: 2, pb: 2 }}>
-          <Button onClick={() => setDeleteConfirmOpen(false)} sx={{ textTransform: 'none', borderRadius: 1.5, color: '#64748b' }}>Cancel</Button>
-          <Button variant="contained" color="error" onClick={handleDeleteConfirm} autoFocus sx={{ textTransform: 'none', borderRadius: 1.5, boxShadow: 'none' }}>Delete</Button>
+        <DialogActions sx={{ px: 3, pb: 2, gap: 1 }}>
+          <Button
+            ref={deleteNoBtnRef}
+            onClick={() => setDeleteConfirmOpen(false)}
+            sx={{
+              textTransform: 'none',
+              borderRadius: '8px',
+              color: '#64748b',
+              fontWeight: 600,
+              minWidth: 80,
+              '&:focus, &:focus-visible': {
+                outline: '3px solid #64748b',
+                outlineOffset: '2px',
+                bgcolor: '#f1f5f9',
+              },
+            }}
+          >
+            Cancel
+          </Button>
+          <Button
+            ref={deleteYesBtnRef}
+            variant="contained"
+            color="error"
+            onClick={handleDeleteConfirm}
+            autoFocus
+            sx={{
+              textTransform: 'none',
+              borderRadius: '8px',
+              bgcolor: '#ef4444',
+              fontWeight: 600,
+              minWidth: 80,
+              '&:hover': { bgcolor: '#dc2626' },
+              boxShadow: 'none',
+              '&:focus, &:focus-visible': {
+                outline: '3px solid #ef4444',
+                outlineOffset: '2px',
+                boxShadow: '0 0 0 4px rgba(239, 68, 68, 0.35)',
+              },
+            }}
+          >
+            Delete
+          </Button>
         </DialogActions>
       </Dialog>
     </Box>

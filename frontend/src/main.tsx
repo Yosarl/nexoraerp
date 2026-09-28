@@ -16,6 +16,20 @@ const theme = createTheme({
   typography: {
     fontFamily: '"Roboto","Helvetica","Arial",sans-serif',
   },
+  components: {
+    MuiCssBaseline: {
+      styleOverrides: {
+        'input::-webkit-outer-spin-button, input::-webkit-inner-spin-button': {
+          WebkitAppearance: 'none !important',
+          margin: '0 !important',
+        },
+        'input[type=number]': {
+          MozAppearance: 'textfield !important',
+          appearance: 'textfield !important',
+        },
+      },
+    },
+  },
 });
 
 ReactDOM.createRoot(document.getElementById('root')!).render(

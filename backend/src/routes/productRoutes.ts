@@ -16,14 +16,24 @@ router.post(
 
 router.get('/', productController.list);
 router.get('/next-code', productController.getNextCode);
+router.get('/check-usage', productController.checkFieldUsage);
 router.get('/categories', productController.getCategories);
 router.post(
   '/categories',
   validate(productController.createCategoryValidators),
   productController.createCategory
 );
+router.patch('/categories/:id', productController.updateCategory);
+router.delete('/categories/:id', productController.deleteCategory);
+
 router.get('/item-groups', productController.getItemGroups);
+router.patch('/item-groups', productController.updateItemGroup);
+router.delete('/item-groups', productController.deleteItemGroup);
+
 router.get('/brands', productController.getBrands);
+router.patch('/brands', productController.updateBrand);
+router.delete('/brands', productController.deleteBrand);
+
 router.get('/barcode', productController.getByBarcode);
 router.get('/imei', productController.getByImei);
 router.get('/units', productController.getUnits);
@@ -32,6 +42,8 @@ router.post(
   validate(productController.createUnitValidators),
   productController.createUnit
 );
+router.patch('/units/:id', productController.updateUnit);
+router.delete('/units/:id', productController.deleteUnit);
 router.post(
   '/upload-image',
   (req, res, next) => {

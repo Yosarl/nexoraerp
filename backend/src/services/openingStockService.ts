@@ -89,7 +89,7 @@ export async function postOpeningStock(
     const cashAccount = await LedgerAccount.findOne({ companyId, type: 'Cash' });
     const equityAccount = await LedgerAccount.findOne({ companyId, type: 'Other' }).populate('groupId');
     const g = equityAccount?.groupId as { type?: string } | null;
-    const equity = g?.type === 'Equity' ? equityAccount : await LedgerAccount.findOne({ companyId, code: 'EQUITY001' });
+    const equity = g?.type?.toUpperCase() === 'EQUITY' ? equityAccount : await LedgerAccount.findOne({ companyId, code: 'EQUITY001' });
     if (cashAccount && equity) {
       const v = await voucherService.createAndPost({
         companyId,

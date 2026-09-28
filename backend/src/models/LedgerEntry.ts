@@ -7,6 +7,7 @@ export interface ILedgerEntry extends Document {
   voucherId?: mongoose.Types.ObjectId;
   referenceType?: string;
   referenceId?: mongoose.Types.ObjectId;
+  referenceNo?: string;
   ledgerAccountId: mongoose.Types.ObjectId;
   debitAmount: number;
   creditAmount: number;
@@ -23,6 +24,7 @@ const LedgerEntrySchema = new Schema<ILedgerEntry>(
     voucherId: { type: Schema.Types.ObjectId, ref: 'Voucher' },
     referenceType: { type: String },
     referenceId: { type: Schema.Types.ObjectId },
+    referenceNo: { type: String },
     ledgerAccountId: { type: Schema.Types.ObjectId, ref: 'LedgerAccount', required: true },
     debitAmount: { type: Number, default: 0 },
     creditAmount: { type: Number, default: 0 },

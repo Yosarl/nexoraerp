@@ -92,6 +92,26 @@ export async function getById(
   }
 }
 
+export async function checkFieldUsage(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const companyId = req.query.companyId as string;
+    const type = req.query.type as 'category' | 'unit' | 'itemGroup' | 'brand';
+    const identifier = req.query.identifier as string;
+    if (!companyId || !type || !identifier) {
+      res.status(400).json({ success: false, message: 'companyId, type, and identifier are required' });
+      return;
+    }
+    const data = await productService.checkFieldUsage(companyId, type, identifier);
+    res.json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getUnits(
   req: AuthRequest,
   res: Response,
@@ -157,6 +177,50 @@ export async function createCategory(
   }
 }
 
+export async function updateCategory(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const companyId = (req.body.companyId || req.query.companyId) as string;
+    if (!companyId) {
+      res.status(400).json({ success: false, message: 'Company ID required' });
+      return;
+    }
+    const { id } = req.params;
+    const userId = req.user?._id?.toString();
+    const data = await productService.updateCategory(
+      companyId,
+      id,
+      { name: req.body.name, code: req.body.code },
+      userId
+    );
+    res.json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function deleteCategory(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const companyId = (req.body.companyId || req.query.companyId) as string;
+    if (!companyId) {
+      res.status(400).json({ success: false, message: 'Company ID required' });
+      return;
+    }
+    const { id } = req.params;
+    const data = await productService.deleteCategory(companyId, id);
+    res.json(data);
+  } catch (err) {
+    next(err);
+  }
+}
+
 export const createUnitValidators = [
   body('companyId').notEmpty().withMessage('Company ID required'),
   body('name').trim().notEmpty().withMessage('Unit name is required'),
@@ -186,6 +250,39 @@ export async function createUnit(
   }
 }
 
+export async function updateUnit(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const { id } = req.params;
+    const userId = req.user?._id?.toString();
+    const data = await productService.updateUnit(
+      id,
+      { name: req.body.name, shortCode: req.body.shortCode },
+      userId
+    );
+    res.json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function deleteUnit(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const { id } = req.params;
+    const data = await productService.deleteUnit(id);
+    res.json(data);
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getItemGroups(
   req: AuthRequest,
   res: Response,
@@ -204,6 +301,44 @@ export async function getItemGroups(
   }
 }
 
+export async function updateItemGroup(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const companyId = (req.body.companyId || req.query.companyId) as string;
+    if (!companyId) {
+      res.status(400).json({ success: false, message: 'Company ID required' });
+      return;
+    }
+    const { oldName, newName } = req.body;
+    const data = await productService.updateItemGroup(companyId, oldName, newName);
+    res.json(data);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function deleteItemGroup(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const companyId = (req.body.companyId || req.query.companyId) as string;
+    const name = (req.body.name || req.query.name) as string;
+    if (!companyId) {
+      res.status(400).json({ success: false, message: 'Company ID required' });
+      return;
+    }
+    const data = await productService.deleteItemGroup(companyId, name);
+    res.json(data);
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getBrands(
   req: AuthRequest,
   res: Response,
@@ -217,6 +352,44 @@ export async function getBrands(
     }
     const data = await productService.getBrands(companyId);
     res.json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function updateBrand(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const companyId = (req.body.companyId || req.query.companyId) as string;
+    if (!companyId) {
+      res.status(400).json({ success: false, message: 'Company ID required' });
+      return;
+    }
+    const { oldName, newName } = req.body;
+    const data = await productService.updateBrand(companyId, oldName, newName);
+    res.json(data);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function deleteBrand(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const companyId = (req.body.companyId || req.query.companyId) as string;
+    const name = (req.body.name || req.query.name) as string;
+    if (!companyId) {
+      res.status(400).json({ success: false, message: 'Company ID required' });
+      return;
+    }
+    const data = await productService.deleteBrand(companyId, name);
+    res.json(data);
   } catch (err) {
     next(err);
   }

@@ -8,7 +8,6 @@ import {
   Grid,
   IconButton,
   Autocomplete,
-  createFilterOptions,
   FormControlLabel,
   Radio,
   RadioGroup,
@@ -249,14 +248,14 @@ export default function PurchaseReturn() {
   const [supplierId, setSupplierId] = useState<string | null>(null);
   const [cashAccountId, setCashAccountId] = useState<string | null>(null);
   const [supplierName, setSupplierName] = useState('');
-  const [supplierAddress, setSupplierAddress] = useState('');
+  const [_supplierAddress, setSupplierAddress] = useState('');
   const [, setSuppliers] = useState<SupplierOption[]>([]);
   const [, setCashAccounts] = useState<CashOption[]>([]);
   const [supplierCashOptions, setSupplierCashOptions] = useState<SupplierCashOption[]>([]);
   const [supplierAcListboxOpen, setSupplierAcListboxOpen] = useState(false);
   const [createSupplierConfirmOpen, setCreateSupplierConfirmOpen] = useState(false);
   const [createSupplierConfirmName, setCreateSupplierConfirmName] = useState<string | null>(null);
-  const [pendingSupplierName, setPendingSupplierName] = useState<string | null>(null);
+  const [_pendingSupplierName, setPendingSupplierName] = useState<string | null>(null);
 
   // Products & lines
   const [products, setProducts] = useState<Product[]>([]);

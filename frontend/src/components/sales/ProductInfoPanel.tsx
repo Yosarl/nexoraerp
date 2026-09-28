@@ -1,5 +1,5 @@
 import React from 'react';
-import { Paper, Box, Typography, Divider, Grid } from '@mui/material';
+import { Paper, Box, Typography, Divider } from '@mui/material';
 
 interface ProductInfoPanelProps {
     productInfo: {

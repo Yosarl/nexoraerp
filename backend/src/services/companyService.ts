@@ -113,85 +113,193 @@ async function seedDefaultLedgerStructure(
   createdBy?: string
 ): Promise<void> {
   const cid = companyId.toString();
-  const groups = [
-    { code: 'ASSET', name: 'Assets', type: 'Asset' as const },
-    { code: 'LIAB', name: 'Liabilities', type: 'Liability' as const },
-    { code: 'EQUITY', name: 'Equity', type: 'Equity' as const },
-    { code: 'INCOME', name: 'Income', type: 'Income' as const },
-    { code: 'EXP', name: 'Expenses', type: 'Expense' as const },
-  ];
-  const createdGroups: Record<string, mongoose.Types.ObjectId> = {};
-  for (const g of groups) {
-    const grp = await LedgerGroup.create({
-      companyId: cid,
-      code: g.code,
-      name: g.name,
-      type: g.type,
-      createdBy,
-    });
-    createdGroups[g.code] = grp._id;
-  }
 
+  // 1. Primary Heads (Sub-types / Parents) - ALL UPPERCASE
+  await LedgerGroup.create({
+    companyId: cid,
+    code: 'FIXED_ASSET',
+    name: 'FIXED ASSET',
+    type: 'ASSET',
+    createdBy,
+  });
+
+  const currentAssetGroup = await LedgerGroup.create({
+    companyId: cid,
+    code: 'CURRENT_ASSET',
+    name: 'CURRENT ASSET',
+    type: 'ASSET',
+    createdBy,
+  });
+
+  await LedgerGroup.create({
+    companyId: cid,
+    code: 'FIXED_LIAB',
+    name: 'FIXED LIABILITY',
+    type: 'LIABILITY',
+    createdBy,
+  });
+
+  const currentLiabGroup = await LedgerGroup.create({
+    companyId: cid,
+    code: 'CURRENT_LIAB',
+    name: 'CURRENT LIABILITY',
+    type: 'LIABILITY',
+    createdBy,
+  });
+
+  await LedgerGroup.create({
+    companyId: cid,
+    code: 'CAPITAL',
+    name: 'CAPITAL',
+    type: 'EQUITY',
+    createdBy,
+  });
+
+  const directIncomeGroup = await LedgerGroup.create({
+    companyId: cid,
+    code: 'DIR_INCOME',
+    name: 'DIRECT INCOME',
+    type: 'INCOME',
+    createdBy,
+  });
+
+  await LedgerGroup.create({
+    companyId: cid,
+    code: 'INDIR_INCOME',
+    name: 'INDIRECT INCOME',
+    type: 'INCOME',
+    createdBy,
+  });
+
+  const directExpenseGroup = await LedgerGroup.create({
+    companyId: cid,
+    code: 'DIR_EXP',
+    name: 'DIRECT EXPENSE',
+    type: 'EXPENSE',
+    createdBy,
+  });
+
+  await LedgerGroup.create({
+    companyId: cid,
+    code: 'INDIR_EXP',
+    name: 'INDIRECT EXPENSE',
+    type: 'EXPENSE',
+    createdBy,
+  });
+
+  const dutiesRecvGroup = await LedgerGroup.create({
+    companyId: cid,
+    code: 'DUTY_RECV',
+    name: 'DUTIES AND TAXES RECEIVABLE',
+    type: 'DUTIES AND TAXES',
+    createdBy,
+  });
+
+  const dutiesPayGroup = await LedgerGroup.create({
+    companyId: cid,
+    code: 'DUTY_PAY',
+    name: 'DUTIES AND TAXES PAYABLE',
+    type: 'DUTIES AND TAXES',
+    createdBy,
+  });
+
+  // 2. Operational Groups under Primary Heads - ALL UPPERCASE with unique group codes
   const cashGroup = await LedgerGroup.create({
     companyId: cid,
     code: 'CASH',
-    name: 'Cash',
-    type: 'Asset',
+    name: 'CASH',
+    type: 'ASSET',
     isCash: true,
-    parentGroupId: createdGroups['ASSET'],
-    createdBy,
-  });
-  const bankGroup = await LedgerGroup.create({
-    companyId: cid,
-    code: 'BANK',
-    name: 'Bank',
-    type: 'Asset',
-    isBank: true,
-    parentGroupId: createdGroups['ASSET'],
-    createdBy,
-  });
-  const receivablesGroup = await LedgerGroup.create({
-    companyId: cid,
-    code: 'RECV',
-    name: 'Receivables',
-    type: 'Asset',
-    isReceivables: true,
-    parentGroupId: createdGroups['ASSET'],
-    createdBy,
-  });
-  const payablesGroup = await LedgerGroup.create({
-    companyId: cid,
-    code: 'PAY',
-    name: 'Payables',
-    type: 'Liability',
-    isPayables: true,
-    parentGroupId: createdGroups['LIAB'],
-    createdBy,
-  });
-  const salesGroup = await LedgerGroup.create({
-    companyId: cid,
-    code: 'SALES',
-    name: 'Sales',
-    type: 'Income',
-    isSales: true,
-    parentGroupId: createdGroups['INCOME'],
-    createdBy,
-  });
-  const purchasesGroup = await LedgerGroup.create({
-    companyId: cid,
-    code: 'PURCH',
-    name: 'Purchases',
-    type: 'Expense',
-    isPurchases: true,
-    parentGroupId: createdGroups['EXP'],
+    parentGroupId: currentAssetGroup._id,
     createdBy,
   });
 
+  const bankGroup = await LedgerGroup.create({
+    companyId: cid,
+    code: 'BANK',
+    name: 'BANK',
+    type: 'ASSET',
+    isBank: true,
+    parentGroupId: currentAssetGroup._id,
+    createdBy,
+  });
+
+  const receivablesGroup = await LedgerGroup.create({
+    companyId: cid,
+    code: 'RECV',
+    name: 'CUSTOMERS',
+    type: 'ASSET',
+    isReceivables: true,
+    parentGroupId: currentAssetGroup._id,
+    createdBy,
+  });
+
+  const payablesGroup = await LedgerGroup.create({
+    companyId: cid,
+    code: 'PAY',
+    name: 'SUPPLIERS',
+    type: 'LIABILITY',
+    isPayables: true,
+    parentGroupId: currentLiabGroup._id,
+    createdBy,
+  });
+
+  const salesGroup = await LedgerGroup.create({
+    companyId: cid,
+    code: 'SALES',
+    name: 'SALES',
+    type: 'INCOME',
+    isSales: true,
+    parentGroupId: directIncomeGroup._id,
+    createdBy,
+  });
+
+  const purchasesGroup = await LedgerGroup.create({
+    companyId: cid,
+    code: 'PURCH',
+    name: 'PURCHASES',
+    type: 'EXPENSE',
+    isPurchases: true,
+    parentGroupId: directExpenseGroup._id,
+    createdBy,
+  });
+
+  const salaryGroup = await LedgerGroup.create({
+    companyId: cid,
+    code: 'SALARY',
+    name: 'SALARY',
+    type: 'EXPENSE',
+    parentGroupId: directExpenseGroup._id,
+    createdBy,
+  });
+
+  const dutiesRecvAccGroup = await LedgerGroup.create({
+    companyId: cid,
+    code: 'DUTY_RECV_AC',
+    name: 'DUTIES AND TAXES RECEIVABLE A/C',
+    type: 'DUTIES AND TAXES',
+    parentGroupId: dutiesRecvGroup._id,
+    createdBy,
+  });
+
+  const dutiesPayAccGroup = await LedgerGroup.create({
+    companyId: cid,
+    code: 'DUTY_PAY_AC',
+    name: 'DUTIES AND TAXES PAYABLE A/C',
+    type: 'DUTIES AND TAXES',
+    parentGroupId: dutiesPayGroup._id,
+    createdBy,
+  });
+
+  // 3. Default Ledger Accounts - ALL UPPERCASE with unique account codes under each group
   await LedgerAccount.create([
-    { companyId: cid, name: 'Cash in Hand', code: 'CASH001', groupId: cashGroup._id, type: 'Cash', openingBalances: [{ financialYearId, amount: 0, isDebit: true }], createdBy },
-    { companyId: cid, name: 'Main Bank', code: 'BANK001', groupId: bankGroup._id, type: 'Bank', openingBalances: [{ financialYearId, amount: 0, isDebit: true }], createdBy },
-    { companyId: cid, name: 'Sales Account', code: 'SALES001', groupId: salesGroup._id, type: 'Revenue', openingBalances: [], createdBy },
-    { companyId: cid, name: 'Purchase Account', code: 'PURCH001', groupId: purchasesGroup._id, type: 'Expense', openingBalances: [], createdBy },
+    { companyId: cid, name: 'CASH IN HAND', code: 'CASH001', groupId: cashGroup._id, type: 'Cash', openingBalances: [{ financialYearId, amount: 0, isDebit: true }], createdBy },
+    { companyId: cid, name: 'MAIN BANK', code: 'BANK001', groupId: bankGroup._id, type: 'Bank', openingBalances: [{ financialYearId, amount: 0, isDebit: true }], createdBy },
+    { companyId: cid, name: 'SALES ACCOUNT', code: 'SALES001', groupId: salesGroup._id, type: 'Revenue', openingBalances: [], createdBy },
+    { companyId: cid, name: 'PURCHASE ACCOUNT', code: 'PURCH001', groupId: purchasesGroup._id, type: 'Expense', openingBalances: [], createdBy },
+    { companyId: cid, name: 'SALARY', code: 'SAL0001', groupId: salaryGroup._id, type: 'Expense', openingBalances: [], createdBy },
+    { companyId: cid, name: 'VAT RECEIVABLE', code: 'VATR001', groupId: dutiesRecvAccGroup._id, type: 'Other', openingBalances: [], createdBy },
+    { companyId: cid, name: 'VAT PAYABLE', code: 'VATP001', groupId: dutiesPayAccGroup._id, type: 'Other', openingBalances: [], createdBy },
   ]);
 }
 

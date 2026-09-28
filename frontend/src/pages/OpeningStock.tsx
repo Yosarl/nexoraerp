@@ -8,7 +8,6 @@ import {
   Grid,
   IconButton,
   Autocomplete,
-  createFilterOptions,
   Table,
   TableBody,
   TableCell,

@@ -76,6 +76,23 @@ export interface CreateLedgerAccountInput {
   person?: string;
   agent2?: string;
   branchId?: string;
+  // Bank Details
+  accountHolderName?: string;
+  accountNumber?: string;
+  iban?: string;
+  swiftCode?: string;
+  bankName?: string;
+  branch?: string;
+  // VAT Details
+  vatRegistrationType?: string;
+  vatRegistrationDate?: Date;
+  // Mailing Details
+  country?: string;
+  poBox?: string;
+  localLanguageDetails?: string;
+  mailingName?: string;
+  mailingBank?: string;
+  againstRef?: boolean;
   createdBy?: string;
 }
 
@@ -147,6 +164,20 @@ export async function create(input: CreateLedgerAccountInput): Promise<ILedgerAc
     person: input.person,
     agent2: input.agent2,
     branchId: input.branchId ? new mongoose.Types.ObjectId(input.branchId) : undefined,
+    accountHolderName: input.accountHolderName,
+    accountNumber: input.accountNumber,
+    iban: input.iban,
+    swiftCode: input.swiftCode,
+    bankName: input.bankName,
+    branch: input.branch,
+    vatRegistrationType: input.vatRegistrationType,
+    vatRegistrationDate: input.vatRegistrationDate,
+    country: input.country,
+    poBox: input.poBox,
+    localLanguageDetails: input.localLanguageDetails,
+    mailingName: input.mailingName,
+    mailingBank: input.mailingBank,
+    againstRef: input.againstRef !== undefined ? input.againstRef : true,
     createdBy: input.createdBy,
   });
   return account.toObject();
@@ -155,15 +186,18 @@ export async function create(input: CreateLedgerAccountInput): Promise<ILedgerAc
 const updateableFields = [
   'name', 'aliasName', 'phone', 'mobile', 'email', 'address', 'location', 'pincode',
   'TRN', 'state', 'stateCode', 'costCentre', 'creditLimit', 'creditDays', 'paymentTerms',
-  'groupId', 'serviceItem', 'sacHsn', 'taxable', 'area', 'route', 'day', 'district',
+  'groupId', 'type', 'serviceItem', 'sacHsn', 'taxable', 'area', 'route', 'day', 'district',
   'districtCode', 'agency', 'regDate', 'discPercent', 'category', 'rateType', 'remarks',
   'rating', 'story', 'empCode', 'salesMan', 'person', 'agent2', 'branchId',
+  'accountHolderName', 'accountNumber', 'iban', 'swiftCode', 'bankName', 'branch',
+  'vatRegistrationType', 'vatRegistrationDate', 'country', 'poBox', 'localLanguageDetails',
+  'mailingName', 'mailingBank', 'againstRef',
 ] as const;
 
 export async function update(
   ledgerAccountId: string,
   companyId: string,
-  updates: Partial<Pick<ILedgerAccount, typeof updateableFields[number]>>,
+  updates: Record<string, any>,
   updatedBy?: string
 ): Promise<ILedgerAccount> {
   // Check for duplicate name (case-insensitive) if name is being updated
@@ -180,6 +214,29 @@ export async function update(
   for (const key of updateableFields) {
     if (updates[key] !== undefined) safe[key] = updates[key];
   }
+
+  if (updates.financialYearId) {
+    const fyId = new mongoose.Types.ObjectId(String(updates.financialYearId));
+    const dr = Number(updates.openingBalanceDr) || 0;
+    const cr = Number(updates.openingBalanceCr) || 0;
+    const net = dr - cr;
+
+    const existingAcc = await LedgerAccount.findOne({ _id: ledgerAccountId, companyId });
+    if (existingAcc) {
+      const balances = (existingAcc.openingBalances || []).filter(
+        (b) => b.financialYearId && b.financialYearId.toString() !== fyId.toString()
+      );
+      if (Math.abs(net) > 0.001) {
+        balances.push({
+          financialYearId: fyId,
+          amount: Math.abs(net),
+          isDebit: net > 0,
+        });
+      }
+      safe['openingBalances'] = balances;
+    }
+  }
+
   const account = await LedgerAccount.findOneAndUpdate(
     { _id: ledgerAccountId, companyId },
     { ...safe, updatedBy: updatedBy ? new mongoose.Types.ObjectId(updatedBy) : undefined },

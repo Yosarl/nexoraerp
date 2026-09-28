@@ -22,20 +22,29 @@ import {
   Checkbox,
   Autocomplete,
   Grid,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  Button,
+  Tooltip,
 } from '@mui/material';
 import SearchIcon from '@mui/icons-material/Search';
 import InventoryIcon from '@mui/icons-material/Inventory';
 import ArrowDropUpIcon from '@mui/icons-material/ArrowDropUp';
 import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown';
+import CloseIcon from '@mui/icons-material/Close';
+import LayersIcon from '@mui/icons-material/Layers';
 import { useSelector } from 'react-redux';
 import type { RootState } from '../../store';
-import { stockApi } from '../../services/api';
+import { stockApi, productApi } from '../../services/api';
 
 interface StockItem {
   rowId: string;
   productId: string;
   imei: string;
   itemName: string;
+  batchNumber?: string | null;
   itemGroup: string;
   brand: string;
   category: string;
@@ -65,6 +74,7 @@ const SEARCH_FIELDS: SearchFieldOption[] = [
   { id: 'all', label: 'All' },
   { id: 'itemName', label: 'Item Name' },
   { id: 'imei', label: 'IMEI / Barcode' },
+  { id: 'batchNumber', label: 'Batch No' },
   { id: 'itemGroup', label: 'Item Group' },
   { id: 'brand', label: 'Brand' },
   { id: 'category', label: 'Category' },
@@ -147,7 +157,7 @@ function formatDateDDMMYY(dateStr: string | null): string {
 
 // All searchable string fields
 const STRING_SEARCH_KEYS: (keyof StockItem)[] = [
-  'itemName', 'imei', 'itemGroup', 'brand', 'category', 'branch', 'sellerName', 'expiryDate',
+  'itemName', 'imei', 'batchNumber', 'itemGroup', 'brand', 'category', 'branch', 'sellerName', 'expiryDate',
 ];
 // All searchable numeric fields
 const NUMERIC_SEARCH_KEYS: (keyof StockItem)[] = [
@@ -205,6 +215,35 @@ export default function StockReport() {
 
   // Selected row
   const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
+
+  // Multi-unit dialog state
+  const [multiUnitDialogOpen, setMultiUnitDialogOpen] = useState(false);
+  const [selectedStockItem, setSelectedStockItem] = useState<StockItem | null>(null);
+  const [multiUnitProduct, setMultiUnitProduct] = useState<any | null>(null);
+  const [multiUnitLoading, setMultiUnitLoading] = useState(false);
+  const [multiUnitError, setMultiUnitError] = useState<string | null>(null);
+
+  const handleRowDoubleClick = useCallback(async (item: StockItem) => {
+    if (!companyId || !item.productId) return;
+    setSelectedStockItem(item);
+    setMultiUnitDialogOpen(true);
+    setMultiUnitLoading(true);
+    setMultiUnitError(null);
+    setMultiUnitProduct(null);
+
+    try {
+      const res = await productApi.get(item.productId, companyId);
+      if (res.data.success && res.data.data) {
+        setMultiUnitProduct(res.data.data);
+      } else {
+        setMultiUnitError('Failed to load product details');
+      }
+    } catch (err: any) {
+      setMultiUnitError(err.response?.data?.message || 'Error fetching multi-unit details');
+    } finally {
+      setMultiUnitLoading(false);
+    }
+  }, [companyId]);
 
   // Sort state
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
@@ -426,13 +465,29 @@ export default function StockReport() {
           {/* Spacer */}
           <Grid item sx={{ flex: 1 }} />
 
-          {/* Item count */}
-          <Grid item>
+          {/* Item count & double-click hint */}
+          <Grid item sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <Chip
               label={`${total} items`}
               size="small"
               sx={{ bgcolor: '#f0fdfa', color: '#0f766e', fontWeight: 700, fontSize: '0.72rem', height: 24, border: '1px solid #99f6e4' }}
             />
+            <Tooltip title="Double-click any row in the table to inspect multi-unit packaging, stock breakdown, and prices">
+              <Chip
+                icon={<LayersIcon sx={{ fontSize: '14px !important', color: '#0f766e !important' }} />}
+                label="Double-click row for Multi-Units"
+                size="small"
+                sx={{
+                  bgcolor: '#f8fafc',
+                  color: '#334155',
+                  fontWeight: 600,
+                  fontSize: '0.72rem',
+                  height: 24,
+                  border: '1px solid #cbd5e1',
+                  cursor: 'help',
+                }}
+              />
+            </Tooltip>
           </Grid>
 
           {/* Search Field Combobox */}
@@ -510,12 +565,13 @@ export default function StockReport() {
       {/* MIDDLE: Table (fills remaining space) */}
       <Box sx={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', mx: 1, mt: 0.5, mb: 0, borderRadius: '8px 8px 0 0', border: '1px solid #e0e7ef', borderBottom: 'none', bgcolor: 'white' }}>
         <TableContainer sx={{ flex: 1, overflow: 'auto' }}>
-          <Table stickyHeader size="small" sx={{ tableLayout: 'fixed', minWidth: 1800 }}>
+          <Table stickyHeader size="small" sx={{ tableLayout: 'fixed', minWidth: 1900 }}>
             <TableHead>
               <TableRow>
                 <TableCell sx={{ ...COL_HEADER_BASE, width: 35, textAlign: 'center' }}>Sl</TableCell>
                 <TableCell sx={{ ...COL_HEADER_BASE, width: 100 }}>IMEI</TableCell>
                 <SH label="Item Name" field="itemName" width={160} />
+                <SH label="Batch No" field="batchNumber" width={100} />
                 <SH label="Qty" field="qtyAvailable" width={55} align="center" />
                 <SH label="P. Rate" field="purchaseRate" width={72} align="right" />
                 <SH label="Total P. Rate" field="totalPurchaseRate" width={85} align="right" />
@@ -535,7 +591,7 @@ export default function StockReport() {
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={17} align="center" sx={{ py: 8 }}>
+                  <TableCell colSpan={18} align="center" sx={{ py: 8 }}>
                     <CircularProgress size={28} sx={{ color: '#0f766e' }} />
                     <Typography variant="body2" sx={{ mt: 1, color: '#64748b' }}>
                       Loading stock data...
@@ -544,7 +600,7 @@ export default function StockReport() {
                 </TableRow>
               ) : paginatedItems.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={17} align="center" sx={{ py: 8 }}>
+                  <TableCell colSpan={18} align="center" sx={{ py: 8 }}>
                     <InventoryIcon sx={{ fontSize: 44, color: '#e2e8f0', mb: 1 }} />
                     <Typography variant="body2" sx={{ color: '#64748b', fontWeight: 600 }}>
                       No stock data found
@@ -579,6 +635,8 @@ export default function StockReport() {
                     <TableRow
                       key={item.rowId}
                       onClick={() => setSelectedRowId(isSelected ? null : item.rowId)}
+                      onDoubleClick={() => handleRowDoubleClick(item)}
+                      title="Double-click to view Multi-Unit details (IMEI, Stock, Prices, Unit)"
                       sx={{
                         bgcolor: isSelected ? '#ecfdf5' : idx % 2 === 0 ? '#fff' : '#f8fafc',
                         '&:hover': { bgcolor: isSelected ? '#d1fae5' : '#f0fdf4' },
@@ -586,6 +644,7 @@ export default function StockReport() {
                         outlineOffset: -2,
                         opacity: isOutOfStock ? 0.55 : 1,
                         cursor: 'pointer',
+                        userSelect: 'none',
                       }}
                     >
                       <TableCell sx={{ ...cellSx, textAlign: 'center', fontWeight: 700, color: '#64748b', fontSize: '0.75rem' }}>
@@ -596,6 +655,9 @@ export default function StockReport() {
                       </TableCell>
                       <TableCell sx={{ ...cellSx, fontWeight: 600, color: '#0f172a' }}>
                         {item.itemName}
+                      </TableCell>
+                      <TableCell sx={{ ...cellSx }}>
+                        {item.batchNumber || '-'}
                       </TableCell>
                       <TableCell sx={{ ...cellSx, textAlign: 'center' }}>
                         <Chip
@@ -733,6 +795,313 @@ export default function StockReport() {
           </Box>
         ))}
       </Paper>
+
+      {/* Multi-Unit Details Modal Dialog */}
+      <Dialog
+        open={multiUnitDialogOpen}
+        onClose={() => setMultiUnitDialogOpen(false)}
+        maxWidth="md"
+        fullWidth
+        PaperProps={{
+          sx: {
+            borderRadius: 2.5,
+            overflow: 'hidden',
+            boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
+          },
+        }}
+      >
+        {/* Header */}
+        <DialogTitle
+          sx={{
+            m: 0,
+            py: 1.8,
+            px: 3,
+            background: 'linear-gradient(135deg, #0f766e 0%, #134e4a 100%)',
+            color: 'white',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+          }}
+        >
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+            <Box
+              sx={{
+                width: 36,
+                height: 36,
+                borderRadius: 1.5,
+                bgcolor: 'rgba(255,255,255,0.15)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <LayersIcon sx={{ color: 'white', fontSize: 22 }} />
+            </Box>
+            <Box>
+              <Typography variant="subtitle1" sx={{ fontWeight: 700, fontSize: '1.05rem', lineHeight: 1.2 }}>
+                Multi-Unit Details
+              </Typography>
+              <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.8)', fontSize: '0.76rem' }}>
+                Unit IMEI, available stock breakdown, and selling rates
+              </Typography>
+            </Box>
+          </Box>
+          <IconButton
+            onClick={() => setMultiUnitDialogOpen(false)}
+            sx={{
+              color: 'white',
+              bgcolor: 'rgba(255,255,255,0.1)',
+              '&:hover': { bgcolor: 'rgba(255,255,255,0.2)' },
+              p: 0.8,
+            }}
+          >
+            <CloseIcon sx={{ fontSize: 18 }} />
+          </IconButton>
+        </DialogTitle>
+
+        <DialogContent sx={{ p: 0, bgcolor: '#f8fafc' }}>
+          {multiUnitLoading ? (
+            <Box sx={{ p: 6, textAlign: 'center' }}>
+              <CircularProgress size={36} sx={{ color: '#0f766e' }} />
+              <Typography variant="body2" sx={{ mt: 1.5, color: '#64748b', fontWeight: 500 }}>
+                Loading Multi-Unit information...
+              </Typography>
+            </Box>
+          ) : multiUnitError ? (
+            <Box sx={{ p: 3 }}>
+              <Alert severity="error">{multiUnitError}</Alert>
+            </Box>
+          ) : selectedStockItem ? (() => {
+            const baseUnitCode = typeof multiUnitProduct?.unitOfMeasureId === 'object' && multiUnitProduct.unitOfMeasureId?.shortCode
+              ? multiUnitProduct.unitOfMeasureId.shortCode
+              : (typeof multiUnitProduct?.unitOfMeasureId === 'object' && multiUnitProduct.unitOfMeasureId?.name
+                ? multiUnitProduct.unitOfMeasureId.name
+                : 'PCS');
+
+            const hasMultiUnits = Array.isArray(multiUnitProduct?.multiUnits) && multiUnitProduct.multiUnits.length > 0;
+            const currentQty = selectedStockItem.qtyAvailable;
+
+            return (
+              <Box sx={{ p: 2.5 }}>
+                {/* Product Summary Header Card */}
+                <Paper
+                  elevation={0}
+                  sx={{
+                    p: 2,
+                    mb: 2,
+                    borderRadius: 2,
+                    bgcolor: '#ffffff',
+                    border: '1px solid #e2e8f0',
+                  }}
+                >
+                  <Grid container spacing={2} alignItems="center">
+                    <Grid item xs={12} sm={7}>
+                      <Typography variant="caption" sx={{ color: '#64748b', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                        Product Name
+                      </Typography>
+                      <Typography variant="h6" sx={{ fontWeight: 700, color: '#0f172a', fontSize: '1.05rem', lineHeight: 1.3 }}>
+                        {selectedStockItem.itemName}
+                      </Typography>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 0.8, flexWrap: 'wrap' }}>
+                        {multiUnitProduct?.code && (
+                          <Chip
+                            label={`Code: ${multiUnitProduct.code}`}
+                            size="small"
+                            sx={{ bgcolor: '#f1f5f9', color: '#475569', fontWeight: 600, fontSize: '0.72rem', height: 22 }}
+                          />
+                        )}
+                        {selectedStockItem.brand && (
+                          <Chip
+                            label={`Brand: ${selectedStockItem.brand}`}
+                            size="small"
+                            sx={{ bgcolor: '#f1f5f9', color: '#475569', fontWeight: 500, fontSize: '0.72rem', height: 22 }}
+                          />
+                        )}
+                        {selectedStockItem.category && (
+                          <Chip
+                            label={`Category: ${selectedStockItem.category}`}
+                            size="small"
+                            sx={{ bgcolor: '#f1f5f9', color: '#475569', fontWeight: 500, fontSize: '0.72rem', height: 22 }}
+                          />
+                        )}
+                      </Box>
+                    </Grid>
+
+                    <Grid item xs={12} sm={5}>
+                      <Box sx={{ display: 'flex', gap: 1.5, justifyContent: { xs: 'flex-start', sm: 'flex-end' }, flexWrap: 'wrap' }}>
+                        <Box sx={{ p: 1.2, bgcolor: '#f0fdfa', borderRadius: 1.5, border: '1px solid #99f6e4', minWidth: 120 }}>
+                          <Typography variant="caption" sx={{ color: '#0f766e', fontWeight: 600, display: 'block', fontSize: '0.68rem', textTransform: 'uppercase' }}>
+                            Current Base Stock
+                          </Typography>
+                          <Typography variant="body1" sx={{ fontWeight: 800, color: '#0f766e', fontSize: '1.05rem' }}>
+                            {currentQty} <span style={{ fontSize: '0.8rem', fontWeight: 600 }}>{baseUnitCode}</span>
+                          </Typography>
+                        </Box>
+                        {selectedStockItem.batchNumber && (
+                          <Box sx={{ p: 1.2, bgcolor: '#f8fafc', borderRadius: 1.5, border: '1px solid #e2e8f0', minWidth: 110 }}>
+                            <Typography variant="caption" sx={{ color: '#64748b', fontWeight: 600, display: 'block', fontSize: '0.68rem', textTransform: 'uppercase' }}>
+                              Batch Number
+                            </Typography>
+                            <Typography variant="body1" sx={{ fontWeight: 700, color: '#334155', fontSize: '0.95rem' }}>
+                              {selectedStockItem.batchNumber}
+                            </Typography>
+                          </Box>
+                        )}
+                      </Box>
+                    </Grid>
+                  </Grid>
+                </Paper>
+
+                {/* Multi-Unit Details Table */}
+                <Paper
+                  elevation={0}
+                  sx={{
+                    borderRadius: 2,
+                    border: '1px solid #e2e8f0',
+                    overflow: 'hidden',
+                    bgcolor: '#ffffff',
+                  }}
+                >
+                  <Box sx={{ px: 2, py: 1.2, bgcolor: '#f8fafc', borderBottom: '1px solid #e2e8f0', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <Typography variant="subtitle2" sx={{ fontWeight: 700, color: '#334155', fontSize: '0.82rem', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                      Units, IMEIs & Rates
+                    </Typography>
+                    <Typography variant="caption" sx={{ color: '#64748b', fontSize: '0.73rem' }}>
+                      Currency: AED
+                    </Typography>
+                  </Box>
+
+                  <TableContainer>
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow sx={{ bgcolor: '#f1f5f9' }}>
+                          <TableCell sx={{ fontWeight: 700, fontSize: '0.72rem', color: '#475569', textTransform: 'uppercase', py: 1 }}>Unit</TableCell>
+                          <TableCell sx={{ fontWeight: 700, fontSize: '0.72rem', color: '#475569', textTransform: 'uppercase', py: 1 }}>IMEI / Barcode</TableCell>
+                          <TableCell sx={{ fontWeight: 700, fontSize: '0.72rem', color: '#475569', textTransform: 'uppercase', py: 1, textAlign: 'center' }}>Pcs Inside</TableCell>
+                          <TableCell sx={{ fontWeight: 700, fontSize: '0.72rem', color: '#475569', textTransform: 'uppercase', py: 1, textAlign: 'right' }}>Stock in Unit</TableCell>
+                          <TableCell sx={{ fontWeight: 700, fontSize: '0.72rem', color: '#475569', textTransform: 'uppercase', py: 1, textAlign: 'right' }}>Retail Price</TableCell>
+                          <TableCell sx={{ fontWeight: 700, fontSize: '0.72rem', color: '#475569', textTransform: 'uppercase', py: 1, textAlign: 'right' }}>Wholesale</TableCell>
+                          <TableCell sx={{ fontWeight: 700, fontSize: '0.72rem', color: '#475569', textTransform: 'uppercase', py: 1, textAlign: 'right' }}>Sp. Price 1</TableCell>
+                          <TableCell sx={{ fontWeight: 700, fontSize: '0.72rem', color: '#475569', textTransform: 'uppercase', py: 1, textAlign: 'right' }}>Sp. Price 2</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {/* 1. Base Unit Row */}
+                        <TableRow sx={{ bgcolor: '#f0fdfa', '&:hover': { bgcolor: '#ccfbf1' } }}>
+                          <TableCell sx={{ py: 1, fontSize: '0.8rem', fontWeight: 700, color: '#0f766e' }}>
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                              <span>{baseUnitCode}</span>
+                              <Chip label="Base Unit" size="small" sx={{ height: 18, fontSize: '0.65rem', fontWeight: 700, bgcolor: '#0f766e', color: 'white' }} />
+                            </Box>
+                          </TableCell>
+                          <TableCell sx={{ py: 1, fontSize: '0.78rem', fontFamily: 'monospace', color: '#334155' }}>
+                            {selectedStockItem.imei || multiUnitProduct?.imei || '—'}
+                          </TableCell>
+                          <TableCell sx={{ py: 1, fontSize: '0.78rem', textAlign: 'center', color: '#64748b' }}>
+                            1
+                          </TableCell>
+                          <TableCell sx={{ py: 1, fontSize: '0.82rem', textAlign: 'right', fontWeight: 700, color: '#0f766e' }}>
+                            {currentQty} {baseUnitCode}
+                          </TableCell>
+                          <TableCell sx={{ py: 1, fontSize: '0.8rem', textAlign: 'right', fontWeight: 600 }}>
+                            {(multiUnitProduct?.retailPrice ?? selectedStockItem.retailPrice ?? 0).toFixed(2)}
+                          </TableCell>
+                          <TableCell sx={{ py: 1, fontSize: '0.8rem', textAlign: 'right', fontWeight: 500 }}>
+                            {(multiUnitProduct?.wholesalePrice ?? selectedStockItem.wholesalePrice ?? 0).toFixed(2)}
+                          </TableCell>
+                          <TableCell sx={{ py: 1, fontSize: '0.8rem', textAlign: 'right', color: '#64748b' }}>
+                            {(multiUnitProduct?.specialPrice ?? selectedStockItem.specialPrice1) ? Number(multiUnitProduct?.specialPrice ?? selectedStockItem.specialPrice1).toFixed(2) : '—'}
+                          </TableCell>
+                          <TableCell sx={{ py: 1, fontSize: '0.8rem', textAlign: 'right', color: '#64748b' }}>
+                            {(multiUnitProduct?.specialPrice2 ?? selectedStockItem.specialPrice2) ? Number(multiUnitProduct?.specialPrice2 ?? selectedStockItem.specialPrice2).toFixed(2) : '—'}
+                          </TableCell>
+                        </TableRow>
+
+                        {/* 2. Multi-Unit Rows */}
+                        {hasMultiUnits && multiUnitProduct.multiUnits.map((mu: any, mIdx: number) => {
+                          const unitName = typeof mu.unitId === 'object' && mu.unitId?.shortCode
+                            ? mu.unitId.shortCode
+                            : (typeof mu.unitId === 'object' && mu.unitId?.name ? mu.unitId.name : 'Unit');
+                          const conv = Number(mu.conversion) || 1;
+                          const exactStock = conv > 0 ? (currentQty / conv) : 0;
+                          const wholeStock = conv > 0 ? Math.floor(currentQty / conv) : 0;
+                          const remPcs = conv > 0 ? (currentQty % conv) : 0;
+
+                          return (
+                            <TableRow key={mu.multiUnitId || mIdx} sx={{ '&:hover': { bgcolor: '#f8fafc' } }}>
+                              <TableCell sx={{ py: 1, fontSize: '0.8rem', fontWeight: 600, color: '#1e293b' }}>
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                  <span>{unitName}</span>
+                                  <Chip label="Multi Unit" size="small" sx={{ height: 18, fontSize: '0.65rem', fontWeight: 600, bgcolor: '#f5f3ff', color: '#7c3aed', border: '1px solid #ddd6fe' }} />
+                                </Box>
+                              </TableCell>
+                              <TableCell sx={{ py: 1, fontSize: '0.78rem', fontFamily: 'monospace', color: '#1e293b' }}>
+                                {mu.imei || '—'}
+                              </TableCell>
+                              <TableCell sx={{ py: 1, fontSize: '0.78rem', textAlign: 'center', color: '#475569', fontWeight: 600 }}>
+                                {conv} {baseUnitCode}
+                              </TableCell>
+                              <TableCell sx={{ py: 1, textAlign: 'right' }}>
+                                <Typography variant="body2" sx={{ fontWeight: 700, color: exactStock > 0 ? '#0f766e' : '#dc2626', fontSize: '0.82rem' }}>
+                                  {exactStock.toFixed(2)} {unitName}
+                                </Typography>
+                                {conv > 1 && currentQty > 0 && (
+                                  <Typography variant="caption" sx={{ color: '#64748b', fontSize: '0.68rem', display: 'block' }}>
+                                    {wholeStock} {unitName}{remPcs > 0 ? ` + ${remPcs} ${baseUnitCode}` : ''}
+                                  </Typography>
+                                )}
+                              </TableCell>
+                              <TableCell sx={{ py: 1, fontSize: '0.8rem', textAlign: 'right', fontWeight: 600 }}>
+                                {mu.retail != null ? Number(mu.retail).toFixed(2) : '—'}
+                              </TableCell>
+                              <TableCell sx={{ py: 1, fontSize: '0.8rem', textAlign: 'right', fontWeight: 500 }}>
+                                {mu.wholesale != null ? Number(mu.wholesale).toFixed(2) : '—'}
+                              </TableCell>
+                              <TableCell sx={{ py: 1, fontSize: '0.8rem', textAlign: 'right', color: '#64748b' }}>
+                                {mu.specialPrice1 != null ? Number(mu.specialPrice1).toFixed(2) : '—'}
+                              </TableCell>
+                              <TableCell sx={{ py: 1, fontSize: '0.8rem', textAlign: 'right', color: '#64748b' }}>
+                                {mu.specialPrice2 != null ? Number(mu.specialPrice2).toFixed(2) : '—'}
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+
+                  {!hasMultiUnits && (
+                    <Box sx={{ p: 2, textAlign: 'center', bgcolor: '#f8fafc', borderTop: '1px solid #f1f5f9' }}>
+                      <Typography variant="caption" sx={{ color: '#64748b', fontStyle: 'italic' }}>
+                        No additional multi-unit packaging defined for this product. The base unit rates apply.
+                      </Typography>
+                    </Box>
+                  )}
+                </Paper>
+              </Box>
+            );
+          })() : null}
+        </DialogContent>
+
+        <DialogActions sx={{ px: 3, py: 1.5, bgcolor: '#f1f5f9', borderTop: '1px solid #e2e8f0' }}>
+          <Button
+            variant="contained"
+            onClick={() => setMultiUnitDialogOpen(false)}
+            autoFocus
+            sx={{
+              bgcolor: '#0f766e',
+              textTransform: 'none',
+              fontWeight: 600,
+              fontSize: '0.85rem',
+              px: 3,
+              borderRadius: 1.5,
+              '&:hover': { bgcolor: '#115e59' },
+            }}
+          >
+            Done
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }

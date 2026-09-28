@@ -7,7 +7,7 @@ const baseDir = process.env.BACKEND_CWD || process.cwd();
 dotenv.config({ path: path.join(baseDir, '.env') });
 
 // Database: use MONGODB_URI if set; otherwise switch by DB_MODE (local | atlas)
-const dbMode = (process.env.DB_MODE || 'local').toLowerCase();
+const dbMode = (process.env.DB_MODE || 'atlas').toLowerCase();
 const mongodbUri =
   process.env.MONGODB_URI ||
   (dbMode === 'atlas'

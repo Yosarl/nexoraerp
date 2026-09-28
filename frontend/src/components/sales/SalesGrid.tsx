@@ -1,10 +1,10 @@
 import React, { useRef } from 'react';
 import {
     Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
-    TextField, IconButton, Autocomplete, MenuItem, Box, Paper,
+    TextField, IconButton, Autocomplete, MenuItem, Paper,
 } from '@mui/material';
 import { Delete as DeleteIcon } from '@mui/icons-material';
-import { LineItem, Product, UnitOption } from '../../types/sales';
+import { LineItem, Product } from '../../types/sales';
 
 interface SalesGridProps {
     lines: LineItem[];
@@ -30,7 +30,7 @@ const SalesGrid: React.FC<SalesGridProps> = ({
     onProductSelect,
     onUnitChange,
     onKeyDown,
-    activeLineId,
+    activeLineId: _activeLineId,
     setActiveLineId,
 }) => {
     const tableContainerRef = useRef<HTMLDivElement>(null);

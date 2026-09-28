@@ -116,7 +116,13 @@ async function findOrCreateVatInputLedger(companyId: string) {
   if (ledger) return ledger;
   ledger = await LedgerAccount.findOne({ companyId, name: /^vat\s*(receivable|input)$/i });
   if (ledger) return ledger;
-  const group = await findOrCreateGroup(companyId, 'Asset');
+  let group = await LedgerGroup.findOne({ companyId, name: /duties and taxes receivable/i, parentGroupId: { $ne: null } });
+  if (!group) {
+    group = await LedgerGroup.findOne({ companyId, name: /duties and taxes receivable/i });
+  }
+  if (!group) {
+    group = await findOrCreateGroup(companyId, 'Asset');
+  }
   const lastAcc = await LedgerAccount.findOne({ companyId, code: /^ACC/ }).sort({ code: -1 }).lean();
   const num = lastAcc?.code ? parseInt(lastAcc.code.replace(/\D/g, ''), 10) + 1 : 1;
   const code = `ACC${num.toString().padStart(4, '0')}`;
@@ -763,10 +769,13 @@ async function createPurchaseVoucher(
   const v = await voucherService.createAndPost({
     companyId,
     financialYearId,
-    voucherType: 'Payment',
+    voucherType: 'Purchase',
     date: purchaseDate,
     narration: `Purchase ${invoiceNo}`,
     lines: voucherLines,
+    referenceType: 'PurchaseInvoice',
+    referenceId: purchaseId,
+    referenceNo: invoiceNo,
     createdBy: input.createdBy,
   });
   console.log(`[Purchase ${invoiceNo}] Voucher created: ${v.voucherNo}`);
@@ -987,6 +996,80 @@ export async function getBatchesByProduct(
         retail: b.retail,
         wholesale: b.wholesale,
       });
+    }
+  }
+
+  // 4. Handle excess stock from sales returns:
+  //    When returns push netStock above totalPurchased, find which batch each
+  //    return belongs to and add the excess to that specific batch.
+  if (totalSold < 0) {
+    const excessStock = Math.abs(totalSold);
+
+    // Query SalesReturn transactions for this product to find per-batch return quantities
+    const returnAgg = await InventoryTransaction.aggregate([
+      {
+        $match: {
+          companyId: companyOid,
+          productId: productOid,
+          type: 'SalesReturn',
+          quantityIn: { $gt: 0 },
+        },
+      },
+      {
+        $group: {
+          _id: '$batchNumber',
+          totalReturned: { $sum: '$quantityIn' },
+        },
+      },
+    ]);
+
+    let excessRemaining = excessStock;
+    for (const ret of returnAgg) {
+      if (excessRemaining <= 0) break;
+      const retBatch = ret._id || ''; // batchNumber from the return
+      const retQty = Math.min(ret.totalReturned, excessRemaining);
+
+      // Find the matching batch in the result
+      const matchIdx = result.findIndex((r) => r.batchNumber === retBatch);
+      if (matchIdx >= 0) {
+        result[matchIdx].quantity += retQty;
+        excessRemaining -= retQty;
+      } else {
+        // Batch was fully sold out but returns brought stock back — find it in rawBatches
+        const rawMatch = rawBatches.find((b) => b.batchNumber === retBatch);
+        if (rawMatch) {
+          result.push({
+            batchNumber: rawMatch.batchNumber,
+            productId: rawMatch.productId,
+            productName: rawMatch.productName,
+            purchasePrice: rawMatch.purchasePrice,
+            expiryDate: rawMatch.expiryDate,
+            quantity: retQty,
+            retail: rawMatch.retail,
+            wholesale: rawMatch.wholesale,
+          });
+          excessRemaining -= retQty;
+        }
+      }
+    }
+
+    // If any excess still remains (e.g. old returns without batchNumber), add to newest batch
+    if (excessRemaining > 0) {
+      if (result.length > 0) {
+        result[result.length - 1].quantity += excessRemaining;
+      } else if (rawBatches.length > 0) {
+        const newest = rawBatches[rawBatches.length - 1];
+        result.push({
+          batchNumber: newest.batchNumber,
+          productId: newest.productId,
+          productName: newest.productName,
+          purchasePrice: newest.purchasePrice,
+          expiryDate: newest.expiryDate,
+          quantity: excessRemaining,
+          retail: newest.retail,
+          wholesale: newest.wholesale,
+        });
+      }
     }
   }
 

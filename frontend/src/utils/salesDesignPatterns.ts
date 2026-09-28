@@ -7,50 +7,53 @@
  * DO NOT modify this file unless you want to change the shared patterns.
  */
 
-import { useCallback, useRef } from 'react';
+import { useRef } from 'react';
 
 /* ════════════════════════════════════════════════════════════ */
 /*  STYLING CONSTANTS                                           */
 /* ════════════════════════════════════════════════════════════ */
 
-/** Common button styles used across sales pages */
+/** Common button styles used across sales pages (compact by 30%) */
 export const commonButtonStyles = {
-  minWidth: 100,
-  py: 0.8,
-  fontSize: '0.82rem',
+  minWidth: 70,
+  py: 0.35,
+  height: 28,
+  fontSize: '0.75rem',
   fontWeight: 600,
   textTransform: 'none' as const,
-  borderRadius: 1.5,
+  borderRadius: 1.2,
   boxShadow: 'none',
   bgcolor: '#0f766e',
   color: '#fff',
+  '& .MuiSvgIcon-root': { fontSize: 16 },
   '&:hover': { bgcolor: '#115e59' },
   '&.Mui-disabled': { bgcolor: '#d1d5db', color: '#9ca3af' },
 };
 
 /** Grid container spacing for top header row */
-export const topHeaderGridSpacing = 1.5;
+export const topHeaderGridSpacing = 1;
 
 /** Input field border radius */
-export const inputBorderRadius = 1.5;
+export const inputBorderRadius = 1.2;
 
 /** Input field font sizes */
 export const inputFontSizes = {
-  input: '0.75rem',
-  label: '0.75rem',
+  input: '0.72rem',
+  label: '0.70rem',
 };
 
-/** Table header styles (pink theme) */
+/** Table header styles (pink theme, reduced by 20%) */
 export const tableHeaderStyles = {
   bgcolor: '#db2777',
   color: 'white',
-  fontWeight: 600,
-  fontSize: '0.75rem',
-  p: '6px 4px',
+  fontWeight: 700,
+  fontSize: '0.65rem',
+  p: '4px 3px',
   textAlign: 'center' as const,
-  letterSpacing: 0.3,
+  letterSpacing: 0.2,
   textTransform: 'uppercase' as const,
   borderRight: '1px solid rgba(255,255,255,0.15)',
+  borderBottom: '2px solid rgba(0,0,0,0.12)',
 };
 
 /** Product info panel colors */
@@ -67,29 +70,31 @@ export const productInfoColors = {
 /** Navigation button styles */
 export const navigationButtonStyles = {
   flex: 1,
-  py: 0.4,
+  py: 0.2,
+  height: 24,
   minWidth: 0,
-  borderRadius: 1.5,
+  borderRadius: 1.2,
   bgcolor: '#334155',
   '&:hover': { bgcolor: '#1e293b' },
   boxShadow: 'none',
+  '& .MuiSvgIcon-root': { fontSize: 16 },
 };
 
 /** Badge/Entry number box styles */
 export const entryBadgeStyles = {
   bgcolor: '#0f766e',
-  borderRadius: 1.5,
-  px: 1.5,
-  py: 0.6,
+  borderRadius: 1.2,
+  px: 1,
+  py: 0.3,
   textAlign: 'center' as const,
 };
 
 /** Section label styles */
 export const sectionLabelStyles = {
   fontWeight: 700,
-  fontSize: '0.8rem',
+  fontSize: '0.68rem',
   color: '#0f766e',
-  mb: 1,
+  mb: 0.6,
   textTransform: 'uppercase' as const,
   letterSpacing: 0.3,
 };
@@ -97,8 +102,8 @@ export const sectionLabelStyles = {
 /** Field label styles */
 export const fieldLabelStyles = {
   fontWeight: 500,
-  pt: 0.75,
-  fontSize: '0.78rem',
+  pt: 0.5,
+  fontSize: '0.70rem',
   color: '#475569',
 };
 
@@ -202,8 +207,9 @@ export const revertRowEditsIfNotCommitted = (
   itemNameSnapshotRef?: React.MutableRefObject<any>
 ) => {
   if (!rowCommittedRef.current && rowSnapshotRef.current && rowSnapshotRef.current.lineId === line.id) {
+    const snapshotData = rowSnapshotRef.current.data;
     setLines((prev: any[]) =>
-      prev.map((l: any) => (l.id === line.id ? rowSnapshotRef.current.data : l))
+      prev.map((l: any) => (l.id === line.id ? snapshotData : l))
     );
     rowCommittedRef.current = false;
     rowSnapshotRef.current = null;
@@ -264,6 +270,8 @@ export interface EnterKeyFlowConfig {
   isBlank: boolean;
   /** Whether row has required fields filled */
   isValid: boolean;
+  /** Lines array */
+  lines?: any[];
 }
 
 /**
@@ -272,7 +280,7 @@ export interface EnterKeyFlowConfig {
  * 
  * @param config - Enter key flow configuration
  * @param imeiInputRefs - Refs object for IMEI inputs
- * @param itemNameInputRefs - Refs object for Item Name inputs
+ * @param _itemNameInputRefs - Refs object for Item Name inputs
  * @param emptyLine - Function to create empty line
  * @param setLines - setState function from calling component
  * @param setActiveLineId - Optional function to set active line ID
@@ -280,12 +288,12 @@ export interface EnterKeyFlowConfig {
 export const handleImeiEnterKey = (
   config: EnterKeyFlowConfig,
   imeiInputRefs: React.MutableRefObject<{ [key: string]: HTMLInputElement | null }>,
-  itemNameInputRefs: React.MutableRefObject<{ [key: string]: HTMLInputElement | null }>,
+  _itemNameInputRefs: React.MutableRefObject<{ [key: string]: HTMLInputElement | null }>,
   emptyLine: () => any,
   setLines: React.Dispatch<React.SetStateAction<any[]>>,
   setActiveLineId?: React.Dispatch<React.SetStateAction<string | null>>
 ) => {
-  const { currentIndex, isLastRow, isBlank, lines } = config;
+  const { currentIndex, isLastRow, isBlank, lines = [] } = config;
   
   if (isLastRow && isBlank) {
     // Last row and blank - go to Save button
@@ -309,7 +317,7 @@ export const handleImeiEnterKey = (
     // Move to next row's IMEI field
     const nextLine = lines[currentIndex + 1];
     setTimeout(() => {
-      imeiInputRefs.current[nextLine.id]?.focus();
+      imeiInputRefs.current[nextLine?.id]?.focus();
     }, 50);
   }
 };
@@ -320,7 +328,7 @@ export const handleImeiEnterKey = (
  * 
  * @param config - Enter key flow configuration
  * @param line - Current line item
- * @param itemNameInputRefs - Refs object for Item Name inputs
+ * @param _itemNameInputRefs - Refs object for Item Name inputs
  * @param qtyInputRefs - Refs object for Quantity inputs
  * @param saveButtonRef - Ref to Save button
  * @param products - Products list for validation
@@ -329,13 +337,13 @@ export const handleImeiEnterKey = (
 export const handleItemNameEnterKey = (
   config: EnterKeyFlowConfig,
   line: any, // LineItem type from calling component
-  itemNameInputRefs: React.MutableRefObject<{ [key: string]: HTMLInputElement | null }>,
+  _itemNameInputRefs: React.MutableRefObject<{ [key: string]: HTMLInputElement | null }>,
   qtyInputRefs: React.MutableRefObject<{ [key: string]: HTMLInputElement | null }>,
   saveButtonRef: React.MutableRefObject<HTMLButtonElement | null>,
   products: any[], // Product[] type from calling component
   handleProductSelect?: (lineId: string, product: any) => void
 ) => {
-  const { isLastRow, isBlank, lines } = config;
+  const { isLastRow, isBlank } = config;
   
   if (isLastRow && isBlank) {
     // Last row and blank - go to Save button
@@ -431,7 +439,7 @@ export const handlePriceEnterKey = (
   ) => void,
   rowCommittedRef: React.MutableRefObject<boolean>
 ) => {
-  const { currentIndex, isLastRow, isBlank, lines } = config;
+  const { currentIndex, isLastRow, isBlank, lines = [] } = config;
   
   // Validate row completeness
   if (!line.productCode || !line.name || line.quantity <= 0 || line.price <= 0) {

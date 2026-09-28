@@ -250,3 +250,4 @@ app.whenReady().then(function () { return __awaiter(void 0, void 0, void 0, func
         }
     });
 }); });
+// Reload trigger for backend build

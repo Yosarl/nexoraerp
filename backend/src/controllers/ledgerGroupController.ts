@@ -67,7 +67,7 @@ export async function getNextCode(
 export const createValidators = [
   body('companyId').notEmpty().withMessage('Company ID required'),
   body('name').trim().notEmpty().withMessage('Name required'),
-  body('type').isIn(['Asset', 'Liability', 'Equity', 'Income', 'Expense']).withMessage('Valid type required'),
+  body('type').isIn(['Asset', 'Liability', 'Equity', 'Income', 'Expense', 'Duties and Taxes']).withMessage('Valid type required'),
   body('parentGroupId').optional().notEmpty(),
 ];
 
@@ -87,7 +87,7 @@ export async function create(
 
 export const updateValidators = [
   body('name').optional().trim().notEmpty().withMessage('Name cannot be empty'),
-  body('type').optional().isIn(['Asset', 'Liability', 'Equity', 'Income', 'Expense']).withMessage('Valid type required'),
+  body('type').optional().isIn(['Asset', 'Liability', 'Equity', 'Income', 'Expense', 'Duties and Taxes']).withMessage('Valid type required'),
   body('parentGroupId').optional(),
 ];
 

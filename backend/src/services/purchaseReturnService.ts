@@ -49,7 +49,13 @@ async function findOrCreateVatInputLedger(companyId: string) {
   if (ledger) return ledger;
   ledger = await LedgerAccount.findOne({ companyId, name: /^vat\s*(receivable|input)$/i });
   if (ledger) return ledger;
-  const group = await findOrCreateGroup(companyId, 'Asset');
+  let group = await LedgerGroup.findOne({ companyId, name: /duties and taxes receivable/i, parentGroupId: { $ne: null } });
+  if (!group) {
+    group = await LedgerGroup.findOne({ companyId, name: /duties and taxes receivable/i });
+  }
+  if (!group) {
+    group = await findOrCreateGroup(companyId, 'Asset');
+  }
   const lastAcc = await LedgerAccount.findOne({ companyId, code: /^ACC/ }).sort({ code: -1 }).lean();
   const num = lastAcc?.code ? parseInt(lastAcc.code.replace(/\D/g, ''), 10) + 1 : 1;
   const code = `ACC${num.toString().padStart(4, '0')}`;

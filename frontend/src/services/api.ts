@@ -68,21 +68,54 @@ export const productApi = {
   get: (id: string, companyId: string) => api.get<{ success: boolean; data: unknown }>(`/products/${id}`, { params: { companyId } }),
   getNextCode: (companyId: string) =>
     api.get<{ success: boolean; data: { code: string } }>('/products/next-code', { params: { companyId } }),
+  checkFieldUsage: (companyId: string, type: 'category' | 'unit' | 'itemGroup' | 'brand', identifier: string) =>
+    api.get<{
+      success: boolean;
+      data: {
+        inUse: boolean;
+        hasTransactions: boolean;
+        count: number;
+        products: Array<{
+          _id: string;
+          code: string;
+          name: string;
+          imei: string;
+          retailPrice: number;
+          hasTransactions: boolean;
+        }>;
+      };
+    }>('/products/check-usage', { params: { companyId, type, identifier } }),
   getByImei: (companyId: string, imei: string) =>
     api.get<{ success: boolean; data: unknown }>('/products/imei', { params: { companyId, imei } }),
   getCategories: (companyId: string) =>
     api.get<{ success: boolean; data: unknown[] }>('/products/categories', { params: { companyId } }),
   createCategory: (companyId: string, data: { name: string; code?: string }) =>
     api.post<{ success: boolean; data: unknown }>('/products/categories', { companyId, ...data }),
+  updateCategory: (id: string, companyId: string, data: { name: string; code?: string }) =>
+    api.patch<{ success: boolean; data: unknown }>(`/products/categories/${id}`, { companyId, ...data }),
+  deleteCategory: (id: string, companyId: string) =>
+    api.delete<{ success: boolean; message?: string }>(`/products/categories/${id}`, { params: { companyId } }),
   getItemGroups: (companyId: string) =>
     api.get<{ success: boolean; data: string[] }>('/products/item-groups', { params: { companyId } }),
+  updateItemGroup: (companyId: string, oldName: string, newName: string) =>
+    api.patch<{ success: boolean; modifiedCount: number }>('/products/item-groups', { companyId, oldName, newName }),
+  deleteItemGroup: (companyId: string, name: string) =>
+    api.delete<{ success: boolean; modifiedCount: number }>('/products/item-groups', { params: { companyId, name } }),
   getBrands: (companyId: string) =>
     api.get<{ success: boolean; data: string[] }>('/products/brands', { params: { companyId } }),
+  updateBrand: (companyId: string, oldName: string, newName: string) =>
+    api.patch<{ success: boolean; modifiedCount: number }>('/products/brands', { companyId, oldName, newName }),
+  deleteBrand: (companyId: string, name: string) =>
+    api.delete<{ success: boolean; modifiedCount: number }>('/products/brands', { params: { companyId, name } }),
   getByBarcode: (companyId: string, barcode: string) =>
     api.get<{ success: boolean; data: unknown }>('/products/barcode', { params: { companyId, barcode } }),
   getUnits: (companyId: string) => api.get<{ success: boolean; data: unknown[] }>('/products/units', { params: { companyId } }),
   createUnit: (companyId: string, data: { name: string; shortCode?: string }) =>
     api.post<{ success: boolean; data: unknown }>('/products/units', { companyId, ...data }),
+  updateUnit: (id: string, data: { name?: string; shortCode?: string }) =>
+    api.patch<{ success: boolean; data: unknown }>(`/products/units/${id}`, data),
+  deleteUnit: (id: string) =>
+    api.delete<{ success: boolean; message?: string }>(`/products/units/${id}`),
   create: (data: Record<string, unknown>) => api.post<{ success: boolean; data: unknown }>('/products', data),
   update: (id: string, companyId: string, data: Record<string, unknown>) =>
     api.patch<{ success: boolean; data: unknown }>(`/products/${id}`, data, { params: { companyId } }),
@@ -224,6 +257,7 @@ export interface B2CInvoiceInput {
   companyId: string;
   financialYearId: string;
   date?: string;
+  type?: 'B2C' | 'B2B' | 'Quotation';
   items: B2CLineItem[];
   customerId?: string;
   customerName?: string;
@@ -260,28 +294,28 @@ export const salesApi = {
   }) => api.post<{ success: boolean; data: { invoiceId: string; invoiceNo: string } }>('/sales/pos', data),
 
   // B2C endpoints
-  getNextB2CInvoiceNo: (companyId: string, financialYearId: string) =>
+  getNextB2CInvoiceNo: (companyId: string, financialYearId: string, type?: 'B2C' | 'B2B' | 'Quotation') =>
     api.get<{ success: boolean; data: { invoiceNo: string } }>('/sales/b2c/next-invoice-no', {
-      params: { companyId, financialYearId },
+      params: { companyId, financialYearId, type },
     }),
-  listB2C: (companyId: string, financialYearId: string, params?: { search?: string; fromDate?: string; toDate?: string; page?: number; limit?: number }) =>
+  listB2C: (companyId: string, financialYearId: string, params?: { search?: string; fromDate?: string; toDate?: string; page?: number; limit?: number; type?: 'B2C' | 'B2B' | 'Quotation' }) =>
     api.get<{ success: boolean; data: { invoices: unknown[]; total: number } }>('/sales/b2c', {
       params: { companyId, financialYearId, ...params },
     }),
-  getB2C: (id: string, companyId: string) =>
-    api.get<{ success: boolean; data: unknown }>(`/sales/b2c/${id}`, { params: { companyId } }),
-  searchB2CByInvoiceNo: (companyId: string, invoiceNo: string) =>
-    api.get<{ success: boolean; data: unknown }>('/sales/b2c/search', { params: { companyId, invoiceNo } }),
+  getB2C: (id: string, companyId: string, type?: 'B2C' | 'B2B' | 'Quotation', excludeReturnId?: string) =>
+    api.get<{ success: boolean; data: unknown }>(`/sales/b2c/${id}`, { params: { companyId, type, excludeReturnId } }),
+  searchB2CByInvoiceNo: (companyId: string, invoiceNo: string, type?: 'B2C' | 'B2B' | 'Quotation', excludeReturnId?: string) =>
+    api.get<{ success: boolean; data: unknown }>('/sales/b2c/search', { params: { companyId, invoiceNo, type, excludeReturnId } }),
   createB2C: (data: B2CInvoiceInput) =>
     api.post<{ success: boolean; data: { invoiceId: string; invoiceNo: string } }>('/sales/b2c', data),
   updateB2C: (id: string, data: B2CInvoiceInput) =>
     api.put<{ success: boolean; data: { invoiceId: string; invoiceNo: string } }>(`/sales/b2c/${id}`, data),
   deleteB2C: (id: string, companyId: string) =>
     api.delete(`/sales/b2c/${id}`, { params: { companyId } }),
-  getProductCustomerHistory: (companyId: string, productId: string, customerId?: string) =>
-    api.get<{ success: boolean; data: Array<{ invoiceNo: string; date: string; customerName: string; quantity: number; unitPrice: number; unitName: string; discount: number; total: number }> }>(
+  getProductCustomerHistory: (companyId: string, productId: string, customerId?: string, type?: 'POS' | 'B2C' | 'B2B' | 'Quotation') =>
+    api.get<{ success: boolean; data: { history: Array<{ invoiceNo: string; date: string; customerName: string; quantity: number; unitPrice: number; unitName: string; discount: number; total: number; batchNumber: string }>; totalPurchased: number; totalReturned: number; netReturnable: number } }>(
       `/sales/b2c/product-history/${productId}`,
-      { params: { companyId, ...(customerId ? { customerId } : {}) } }
+      { params: { companyId, ...(customerId ? { customerId } : {}), type } }
     ),
 
   // Sales Return
@@ -381,6 +415,7 @@ export const stockApi = {
           productId: string;
           imei: string;
           itemName: string;
+          batchNumber?: string | null;
           itemGroup: string;
           brand: string;
           category: string;
@@ -813,67 +848,6 @@ export const purchaseReturnApi = {
     api.delete(`/purchase-returns/${id}`, { params: { companyId } }),
 };
 
-// ─── Quotation Sales API ────────────────────────────────────
-export const quotationApi = {
-  getNextInvoiceNo: (companyId: string, financialYearId: string) =>
-    api.get<{ success: boolean; data: { invoiceNo: string } }>('/quotations/next-invoice-no', {
-      params: { companyId, financialYearId },
-    }),
-
-  create: (data: {
-    companyId: string;
-    financialYearId: string;
-    date?: string;
-    items: Array<{
-      productId: string;
-      productCode?: string;
-      imei?: string;
-      multiUnitId?: string;
-      unitId?: string;
-      unitName?: string;
-      quantity: number;
-      unitPrice: number;
-      discountPercent?: number;
-      discount?: number;
-    }>;
-    customerId?: string;
-    customerName?: string;
-    customerAddress?: string;
-    rateType?: string;
-    vatType?: string;
-    taxMode?: 'inclusive' | 'exclusive';
-    otherDiscount?: number;
-    otherCharges?: number;
-    freightCharge?: number;
-    roundOff?: number;
-    narration?: string;
-    shippingName?: string;
-    shippingAddress?: string;
-    shippingPhone?: string;
-    shippingContactPerson?: string;
-  }) =>
-    api.post<{ success: boolean; data: { invoiceId: string; invoiceNo: string } }>('/quotations', data),
-
-  update: (id: string, data: Record<string, unknown>) =>
-    api.put<{ success: boolean; data: { invoiceId: string; invoiceNo: string } }>(`/quotations/${id}`, data),
-
-  delete: (id: string, companyId: string) =>
-    api.delete(`/quotations/${id}`, { params: { companyId } }),
-
-  list: (companyId: string, financialYearId: string) =>
-    api.get<{ success: boolean; data: { invoices: Array<{ _id: string; invoiceNo: string; date: string; customerName: string; totalAmount: number }>; total: number } }>('/quotations', {
-      params: { companyId, financialYearId },
-    }),
-
-  getById: (id: string, companyId: string) =>
-    api.get<{ success: boolean; data: Record<string, unknown> }>(`/quotations/${id}`, { params: { companyId } }),
-
-  search: (companyId: string, invoiceNo: string) =>
-    api.get<{ success: boolean; data: Record<string, unknown> }>('/quotations/search', {
-      params: { companyId, invoiceNo },
-    }),
-};
-
 export const ledgerApi = {
   entriesByVoucher: (voucherId: string) =>
     api.get<{ success: boolean; data: Array<{ ledgerAccountCode: string; ledgerAccountName: string; debitAmount: number; creditAmount: number; narration?: string }> }>(
@@ -904,6 +878,60 @@ export const ledgerApi = {
       '/ledger/balance-sheet',
       { params: { companyId, financialYearId, asAtDate } }
     ),
+};
+
+export interface BankReconciliationItem {
+  voucherId: string;
+  voucherNo: string;
+  voucherType: string;
+  bookDate: string;
+  particulars: string;
+  chequeNumber: string;
+  chequeDate?: string;
+  withdrawals: number;
+  deposits: number;
+  bankDate: string;
+  chequeStatus: 'PENDING' | 'CLEARED' | 'BOUNCED';
+  isReconciled: boolean;
+  isBounced: boolean;
+  narration?: string;
+}
+
+export interface BankReconciliationData {
+  bankAccount: {
+    _id: string;
+    name: string;
+    code: string;
+  };
+  fromDate: string;
+  toDate: string;
+  expectedBankBalance: number;
+  expectedIsDebit: boolean;
+  statementBalance: number;
+  statementIsDebit: boolean;
+  unreconciledAmount: number;
+  unreconciledCount: number;
+  reconciledCount: number;
+  bouncedCount: number;
+  pendingChequesCount?: number;
+  items: BankReconciliationItem[];
+}
+
+export const bankReconciliationApi = {
+  get: (companyId: string, financialYearId: string, bankAccountId: string, fromDate: string, toDate: string, status?: string) =>
+    api.get<{ success: boolean; data: BankReconciliationData }>('/bank-reconciliation', {
+      params: { companyId, financialYearId, bankAccountId, fromDate, toDate, status },
+    }),
+  save: (data: {
+    companyId: string;
+    financialYearId: string;
+    bankAccountId: string;
+    items: Array<{
+      voucherId: string;
+      bankDate?: string | null;
+      isBounced?: boolean;
+    }>;
+  }) => api.post<{ success: boolean; data: { updatedCount: number } }>('/bank-reconciliation/save', data),
 };
 
 export const ledgerAccountApi = {
@@ -939,6 +967,12 @@ export const voucherApi = {
     api.get<{ success: boolean; data: { vouchers: unknown[]; total: number } }>('/vouchers', { params: { companyId, financialYearId, ...params } }),
   create: (data: Record<string, unknown>) =>
     api.post<{ success: boolean; data: unknown }>('/vouchers', data),
+  getNextNo: (companyId: string, financialYearId: string, voucherType: string) =>
+    api.get<{ success: boolean; data: { voucherNo: string } }>('/vouchers/next-no', { params: { companyId, financialYearId, voucherType } }),
+  getById: (id: string) =>
+    api.get<{ success: boolean; data: unknown }>(`/vouchers/${id}`),
+  delete: (id: string) =>
+    api.delete<{ success: boolean; message: string }>(`/vouchers/${id}`),
 };
 
 export const userApi = {

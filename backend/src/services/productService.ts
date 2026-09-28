@@ -351,17 +351,19 @@ export async function getCategories(companyId: string) {
 
 export async function createCategory(
   companyId: string,
-  input: { name: string; code: string },
+  input: { name: string; code?: string },
   createdBy?: string
 ) {
   const name = input.name?.trim();
-  const code = (input.code?.trim() || name || 'CAT').toUpperCase().replace(/\s+/g, '_');
   if (!name) throw new AppError('Category name is required', 400);
-  const existing = await ProductCategory.findOne({
+  let code = (input.code?.trim() || name).toUpperCase().replace(/\s+/g, '_').slice(0, 30);
+  let existing = await ProductCategory.findOne({
     companyId,
     code: new RegExp(`^${escapeRegex(code)}$`, 'i'),
   });
-  if (existing) throw new AppError('Category code already in use', 400);
+  if (existing) {
+    code = `${code.slice(0, 20)}_${Date.now().toString().slice(-4)}`;
+  }
   const doc = await ProductCategory.create({
     companyId,
     name,
@@ -373,12 +375,12 @@ export async function createCategory(
 
 export async function createUnit(
   _companyId: string, // Kept for backward compatibility but not used
-  input: { name: string; shortCode: string },
+  input: { name: string; shortCode?: string },
   createdBy?: string
 ) {
   const name = input.name?.trim();
-  const shortCode = (input.shortCode?.trim() || name?.slice(0, 5) || 'U').toUpperCase().replace(/\s+/g, '');
   if (!name) throw new AppError('Unit name is required', 400);
+  let shortCode = (input.shortCode?.trim() || name).toUpperCase().replace(/\s+/g, '').slice(0, 10);
   
   // Check for existing unit with same name (global unique)
   const existingName = await UnitOfMeasure.findOne({
@@ -390,7 +392,9 @@ export async function createUnit(
   const existingCode = await UnitOfMeasure.findOne({
     shortCode: new RegExp(`^${escapeRegex(shortCode)}$`, 'i'),
   });
-  if (existingCode) throw new AppError('Unit short code already in use', 400);
+  if (existingCode) {
+    shortCode = `${shortCode.slice(0, 5)}_${Date.now().toString().slice(-3)}`;
+  }
   
   const doc = await UnitOfMeasure.create({
     name,
@@ -401,15 +405,286 @@ export async function createUnit(
   return doc.toObject();
 }
 
+export async function checkFieldUsage(
+  companyId: string,
+  type: 'category' | 'unit' | 'itemGroup' | 'brand',
+  identifier: string
+): Promise<{
+  inUse: boolean;
+  hasTransactions: boolean;
+  count: number;
+  products: Array<{
+    _id: string;
+    code: string;
+    name: string;
+    imei: string;
+    retailPrice: number;
+    hasTransactions: boolean;
+  }>;
+}> {
+  let filter: Record<string, unknown> = { companyId };
+  if (type === 'category') {
+    filter.categoryId = identifier;
+  } else if (type === 'unit') {
+    filter = {
+      companyId,
+      $or: [
+        { unitOfMeasureId: identifier },
+        { 'multiUnits.unitId': identifier }
+      ]
+    };
+  } else if (type === 'itemGroup') {
+    filter.itemGroup = identifier.trim();
+  } else if (type === 'brand') {
+    filter.brand = identifier.trim();
+  }
+
+  const products = await Product.find(filter)
+    .select('code name imei retailPrice sellingPrice')
+    .limit(50)
+    .lean();
+
+  const totalCount = await Product.countDocuments(filter);
+
+  const productDetails = await Promise.all(
+    products.map(async (p) => {
+      const productObjectId = new mongoose.Types.ObjectId(String(p._id));
+      const [hasSales, hasInventory] = await Promise.all([
+        SalesInvoiceItem.exists({ productId: productObjectId }),
+        InventoryTransaction.exists({ productId: productObjectId }),
+      ]);
+      return {
+        _id: String(p._id),
+        code: (p.code as string) || '',
+        name: (p.name as string) || '',
+        imei: (p.imei as string) || '',
+        retailPrice: Number(p.retailPrice ?? p.sellingPrice ?? 0),
+        hasTransactions: Boolean(hasSales || hasInventory),
+      };
+    })
+  );
+
+  return {
+    inUse: totalCount > 0,
+    hasTransactions: productDetails.some((p) => p.hasTransactions),
+    count: totalCount,
+    products: productDetails,
+  };
+}
+
+export async function updateCategory(
+  companyId: string,
+  categoryId: string,
+  input: { name?: string; code?: string },
+  updatedBy?: string
+) {
+  const category = await ProductCategory.findOne({ _id: categoryId, companyId });
+  if (!category) throw new AppError('Category not found', 404);
+
+  const productCount = await Product.countDocuments({ companyId, categoryId });
+  if (productCount > 0) {
+    throw new AppError(
+      `Cannot edit category "${category.name}" as it is currently assigned to ${productCount} registered product(s).`,
+      400
+    );
+  }
+
+  if (input.name !== undefined) {
+    const name = input.name.trim();
+    if (!name) throw new AppError('Category name is required', 400);
+    category.name = name;
+  }
+
+  if (input.code !== undefined) {
+    const code = input.code.trim().toUpperCase().replace(/\s+/g, '_');
+    if (!code) throw new AppError('Category code cannot be empty', 400);
+    const existing = await ProductCategory.findOne({
+      companyId,
+      _id: { $ne: categoryId },
+      code: new RegExp(`^${escapeRegex(code)}$`, 'i'),
+    });
+    if (existing) throw new AppError('Category code already in use', 400);
+    category.code = code;
+  }
+
+  if (updatedBy) {
+    (category as any).updatedBy = new mongoose.Types.ObjectId(updatedBy);
+  }
+
+  await category.save();
+  return category.toObject();
+}
+
+export async function deleteCategory(companyId: string, categoryId: string) {
+  const category = await ProductCategory.findOne({ _id: categoryId, companyId });
+  if (!category) throw new AppError('Category not found', 404);
+
+  const productCount = await Product.countDocuments({ companyId, categoryId });
+  if (productCount > 0) {
+    throw new AppError(
+      `Cannot delete category "${category.name}" as it is currently assigned to ${productCount} registered product(s).`,
+      400
+    );
+  }
+
+  await ProductCategory.deleteOne({ _id: categoryId, companyId });
+  return { success: true, message: 'Category deleted successfully' };
+}
+
+export async function updateUnit(
+  unitId: string,
+  input: { name?: string; shortCode?: string },
+  updatedBy?: string
+) {
+  const unit = await UnitOfMeasure.findById(unitId);
+  if (!unit) throw new AppError('Unit not found', 404);
+
+  const productCount = await Product.countDocuments({
+    $or: [{ unitOfMeasureId: unitId }, { 'multiUnits.unitId': unitId }],
+  });
+  if (productCount > 0) {
+    throw new AppError(
+      `Cannot edit unit "${unit.name || unit.shortCode}" as it is currently assigned to ${productCount} registered product(s).`,
+      400
+    );
+  }
+
+  if (input.name !== undefined) {
+    const name = input.name.trim();
+    if (!name) throw new AppError('Unit name is required', 400);
+    const existingName = await UnitOfMeasure.findOne({
+      _id: { $ne: unitId },
+      name: new RegExp(`^${escapeRegex(name)}$`, 'i'),
+    });
+    if (existingName) throw new AppError('Unit name already exists', 400);
+    unit.name = name;
+  }
+
+  if (input.shortCode !== undefined) {
+    const shortCode = input.shortCode.trim().toUpperCase().replace(/\s+/g, '');
+    if (!shortCode) throw new AppError('Unit short code cannot be empty', 400);
+    const existingCode = await UnitOfMeasure.findOne({
+      _id: { $ne: unitId },
+      shortCode: new RegExp(`^${escapeRegex(shortCode)}$`, 'i'),
+    });
+    if (existingCode) throw new AppError('Unit short code already in use', 400);
+    unit.shortCode = shortCode;
+  }
+
+  if (updatedBy) {
+    unit.updatedBy = new mongoose.Types.ObjectId(updatedBy);
+  }
+
+  await unit.save();
+  return unit.toObject();
+}
+
+export async function deleteUnit(unitId: string) {
+  const unit = await UnitOfMeasure.findById(unitId);
+  if (!unit) throw new AppError('Unit not found', 404);
+
+  const productCount = await Product.countDocuments({
+    $or: [{ unitOfMeasureId: unitId }, { 'multiUnits.unitId': unitId }],
+  });
+  if (productCount > 0) {
+    throw new AppError(
+      `Cannot delete unit "${unit.name || unit.shortCode}" as it is currently assigned to ${productCount} registered product(s).`,
+      400
+    );
+  }
+
+  await UnitOfMeasure.findByIdAndDelete(unitId);
+  return { success: true, message: 'Unit deleted successfully' };
+}
+
 export async function getItemGroups(companyId: string): Promise<string[]> {
   const list = await Product.distinct('itemGroup', { companyId, itemGroup: { $exists: true, $ne: '', $regex: /\S/ } });
   return (list as string[]).filter(Boolean).sort();
+}
+
+export async function updateItemGroup(companyId: string, oldName: string, newName: string) {
+  const trimmedOld = (oldName || '').trim();
+  const trimmedNew = (newName || '').trim();
+  if (!trimmedOld || !trimmedNew) throw new AppError('Old and new item group names are required', 400);
+
+  const productCount = await Product.countDocuments({ companyId, itemGroup: trimmedOld });
+  if (productCount > 0) {
+    throw new AppError(
+      `Cannot edit item group "${trimmedOld}" as it is currently assigned to ${productCount} registered product(s).`,
+      400
+    );
+  }
+
+  const result = await Product.updateMany(
+    { companyId, itemGroup: trimmedOld },
+    { $set: { itemGroup: trimmedNew } }
+  );
+  return { success: true, modifiedCount: result.modifiedCount };
+}
+
+export async function deleteItemGroup(companyId: string, name: string) {
+  const trimmed = (name || '').trim();
+  if (!trimmed) throw new AppError('Item group name is required', 400);
+
+  const productCount = await Product.countDocuments({ companyId, itemGroup: trimmed });
+  if (productCount > 0) {
+    throw new AppError(
+      `Cannot delete item group "${trimmed}" as it is currently assigned to ${productCount} registered product(s).`,
+      400
+    );
+  }
+
+  const result = await Product.updateMany(
+    { companyId, itemGroup: trimmed },
+    { $unset: { itemGroup: 1 } }
+  );
+  return { success: true, modifiedCount: result.modifiedCount };
 }
 
 export async function getBrands(companyId: string): Promise<string[]> {
   const list = await Product.distinct('brand', { companyId, brand: { $exists: true, $ne: '', $regex: /\S/ } });
   return (list as string[]).filter(Boolean).sort();
 }
+
+export async function updateBrand(companyId: string, oldName: string, newName: string) {
+  const trimmedOld = (oldName || '').trim();
+  const trimmedNew = (newName || '').trim();
+  if (!trimmedOld || !trimmedNew) throw new AppError('Old and new brand names are required', 400);
+
+  const productCount = await Product.countDocuments({ companyId, brand: trimmedOld });
+  if (productCount > 0) {
+    throw new AppError(
+      `Cannot edit brand "${trimmedOld}" as it is currently assigned to ${productCount} registered product(s).`,
+      400
+    );
+  }
+
+  const result = await Product.updateMany(
+    { companyId, brand: trimmedOld },
+    { $set: { brand: trimmedNew } }
+  );
+  return { success: true, modifiedCount: result.modifiedCount };
+}
+
+export async function deleteBrand(companyId: string, name: string) {
+  const trimmed = (name || '').trim();
+  if (!trimmed) throw new AppError('Brand name is required', 400);
+
+  const productCount = await Product.countDocuments({ companyId, brand: trimmed });
+  if (productCount > 0) {
+    throw new AppError(
+      `Cannot delete brand "${trimmed}" as it is currently assigned to ${productCount} registered product(s).`,
+      400
+    );
+  }
+
+  const result = await Product.updateMany(
+    { companyId, brand: trimmed },
+    { $unset: { brand: 1 } }
+  );
+  return { success: true, modifiedCount: result.modifiedCount };
+}
+
 
 export interface UpdateProductInput {
   code?: string;

@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import { Voucher, IVoucher } from '../models/Voucher';
 import { LedgerEntry } from '../models/LedgerEntry';
 import { AppError } from '../middlewares/errorHandler';
@@ -13,6 +14,12 @@ export interface CreateVoucherInput {
   chequeNumber?: string;
   chequeDate?: Date;
   bankLedgerId?: string;
+  chequeStatus?: 'PENDING' | 'CLEARED' | 'BOUNCED';
+  bankDate?: Date;
+  isReconciled?: boolean;
+  referenceType?: string;
+  referenceId?: string;
+  referenceNo?: string;
   createdBy?: string;
 }
 
@@ -21,7 +28,7 @@ export async function getNextVoucherNo(
   financialYearId: string,
   voucherType: string
 ): Promise<string> {
-  const prefix = voucherType === 'Receipt' ? 'RV' : voucherType === 'Payment' ? 'PV' : voucherType === 'Journal' ? 'JV' : voucherType === 'Opening' ? 'OP' : 'CH';
+  const prefix = voucherType === 'Receipt' ? 'RV' : voucherType === 'Payment' ? 'PV' : voucherType === 'Journal' ? 'JV' : voucherType === 'Contra' ? 'CV' : voucherType === 'Opening' ? 'OP' : voucherType === 'Sales' ? 'SV' : voucherType === 'Purchase' ? 'PURV' : 'CH';
   const last = await Voucher.findOne({ companyId, financialYearId, voucherType })
     .sort({ voucherNo: -1 })
     .lean();
@@ -60,9 +67,19 @@ export async function createAndPost(
     totalDebit,
     totalCredit,
     status: 'Posted',
+    referenceType: input.referenceType,
+    referenceId: input.referenceId ? new mongoose.Types.ObjectId(input.referenceId) : undefined,
+    referenceNo: input.referenceNo,
     chequeNumber: input.chequeNumber,
     chequeDate: input.chequeDate,
     bankLedgerId: input.bankLedgerId,
+    chequeStatus:
+      input.chequeStatus ||
+      (input.voucherType === 'ChequePayment' || input.voucherType === 'ChequeReceipt' || input.chequeNumber
+        ? 'PENDING'
+        : undefined),
+    bankDate: input.bankDate,
+    isReconciled: input.isReconciled ?? false,
     createdBy: input.createdBy,
   });
 
@@ -77,9 +94,10 @@ export async function createAndPost(
       narration: l.narration,
     })),
     voucher._id.toString(),
-    undefined,
-    undefined,
-    input.createdBy
+    input.referenceType,
+    input.referenceId,
+    input.createdBy,
+    input.referenceNo
   );
 
   return voucher.toObject();
@@ -88,8 +106,21 @@ export async function createAndPost(
 export async function deleteVoucher(voucherId: string): Promise<void> {
   // Delete associated ledger entries
   await LedgerEntry.deleteMany({ voucherId });
+  // Delete associated bill references if any
+  try {
+    const { deleteRefsBySource } = await import('./billReferenceService');
+    await deleteRefsBySource('Voucher', voucherId);
+  } catch (e) {
+    // ignore if billReference module not available
+  }
   // Delete the voucher itself
   await Voucher.deleteOne({ _id: voucherId });
+}
+
+export async function getById(voucherId: string): Promise<IVoucher | null> {
+  return Voucher.findById(voucherId)
+    .populate('lines.ledgerAccountId', 'name code type')
+    .lean() as unknown as IVoucher | null;
 }
 
 export async function list(
@@ -98,7 +129,13 @@ export async function list(
   opts: { voucherType?: string; fromDate?: Date; toDate?: Date; page?: number; limit?: number } = {}
 ): Promise<{ vouchers: IVoucher[]; total: number }> {
   const filter: Record<string, unknown> = { companyId, financialYearId };
-  if (opts.voucherType) filter.voucherType = opts.voucherType;
+  if (opts.voucherType) {
+    filter.voucherType = opts.voucherType;
+    if (opts.voucherType === 'Receipt' || opts.voucherType === 'Payment' || opts.voucherType === 'Contra') {
+      filter.referenceType = { $nin: ['SalesInvoice', 'PurchaseInvoice'] };
+      filter.narration = { $not: /^(POS Sale|B2C Sale|Purchase )/i };
+    }
+  }
   if (opts.fromDate || opts.toDate) {
     filter.date = {};
     if (opts.fromDate) (filter.date as Record<string, Date>).$gte = opts.fromDate;

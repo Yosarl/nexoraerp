@@ -7,7 +7,14 @@ export type LedgerAccountType =
   | 'Cash'
   | 'Expense'
   | 'Revenue'
-  | 'Other';
+  | 'Other'
+  | 'CUSTOMER'
+  | 'SUPPLIER'
+  | 'BANK'
+  | 'CASH'
+  | 'EXPENSE'
+  | 'REVENUE'
+  | 'OTHER';
 
 export interface IOpeningBalance {
   financialYearId: mongoose.Types.ObjectId;
@@ -57,6 +64,23 @@ export interface ILedgerAccount extends Document {
   person?: string;
   agent2?: string;
   branchId?: mongoose.Types.ObjectId;
+  // Bank Details
+  accountHolderName?: string;
+  accountNumber?: string;
+  iban?: string;
+  swiftCode?: string;
+  bankName?: string;
+  branch?: string;
+  // VAT Details
+  vatRegistrationType?: string;
+  vatRegistrationDate?: Date;
+  // Mailing Details
+  country?: string;
+  poBox?: string;
+  localLanguageDetails?: string;
+  mailingName?: string;
+  mailingBank?: string;
+  againstRef?: boolean;
   createdBy?: mongoose.Types.ObjectId;
   createdAt: Date;
   updatedBy?: mongoose.Types.ObjectId;
@@ -79,7 +103,14 @@ const LedgerAccountSchema = new Schema<ILedgerAccount>(
     aliasName: { type: String },
     code: { type: String, required: true },
     groupId: { type: Schema.Types.ObjectId, ref: 'LedgerGroup', required: true },
-    type: { type: String, enum: ['Customer', 'Supplier', 'Bank', 'Cash', 'Expense', 'Revenue', 'Other'], required: true },
+    type: {
+      type: String,
+      enum: [
+        'Customer', 'Supplier', 'Bank', 'Cash', 'Expense', 'Revenue', 'Other',
+        'CUSTOMER', 'SUPPLIER', 'BANK', 'CASH', 'EXPENSE', 'REVENUE', 'OTHER',
+      ],
+      required: true,
+    },
     phone: { type: String },
     mobile: { type: String },
     email: { type: String },
@@ -115,6 +146,23 @@ const LedgerAccountSchema = new Schema<ILedgerAccount>(
     person: { type: String },
     agent2: { type: String },
     branchId: { type: Schema.Types.ObjectId, ref: 'Company' },
+    // Bank Details
+    accountHolderName: { type: String },
+    accountNumber: { type: String },
+    iban: { type: String },
+    swiftCode: { type: String },
+    bankName: { type: String },
+    branch: { type: String },
+    // VAT Details
+    vatRegistrationType: { type: String },
+    vatRegistrationDate: { type: Date },
+    // Mailing Details
+    country: { type: String },
+    poBox: { type: String },
+    localLanguageDetails: { type: String },
+    mailingName: { type: String },
+    mailingBank: { type: String },
+    againstRef: { type: Boolean, default: true },
     createdBy: { type: Schema.Types.ObjectId, ref: 'User' },
     updatedBy: { type: Schema.Types.ObjectId, ref: 'User' },
   },

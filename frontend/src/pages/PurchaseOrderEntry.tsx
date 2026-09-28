@@ -8,7 +8,6 @@ import {
   Grid,
   IconButton,
   Autocomplete,
-  createFilterOptions,
   FormControlLabel,
   Radio,
   RadioGroup,
