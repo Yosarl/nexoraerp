@@ -28,12 +28,53 @@ export async function getNextVoucherNo(
   financialYearId: string,
   voucherType: string
 ): Promise<string> {
-  const prefix = voucherType === 'Receipt' ? 'RV' : voucherType === 'Payment' ? 'PV' : voucherType === 'Journal' ? 'JV' : voucherType === 'Contra' ? 'CV' : voucherType === 'Opening' ? 'OP' : voucherType === 'Sales' ? 'SV' : voucherType === 'Purchase' ? 'PURV' : 'CH';
-  const last = await Voucher.findOne({ companyId, financialYearId, voucherType })
-    .sort({ voucherNo: -1 })
-    .lean();
-  const num = last?.voucherNo ? parseInt(last.voucherNo.replace(/\D/g, ''), 10) + 1 : 1;
-  return `${prefix}-${num.toString().padStart(5, '0')}`;
+  const prefix =
+    voucherType === 'Receipt' ? 'RV' :
+    voucherType === 'Payment' ? 'PV' :
+    voucherType === 'Journal' ? 'JV' :
+    voucherType === 'Contra' ? 'CV' :
+    voucherType === 'Opening' ? 'OP' :
+    voucherType === 'Sales' ? 'SV' :
+    voucherType === 'Purchase' ? 'PURV' : 'CH';
+
+  const regex = new RegExp(`^${prefix}-(\\d+)$`);
+  const docs = await Voucher.find({
+    companyId,
+    financialYearId,
+    voucherNo: regex,
+  }).select('voucherNo').lean();
+
+  let maxNum = 0;
+  for (const doc of docs) {
+    const m = doc.voucherNo.match(regex);
+    if (m && m[1]) {
+      const val = parseInt(m[1], 10);
+      if (val > maxNum) maxNum = val;
+    }
+  }
+
+  // If no prefix match, also check if legacy vouchers exist for this voucherType
+  if (maxNum === 0) {
+    const legacy = await Voucher.find({
+      companyId,
+      financialYearId,
+      voucherType,
+    }).select('voucherNo').lean();
+    for (const doc of legacy) {
+      const digits = doc.voucherNo.replace(/\D/g, '');
+      const val = parseInt(digits, 10);
+      if (!isNaN(val) && val > maxNum) maxNum = val;
+    }
+  }
+
+  let nextNum = maxNum + 1;
+  let candidate = `${prefix}-${nextNum.toString().padStart(5, '0')}`;
+  while (await Voucher.exists({ companyId, financialYearId, voucherNo: candidate })) {
+    nextNum++;
+    candidate = `${prefix}-${nextNum.toString().padStart(5, '0')}`;
+  }
+
+  return candidate;
 }
 
 export async function createAndPost(

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import {
   Box,
   Button,
@@ -194,6 +195,8 @@ export default function VoucherEntry({
 }: {
   defaultVoucherType?: string;
 }) {
+  const navigate = useNavigate();
+  const routeLocation = useLocation();
   const companyId = useAppSelector((s) => s.app.selectedCompanyId);
   const financialYearId = useAppSelector((s) => s.app.selectedFinancialYearId);
 
@@ -1255,14 +1258,10 @@ export default function VoucherEntry({
         const bankAcctIds = new Set(bankAccounts.map((a) => a._id));
         let partyId = '';
         const loadedChequeRows: ChequeDetailLine[] = [];
-        let loadedRemarks = '';
 
         v.lines.forEach((l) => {
           const acctId = typeof l.ledgerAccountId === 'object' ? l.ledgerAccountId._id : l.ledgerAccountId;
           const isBankLine = bankAcctIds.has(acctId);
-          if (l.narration && !loadedRemarks) {
-            loadedRemarks = l.narration;
-          }
           if (isChequePayment) {
             if (isBankLine || (l.creditAmount || 0) > 0) {
               if (partyId !== acctId) {
@@ -1308,10 +1307,23 @@ export default function VoucherEntry({
         }
         setChequeRefType('On Account');
         setChequeSettlements([]);
-        while (loadedChequeRows.length < 5) {
-          loadedChequeRows.push(createEmptyChequeRow(v.date ? v.date.slice(0, 10) : undefined));
+        setChequeRows(
+          loadedChequeRows.length > 0
+            ? loadedChequeRows
+            : [createEmptyChequeRow(v.date ? v.date.slice(0, 10) : undefined)]
+        );
+        let loadedRemarks = (v as any).narration || '';
+        if (loadedRemarks.startsWith('Payment to ') || loadedRemarks.startsWith('Receipt from ')) {
+          loadedRemarks = '';
         }
-        setChequeRows(loadedChequeRows);
+        if (!loadedRemarks) {
+          const customLine = v.lines.find(
+            (l) => l.narration && !l.narration.startsWith('Payment to ') && !l.narration.startsWith('Receipt from ')
+          );
+          if (customLine?.narration) {
+            loadedRemarks = customLine.narration;
+          }
+        }
         setChequeRemarks(loadedRemarks);
       } else {
         // Separate cash line from party lines
@@ -1354,6 +1366,19 @@ export default function VoucherEntry({
       console.error('Failed to load voucher', e);
     }
   };
+
+  // Auto-load voucher if navigated with voucherId in location state
+  useEffect(() => {
+    const routeState = (routeLocation?.state as { voucherId?: string; id?: string }) || null;
+    const urlParams = new URLSearchParams(window.location.search);
+    const targetId = routeState?.voucherId || routeState?.id || urlParams.get('id');
+    if (targetId && companyId) {
+      loadVoucherData(targetId);
+      if (routeLocation?.pathname) {
+        navigate(routeLocation.pathname, { replace: true, state: {} });
+      }
+    }
+  }, [companyId, financialYearId, voucherType, routeLocation?.pathname, routeLocation?.state, navigate]);
 
   // Voucher Navigation
   const handleNav = (direction: 'first' | 'prev' | 'next' | 'last') => {
@@ -1431,6 +1456,7 @@ export default function VoucherEntry({
           lines: voucherLines,
         });
 
+        setJournalRows(validJournalRows);
         setStatus('Posted');
         setSuccessMessage('Journal Voucher saved successfully!');
         setSuccessDialogOpen(true);
@@ -1477,18 +1503,17 @@ export default function VoucherEntry({
             ledgerAccountId: chequePartyAccountId,
             debitAmount: parseFloat(chequeTotalAmount.toFixed(2)),
             creditAmount: 0,
-            narration: chequeRemarks || `Payment to ${accounts.find((a) => a._id === chequePartyAccountId)?.name || 'Party'}`,
+            narration: chequeRemarks ? chequeRemarks.trim() : '',
           });
 
           // Credit each Bank
           validChequeRows.forEach((r) => {
             const amt = parseFloat((Number(r.amount) || 0).toFixed(2));
-            const chqInfo = r.chequeNo ? ` Chq# ${r.chequeNo}` : '';
             voucherLines.push({
               ledgerAccountId: r.bankAccountId,
               debitAmount: 0,
               creditAmount: amt,
-              narration: `${chequeRemarks ? chequeRemarks + ' - ' : ''}${r.type}${chqInfo}`.trim(),
+              narration: chequeRemarks ? chequeRemarks.trim() : '',
             });
           });
         } else {
@@ -1496,12 +1521,11 @@ export default function VoucherEntry({
           // Debit each Bank
           validChequeRows.forEach((r) => {
             const amt = parseFloat((Number(r.amount) || 0).toFixed(2));
-            const chqInfo = r.chequeNo ? ` Chq# ${r.chequeNo}` : '';
             voucherLines.push({
               ledgerAccountId: r.bankAccountId,
               debitAmount: amt,
               creditAmount: 0,
-              narration: `${chequeRemarks ? chequeRemarks + ' - ' : ''}${r.type}${chqInfo}`.trim(),
+              narration: chequeRemarks ? chequeRemarks.trim() : '',
             });
           });
 
@@ -1510,7 +1534,7 @@ export default function VoucherEntry({
             ledgerAccountId: chequePartyAccountId,
             debitAmount: 0,
             creditAmount: parseFloat(chequeTotalAmount.toFixed(2)),
-            narration: chequeRemarks || `Receipt from ${accounts.find((a) => a._id === chequePartyAccountId)?.name || 'Party'}`,
+            narration: chequeRemarks ? chequeRemarks.trim() : '',
           });
         }
 
@@ -1520,7 +1544,7 @@ export default function VoucherEntry({
           financialYearId,
           voucherType,
           date,
-          narration: chequeRemarks || '',
+          narration: chequeRemarks ? chequeRemarks.trim() : '',
           lines: voucherLines,
           chequeNumber: firstCheque?.chequeNo || undefined,
           chequeDate: firstCheque?.date || undefined,
@@ -1567,6 +1591,10 @@ export default function VoucherEntry({
           }
         }
 
+        setChequeRows(validChequeRows);
+        if (newVoucherId) {
+          setCurrentVoucherId(newVoucherId);
+        }
         setStatus('Posted');
         setSuccessMessage(`${isChequePayment ? 'Bank Payment' : 'Bank Receipt'} Voucher saved successfully!`);
         setSuccessDialogOpen(true);
@@ -1705,6 +1733,10 @@ export default function VoucherEntry({
         }
       }
 
+      setRows(validRows);
+      if (newVoucherId) {
+        setCurrentVoucherId(newVoucherId);
+      }
       setStatus('Posted');
       setSuccessMessage(`${voucherType} Voucher saved successfully!`);
       setSuccessDialogOpen(true);
@@ -2143,7 +2175,7 @@ export default function VoucherEntry({
                   <TextField
                     size="small"
                     fullWidth
-                    value={date ? dayjs(date).format('DD MMM YYYY') : ''}
+                    value={date ? dayjs(date).format('DD-MM-YYYY') : ''}
                     InputProps={{
                       readOnly: true,
                       endAdornment: (
@@ -2778,7 +2810,7 @@ export default function VoucherEntry({
                             <TextField
                               size="small"
                               fullWidth
-                              value={row.date ? dayjs(row.date).format('DD MMM YYYY') : ''}
+                              value={row.date ? dayjs(row.date).format('DD-MM-YYYY') : ''}
                               InputProps={{
                                 readOnly: true,
                                 endAdornment: (
@@ -3461,7 +3493,7 @@ export default function VoucherEntry({
                 <TextField
                   size="small"
                   fullWidth
-                  value={date ? dayjs(date).format('DD MMM YYYY') : ''}
+                  value={date ? dayjs(date).format('DD-MM-YYYY') : ''}
                   InputProps={{
                     readOnly: true,
                     startAdornment: (
@@ -3566,32 +3598,52 @@ export default function VoucherEntry({
               >
                 Date:
               </Typography>
-              <TextField
-                size="small"
-                type="date"
-                fullWidth
-                value={date}
-                onChange={(e) => setDate(e.target.value)}
-                InputProps={{
-                  startAdornment: (
-                    <InputAdornment position="start" sx={{ mr: 0.4 }}>
-                      <CalendarMonthIcon sx={{ fontSize: 16, color: '#64748b' }} />
-                    </InputAdornment>
-                  ),
-                }}
-                sx={{
-                  '& .MuiOutlinedInput-root': {
-                    bgcolor: '#ffffff',
-                    borderRadius: '6px',
-                    height: 28,
-                    fontWeight: 500,
-                    fontSize: '0.80rem',
-                    '& input': { py: '2px !important', px: '6px !important' },
-                    '& fieldset': { borderColor: '#e2e8f0' },
-                    '&.Mui-focused fieldset': { borderColor: themeColors.primary },
-                  },
-                }}
-              />
+              <Box
+                onClick={() => dateInputRef.current?.showPicker?.()}
+                sx={{ position: 'relative', cursor: 'pointer', flex: 1 }}
+              >
+                <TextField
+                  size="small"
+                  fullWidth
+                  value={date ? dayjs(date).format('DD-MM-YYYY') : ''}
+                  InputProps={{
+                    readOnly: true,
+                    startAdornment: (
+                      <InputAdornment position="start" sx={{ mr: 0.4 }}>
+                        <CalendarMonthIcon sx={{ fontSize: 16, color: '#64748b' }} />
+                      </InputAdornment>
+                    ),
+                  }}
+                  sx={{
+                    cursor: 'pointer',
+                    '& .MuiOutlinedInput-root': {
+                      bgcolor: '#ffffff',
+                      borderRadius: '6px',
+                      height: 28,
+                      fontWeight: 500,
+                      fontSize: '0.80rem',
+                      '& input': { py: '2px !important', px: '6px !important', cursor: 'pointer' },
+                      '& fieldset': { borderColor: '#e2e8f0' },
+                      '&.Mui-focused fieldset': { borderColor: themeColors.primary },
+                    },
+                  }}
+                />
+                <input
+                  ref={dateInputRef}
+                  type="date"
+                  value={date}
+                  onChange={(e) => setDate(e.target.value)}
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    height: '100%',
+                    opacity: 0,
+                    pointerEvents: 'none',
+                  }}
+                />
+              </Box>
             </Box>
 
             {/* Cash Account */}
@@ -5560,7 +5612,7 @@ export default function VoucherEntry({
             {/* Date Box */}
             <Box sx={{ display: 'flex', justifyContent: 'flex-end', mb: 2 }}>
               <Typography sx={{ fontWeight: 700, fontSize: '0.9rem', color: '#0f172a' }}>
-                Date: {date ? dayjs(date).format('DD / MM / YYYY') : '__ / __ / ____'}
+                Date: {date ? dayjs(date).format('DD-MM-YYYY') : '__-__-____'}
               </Typography>
             </Box>
 

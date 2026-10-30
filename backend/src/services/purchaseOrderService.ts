@@ -1,6 +1,6 @@
 import mongoose from 'mongoose';
 import { PurchaseOrder } from '../models/PurchaseOrder';
-import { AppError } from '../middlewares/errorHandler';
+import { AppError, isDuplicateKeyError } from '../middlewares/errorHandler';
 
 // ─── Interfaces ────────────────────────────────────────────
 
@@ -81,11 +81,16 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput): Prom
         };
     });
 
-    await PurchaseOrder.create({
+    // Ensure unique invoiceNo to avoid duplicate key conflicts
+    let invoiceNo = input.invoiceNo?.trim();
+    if (!invoiceNo || await PurchaseOrder.exists({ companyId: input.companyId, invoiceNo })) {
+        invoiceNo = await getNextInvoiceNo(input.companyId);
+    }
+
+    const orderPayload = {
         _id: orderId,
         companyId: input.companyId,
         financialYearId: input.financialYearId,
-        invoiceNo: input.invoiceNo,
         supplierInvoiceNo: input.supplierInvoiceNo,
         date: orderDate,
         supplierId: input.supplierId ? new mongoose.Types.ObjectId(input.supplierId) : undefined,
@@ -101,13 +106,23 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput): Prom
         freightCharge,
         roundOff,
         createdBy: input.createdBy ? new mongoose.Types.ObjectId(input.createdBy) : undefined,
-    });
+    };
+
+    for (let attempt = 0; attempt < 8; attempt++) {
+        try {
+            await PurchaseOrder.create({ ...orderPayload, invoiceNo });
+            break;
+        } catch (err) {
+            if (!isDuplicateKeyError(err) || attempt === 7) throw err;
+            invoiceNo = await getNextInvoiceNo(input.companyId);
+        }
+    }
 
     // No stock updates, no ledger/voucher entries — this is just an order
 
     return {
         purchaseOrderId: orderId.toString(),
-        invoiceNo: input.invoiceNo,
+        invoiceNo,
         batchCount: input.batches.length,
     };
 }
@@ -232,19 +247,25 @@ export async function getPurchaseOrderByInvoiceNo(companyId: string, invoiceNo: 
 
 // ─── Next Invoice No ──────────────────────────────────────
 export async function getNextInvoiceNo(companyId: string): Promise<string> {
-    const last = await PurchaseOrder.findOne({ companyId })
-        .sort({ createdAt: -1 })
+    const docs = await PurchaseOrder.find({ companyId })
         .select('invoiceNo')
         .lean();
 
-    if (!last) return 'PO-0001';
-
-    const match = last.invoiceNo.match(/PO-(\d+)/);
-    if (match) {
-        const next = parseInt(match[1], 10) + 1;
-        return `PO-${String(next).padStart(4, '0')}`;
+    let maxNum = 0;
+    for (const doc of docs) {
+        if (doc.invoiceNo) {
+            const match = doc.invoiceNo.match(/PO-(\d+)/i);
+            if (match) {
+                const num = parseInt(match[1], 10);
+                if (num > maxNum) {
+                    maxNum = num;
+                }
+            }
+        }
     }
-    return `PO-${Date.now().toString(36).toUpperCase()}`;
+
+    const nextNum = maxNum + 1;
+    return `PO-${String(nextNum).padStart(4, '0')}`;
 }
 
 // ─── Format doc for API response ──────────────────────────

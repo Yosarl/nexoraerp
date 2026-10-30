@@ -3,6 +3,7 @@ import { Box, Typography, List, ListItem, ListItemButton, ListItemText, Paper, A
 import { useAppSelector, useAppDispatch } from '../store/hooks';
 import { setFinancialYear } from '../store/slices/appSlice';
 import { financialYearApi } from '../services/api';
+import { formatDateDisplay } from '../components/DateInput';
 
 interface FY {
   _id: string;
@@ -50,7 +51,7 @@ export default function ChangeFinancialYear() {
               <ListItemButton selected={selectedFYId === fy._id} onClick={() => selectFY(fy._id)}>
                 <ListItemText
                   primary={fy.name}
-                  secondary={`${new Date(fy.startDate).toLocaleDateString()} - ${new Date(fy.endDate).toLocaleDateString()} ${fy.isCurrent ? '(Current)' : ''}`}
+                  secondary={`${formatDateDisplay(fy.startDate)} - ${formatDateDisplay(fy.endDate)} ${fy.isCurrent ? '(Current)' : ''}`}
                 />
                 {selectedFYId === fy._id && <Typography variant="caption" color="primary">Selected</Typography>}
               </ListItemButton>

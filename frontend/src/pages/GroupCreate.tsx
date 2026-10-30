@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   Box,
   Button,
@@ -94,11 +94,22 @@ export default function GroupCreate() {
   const companyId = useAppSelector((s) => s.app.selectedCompanyId);
   const navigate = useNavigate();
 
+  // Field element refs for keyboard focus and Enter flow
+  const groupNameInputRef = useRef<HTMLInputElement>(null);
+  const parentSelectInputRef = useRef<HTMLInputElement>(null);
+  const saveBtnRef = useRef<HTMLButtonElement>(null);
+  const editBtnRef = useRef<HTMLButtonElement>(null);
+  const clearBtnRef = useRef<HTMLButtonElement>(null);
+
   // Form state
   const [code, setCode] = useState('');
   const [name, setName] = useState('');
   const [type, setType] = useState<string>('Asset');
   const [parentGroupId, setParentGroupId] = useState<string>('');
+
+  // Dropdown open states for coordinating Enter key behavior
+  const [groupNameOpen, setGroupNameOpen] = useState(false);
+  const [parentSelectOpen, setParentSelectOpen] = useState(false);
 
   // Selection state
   const [groupSearch, setGroupSearch] = useState('');
@@ -123,6 +134,16 @@ export default function GroupCreate() {
 
   // Groups state
   const [allGroups, setAllGroups] = useState<GroupOption[]>([]);
+
+  // Focus group name field helper
+  const focusGroupName = useCallback(() => {
+    setTimeout(() => {
+      if (groupNameInputRef.current) {
+        groupNameInputRef.current.focus();
+        groupNameInputRef.current.select?.();
+      }
+    }, 60);
+  }, []);
 
   // Filter operational groups vs parent heads
   const operationalGroupOptions = useMemo(
@@ -166,6 +187,13 @@ export default function GroupCreate() {
     loadNextCode();
   }, [loadNextCode]);
 
+  // Focus group name when window opens or company changes
+  useEffect(() => {
+    if (companyId) {
+      focusGroupName();
+    }
+  }, [companyId, focusGroupName]);
+
   // Load group into form
   const loadGroupIntoForm = useCallback((group: GroupOption) => {
     setEditingId(group._id);
@@ -189,6 +217,7 @@ export default function GroupCreate() {
       setName('');
       setGroupSearch('');
       loadNextCode();
+      focusGroupName();
       return;
     }
     if (typeof value === 'string') {
@@ -196,10 +225,14 @@ export default function GroupCreate() {
       setEditingId(null);
       setName(value);
       setGroupSearch(value);
-      return;
+    } else {
+      // Load selected group
+      loadGroupIntoForm(value);
     }
-    // Load selected group
-    loadGroupIntoForm(value);
+    // Continue enter flow into Parent field
+    setTimeout(() => {
+      parentSelectInputRef.current?.focus();
+    }, 100);
   };
 
   // Handle parent selection (changes both parentGroupId and type automatically)
@@ -209,10 +242,20 @@ export default function GroupCreate() {
     if (val?.type) {
       setType(val.type);
     }
+    // Continue enter flow: focus Save or Edit button
+    if (pId) {
+      setTimeout(() => {
+        if (editingId) {
+          editBtnRef.current?.focus();
+        } else {
+          saveBtnRef.current?.focus();
+        }
+      }, 100);
+    }
   };
 
-  // Clear form
-  const handleClear = async () => {
+  // Clear form & refocus group name field
+  const handleClear = useCallback(async () => {
     setEditingId(null);
     setSelectedGroup(null);
     setGroupSearch('');
@@ -221,16 +264,19 @@ export default function GroupCreate() {
     setParentGroupId('');
     setError(null);
     await loadNextCode();
-  };
+    focusGroupName();
+  }, [loadNextCode, focusGroupName]);
 
   // Save new group
   const handleSaveClick = () => {
     if (!name.trim()) {
       setError('Group name is required');
+      focusGroupName();
       return;
     }
     if (!parentGroupId) {
       setError('Please select a parent head');
+      setTimeout(() => parentSelectInputRef.current?.focus(), 60);
       return;
     }
     setSaveConfirmOpen(true);
@@ -253,6 +299,7 @@ export default function GroupCreate() {
     } catch (e: unknown) {
       const err = e as { response?: { data?: { message?: string } } };
       setError(err?.response?.data?.message ?? 'Save failed');
+      focusGroupName();
     } finally {
       setSaving(false);
     }
@@ -263,10 +310,12 @@ export default function GroupCreate() {
     if (!editingId) return;
     if (!name.trim()) {
       setError('Group name is required');
+      focusGroupName();
       return;
     }
     if (!parentGroupId) {
       setError('Please select a parent head');
+      setTimeout(() => parentSelectInputRef.current?.focus(), 60);
       return;
     }
     setEditConfirmOpen(true);
@@ -288,6 +337,7 @@ export default function GroupCreate() {
     } catch (e: unknown) {
       const err = e as { response?: { data?: { message?: string } } };
       setError(err?.response?.data?.message ?? 'Update failed');
+      focusGroupName();
     } finally {
       setSaving(false);
     }
@@ -314,6 +364,7 @@ export default function GroupCreate() {
       setSelectedGroup({ ...selectedGroup, name: changeNameValue.trim() });
       setChangeNameDialogOpen(false);
       await loadAllGroups();
+      focusGroupName();
     } catch (e: unknown) {
       const err = e as { response?: { data?: { message?: string } } };
       setError(err?.response?.data?.message ?? 'Failed to update name');
@@ -324,22 +375,22 @@ export default function GroupCreate() {
 
   if (!companyId) {
     return (
-      <Box sx={{ p: 4, display: 'flex', justifyContent: 'center' }}>
+      <Box sx={{ p: 3, display: 'flex', justifyContent: 'center' }}>
         <Box
           sx={{
-            p: 4,
-            maxWidth: 500,
+            p: 3,
+            maxWidth: 400,
             width: '100%',
             bgcolor: '#ffffff',
-            borderRadius: 2,
+            borderRadius: 1.5,
             border: '1px solid #e2e8f0',
             textAlign: 'center',
           }}
         >
-          <Typography color="error" variant="h6" fontWeight={600} gutterBottom>
+          <Typography color="error" variant="subtitle1" fontWeight={600} gutterBottom>
             Select a company first
           </Typography>
-          <Typography variant="body2" color="text.secondary">
+          <Typography variant="body2" sx={{ fontSize: '11.5px' }} color="text.secondary">
             Please choose an active company from the top navigation to view and register groups.
           </Typography>
         </Box>
@@ -353,51 +404,53 @@ export default function GroupCreate() {
   return (
     <Box
       sx={{
-        py: { xs: 2, sm: 3 },
-        px: { xs: 1.5, sm: 2 },
+        py: { xs: 1.5, sm: 2 },
+        px: { xs: 1, sm: 1.5 },
         bgcolor: '#f8f9fb',
         minHeight: '100%',
       }}
     >
       <style>{`
+        /* Container reduced by 20% from 700px to 560px */
         .group-reg-container {
-          max-width: 700px;
+          max-width: 560px;
           margin: 0 auto;
           background: #ffffff;
-          border-radius: 8px;
-          box-shadow: 0 4px 6px rgba(0, 0, 0, 0.07);
+          border-radius: 7px;
+          box-shadow: 0 3px 5px rgba(0, 0, 0, 0.06);
           border: 1px solid #e2e8f0;
           overflow: hidden;
           font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
         }
 
+        /* Header reduced 20% in padding & typography */
         .group-reg-header {
           background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
-          padding: 24px 32px;
+          padding: 16px 24px;
           color: white;
           display: flex;
           align-items: center;
           justify-content: space-between;
-          gap: 16px;
+          gap: 12px;
         }
 
         .group-reg-header-left {
           display: flex;
           flex-direction: column;
-          gap: 4px;
+          gap: 3px;
         }
 
         .group-reg-header h1 {
-          font-size: 26px;
+          font-size: 20px;
           font-weight: 600;
-          letter-spacing: -0.5px;
+          letter-spacing: -0.4px;
           margin: 0;
           color: #ffffff;
           line-height: 1.2;
         }
 
         .group-reg-header-subtitle {
-          font-size: 13px;
+          font-size: 11px;
           color: #94a3b8;
           font-weight: 400;
         }
@@ -405,13 +458,13 @@ export default function GroupCreate() {
         .group-reg-header-btn {
           display: inline-flex;
           align-items: center;
-          gap: 6px;
-          padding: 8px 14px;
-          border-radius: 6px;
+          gap: 5px;
+          padding: 6px 11px;
+          border-radius: 5px;
           background: rgba(255, 255, 255, 0.12);
           color: #ffffff;
           border: 1px solid rgba(255, 255, 255, 0.2);
-          font-size: 13px;
+          font-size: 11px;
           font-weight: 500;
           cursor: pointer;
           transition: all 0.2s ease;
@@ -423,26 +476,27 @@ export default function GroupCreate() {
           color: #ffffff;
         }
 
+        /* Main content reduced 20% in padding */
         .group-reg-content {
-          padding: 32px;
+          padding: 22px 24px;
         }
 
         .group-reg-section {
-          margin-bottom: 28px;
-        }
-
-        .group-reg-section:last-of-type {
           margin-bottom: 20px;
         }
 
+        .group-reg-section:last-of-type {
+          margin-bottom: 14px;
+        }
+
         .group-reg-section-title {
-          font-size: 12px;
+          font-size: 10px;
           font-weight: 700;
           text-transform: uppercase;
           letter-spacing: 0.5px;
           color: #64748b;
-          margin-bottom: 20px;
-          padding-bottom: 10px;
+          margin-bottom: 14px;
+          padding-bottom: 7px;
           border-bottom: 2px solid #3b82f6;
           display: flex;
           align-items: center;
@@ -452,7 +506,7 @@ export default function GroupCreate() {
         .group-form-group {
           display: flex;
           flex-direction: column;
-          margin-bottom: 20px;
+          margin-bottom: 15px;
         }
 
         .group-form-group:last-child {
@@ -460,13 +514,13 @@ export default function GroupCreate() {
         }
 
         .group-form-label {
-          font-size: 13px;
+          font-size: 11px;
           font-weight: 600;
           color: #1a2332;
-          margin-bottom: 8px;
+          margin-bottom: 6px;
           display: flex;
           align-items: center;
-          gap: 4px;
+          gap: 3px;
         }
 
         .group-required {
@@ -475,23 +529,23 @@ export default function GroupCreate() {
         }
 
         .group-hint {
-          font-size: 12px;
+          font-size: 10px;
           color: #94a3b8;
-          margin-top: 6px;
-          line-height: 1.4;
+          margin-top: 4px;
+          line-height: 1.35;
         }
 
         .group-hint.locked {
           color: #d97706;
           display: flex;
           align-items: center;
-          gap: 6px;
+          gap: 5px;
           font-weight: 500;
         }
 
         .group-input-with-button {
           display: flex;
-          gap: 12px;
+          gap: 8px;
           align-items: flex-start;
         }
 
@@ -500,13 +554,13 @@ export default function GroupCreate() {
         }
 
         .group-btn-change {
-          padding: 10px 18px;
-          height: 42px;
+          padding: 6px 14px;
+          height: 33px;
           background: #f1f5f9;
           border: 1px solid #e2e8f0;
           color: #64748b;
-          border-radius: 8px;
-          font-size: 13px;
+          border-radius: 6px;
+          font-size: 11px;
           font-weight: 600;
           cursor: pointer;
           transition: all 0.2s ease;
@@ -533,21 +587,21 @@ export default function GroupCreate() {
         .group-code-field {
           display: flex;
           align-items: center;
-          gap: 12px;
-          padding: 10px 14px;
+          gap: 10px;
+          padding: 6px 11px;
           background: #f1f5f9;
           border: 1px solid #e2e8f0;
-          border-radius: 8px;
+          border-radius: 6px;
           font-weight: 600;
           color: #1a2332;
           font-family: 'Courier New', Courier, monospace;
-          font-size: 14px;
+          font-size: 11.5px;
           letter-spacing: 0.5px;
-          min-height: 42px;
+          min-height: 33px;
         }
 
         .group-code-label {
-          font-size: 12px;
+          font-size: 10px;
           color: #94a3b8;
           font-weight: 500;
           font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -557,22 +611,22 @@ export default function GroupCreate() {
         .group-divider {
           height: 1px;
           background: #e2e8f0;
-          margin: 28px 0;
+          margin: 20px 0;
         }
 
         .group-type-display {
           display: flex;
           align-items: center;
           justify-content: space-between;
-          padding: 10px 14px;
+          padding: 6px 11px;
           background: #f1f5f9;
           border: 1px solid #e2e8f0;
-          border-radius: 8px;
-          min-height: 42px;
+          border-radius: 6px;
+          min-height: 33px;
         }
 
         .group-type-text {
-          font-size: 14px;
+          font-size: 11.5px;
           font-weight: 600;
           color: #1a2332;
           letter-spacing: 0.5px;
@@ -580,24 +634,25 @@ export default function GroupCreate() {
 
         .group-actions {
           display: flex;
-          gap: 14px;
-          padding-top: 24px;
+          gap: 10px;
+          padding-top: 18px;
           border-top: 1px solid #e2e8f0;
-          margin-top: 28px;
+          margin-top: 20px;
         }
 
         .group-btn {
-          padding: 11px 22px;
+          padding: 7px 16px;
+          min-height: 33px;
           border: none;
-          border-radius: 8px;
-          font-size: 14px;
+          border-radius: 6px;
+          font-size: 11.5px;
           font-weight: 600;
           cursor: pointer;
           transition: all 0.2s ease;
           display: inline-flex;
           align-items: center;
           justify-content: center;
-          gap: 8px;
+          gap: 6px;
           white-space: nowrap;
           flex: 1;
         }
@@ -610,7 +665,7 @@ export default function GroupCreate() {
 
         .group-btn-primary:hover:not(:disabled) {
           transform: translateY(-1px);
-          box-shadow: 0 6px 12px rgba(59, 130, 246, 0.3);
+          box-shadow: 0 4px 10px rgba(59, 130, 246, 0.3);
         }
 
         .group-btn-primary:active:not(:disabled) {
@@ -658,17 +713,17 @@ export default function GroupCreate() {
 
         @media (max-width: 640px) {
           .group-reg-header {
-            padding: 20px;
+            padding: 14px 16px;
             flex-direction: column;
             align-items: flex-start;
           }
 
           .group-reg-header h1 {
-            font-size: 22px;
+            font-size: 18px;
           }
 
           .group-reg-content {
-            padding: 20px;
+            padding: 16px;
           }
 
           .group-input-with-button {
@@ -696,7 +751,7 @@ export default function GroupCreate() {
           <div className="group-reg-header-left">
             <h1>Group Registration</h1>
             <div className="group-reg-header-subtitle">
-              Configure accounting group heads & classifications
+              Configure accounting group heads &amp; classifications
             </div>
           </div>
           <button
@@ -705,7 +760,7 @@ export default function GroupCreate() {
             onClick={() => navigate('/master/groups')}
             title="View group list"
           >
-            <ListIcon sx={{ fontSize: 16 }} />
+            <ListIcon sx={{ fontSize: 14 }} />
             <span>Group List</span>
           </button>
         </div>
@@ -716,7 +771,7 @@ export default function GroupCreate() {
             <Alert
               severity="error"
               onClose={() => setError(null)}
-              sx={{ mb: 3, borderRadius: 2 }}
+              sx={{ mb: 2, borderRadius: 1.5, fontSize: '11.5px', py: 0.5 }}
             >
               {error}
             </Alert>
@@ -731,8 +786,8 @@ export default function GroupCreate() {
                   label="Editing Existing Group"
                   size="small"
                   sx={{
-                    height: 20,
-                    fontSize: '0.7rem',
+                    height: 18,
+                    fontSize: '0.62rem',
                     fontWeight: 600,
                     bgcolor: '#eff6ff',
                     color: '#2563eb',
@@ -752,6 +807,9 @@ export default function GroupCreate() {
                   freeSolo
                   size="small"
                   disabled={!!selectedGroup}
+                  open={groupNameOpen}
+                  onOpen={() => setGroupNameOpen(true)}
+                  onClose={() => setGroupNameOpen(false)}
                   options={
                     selectedGroup &&
                     !operationalGroupOptions.some((o) => o._id === selectedGroup._id)
@@ -778,16 +836,34 @@ export default function GroupCreate() {
                   renderInput={(params) => (
                     <TextField
                       {...params}
+                      inputRef={groupNameInputRef}
                       placeholder="Enter group name (e.g. Bank, Customer, Supplier...)"
                       required
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          // If popup is closed, advance focus to parent selection
+                          if (!groupNameOpen) {
+                            e.preventDefault();
+                            setTimeout(() => {
+                              parentSelectInputRef.current?.focus();
+                            }, 80);
+                          }
+                        }
+                      }}
                       sx={{
                         '& .MuiOutlinedInput-root': {
-                          borderRadius: '8px',
+                          borderRadius: '6px',
                           backgroundColor: '#ffffff',
-                          fontSize: '14px',
+                          fontSize: '11.5px',
+                          minHeight: '33px',
+                          height: '33px',
                           '& fieldset': { borderColor: '#e2e8f0' },
                           '&:hover fieldset': { borderColor: '#cbd5e1' },
                           '&.Mui-focused fieldset': { borderColor: '#3b82f6' },
+                          '& input': {
+                            py: '4px !important',
+                            fontSize: '11.5px',
+                          },
                         },
                       }}
                     />
@@ -801,18 +877,16 @@ export default function GroupCreate() {
                       <li
                         {...props}
                         key={opt._id}
-                        style={{ padding: '8px 12px', minHeight: 40 }}
+                        style={{ padding: '5px 10px', minHeight: 32 }}
                       >
                         <Box sx={{ width: '100%' }}>
                           <Typography
-                            variant="body2"
-                            fontWeight={600}
-                            color="#1a2332"
+                            sx={{ fontSize: '0.78rem', fontWeight: 600, color: '#1a2332' }}
                           >
                             {opt.name}
                           </Typography>
                           {opt.code ? (
-                            <Typography variant="caption" color="#64748b">
+                            <Typography sx={{ fontSize: '0.68rem', color: '#64748b' }}>
                               {opt.code} • {opt.type}
                             </Typography>
                           ) : null}
@@ -865,6 +939,9 @@ export default function GroupCreate() {
               </label>
               <Autocomplete
                 size="small"
+                open={parentSelectOpen}
+                onOpen={() => setParentSelectOpen(true)}
+                onClose={() => setParentSelectOpen(false)}
                 options={parentHeadOptions}
                 getOptionLabel={(opt) => `${opt.name} [${opt.type}]`}
                 value={
@@ -874,22 +951,47 @@ export default function GroupCreate() {
                 renderInput={(params) => (
                   <TextField
                     {...params}
+                    inputRef={parentSelectInputRef}
                     placeholder="Choose parent group (e.g. Current Asset, Direct Expense...)"
                     required
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        if (!parentSelectOpen) {
+                          e.preventDefault();
+                          if (parentGroupId) {
+                            setTimeout(() => {
+                              if (editingId) {
+                                editBtnRef.current?.focus();
+                              } else {
+                                saveBtnRef.current?.focus();
+                              }
+                            }, 80);
+                          } else {
+                            setParentSelectOpen(true);
+                          }
+                        }
+                      }
+                    }}
                     sx={{
                       '& .MuiOutlinedInput-root': {
-                        borderRadius: '8px',
+                        borderRadius: '6px',
                         backgroundColor: '#ffffff',
-                        fontSize: '14px',
+                        fontSize: '11.5px',
+                        minHeight: '33px',
+                        height: '33px',
                         '& fieldset': { borderColor: '#e2e8f0' },
                         '&:hover fieldset': { borderColor: '#cbd5e1' },
                         '&.Mui-focused fieldset': { borderColor: '#3b82f6' },
+                        '& input': {
+                          py: '4px !important',
+                          fontSize: '11.5px',
+                        },
                       },
                     }}
                   />
                 )}
                 renderOption={(props, opt) => (
-                  <li {...props} key={opt._id} style={{ padding: '8px 12px' }}>
+                  <li {...props} key={opt._id} style={{ padding: '5px 10px', minHeight: 32 }}>
                     <Box
                       sx={{
                         display: 'flex',
@@ -898,15 +1000,15 @@ export default function GroupCreate() {
                         alignItems: 'center',
                       }}
                     >
-                      <Typography variant="body2" fontWeight={500} color="#1a2332">
+                      <Typography sx={{ fontSize: '0.78rem', fontWeight: 500, color: '#1a2332' }}>
                         {opt.name}
                       </Typography>
                       <Chip
                         label={opt.type}
                         size="small"
                         sx={{
-                          height: 20,
-                          fontSize: '0.7rem',
+                          height: 18,
+                          fontSize: '0.62rem',
                           fontWeight: 600,
                           bgcolor: '#f1f5f9',
                           color: '#475569',
@@ -930,8 +1032,8 @@ export default function GroupCreate() {
                   label={currentTypeUpper}
                   size="small"
                   sx={{
-                    height: 22,
-                    fontSize: '0.72rem',
+                    height: 18,
+                    fontSize: '0.62rem',
                     fontWeight: 700,
                     letterSpacing: '0.5px',
                     bgcolor: typeStyle.bg,
@@ -949,31 +1051,72 @@ export default function GroupCreate() {
           {/* Action Buttons */}
           <div className="group-actions">
             <button
+              ref={saveBtnRef}
               type="button"
               className="group-btn group-btn-primary"
               onClick={handleSaveClick}
-              disabled={saving}
+              disabled={saving || !!editingId}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  handleSaveClick();
+                } else if (e.key === 'ArrowRight') {
+                  e.preventDefault();
+                  if (editingId) {
+                    editBtnRef.current?.focus();
+                  } else {
+                    clearBtnRef.current?.focus();
+                  }
+                }
+              }}
             >
-              <CheckIcon sx={{ fontSize: 18 }} />
+              <CheckIcon sx={{ fontSize: 15 }} />
               <span>{saving ? 'Saving...' : 'Save'}</span>
             </button>
 
             <button
+              ref={editBtnRef}
               type="button"
               className="group-btn group-btn-secondary"
               onClick={handleEditClick}
               disabled={!editingId || saving}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  handleEditClick();
+                } else if (e.key === 'ArrowLeft') {
+                  e.preventDefault();
+                  saveBtnRef.current?.focus();
+                } else if (e.key === 'ArrowRight') {
+                  e.preventDefault();
+                  clearBtnRef.current?.focus();
+                }
+              }}
             >
-              <EditIcon sx={{ fontSize: 18 }} />
+              <EditIcon sx={{ fontSize: 15 }} />
               <span>Edit</span>
             </button>
 
             <button
+              ref={clearBtnRef}
               type="button"
               className="group-btn group-btn-tertiary"
               onClick={handleClear}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  handleClear();
+                } else if (e.key === 'ArrowLeft') {
+                  e.preventDefault();
+                  if (editingId) {
+                    editBtnRef.current?.focus();
+                  } else {
+                    saveBtnRef.current?.focus();
+                  }
+                }
+              }}
             >
-              <ClearIcon sx={{ fontSize: 18 }} />
+              <ClearIcon sx={{ fontSize: 15 }} />
               <span>Clear</span>
             </button>
           </div>
@@ -983,33 +1126,41 @@ export default function GroupCreate() {
       {/* Save Confirmation Dialog */}
       <Dialog
         open={saveConfirmOpen}
-        onClose={() => setSaveConfirmOpen(false)}
-        PaperProps={{ sx: { borderRadius: 2.5, p: 1, minWidth: 320 } }}
+        onClose={() => {
+          setSaveConfirmOpen(false);
+          setTimeout(() => saveBtnRef.current?.focus(), 50);
+        }}
+        PaperProps={{ sx: { borderRadius: 2, p: 0.5, minWidth: 280 } }}
       >
-        <DialogTitle sx={{ fontWeight: 600, fontSize: '18px', color: '#1e293b' }}>
+        <DialogTitle sx={{ fontWeight: 600, fontSize: '15px', color: '#1e293b' }}>
           Save Group
         </DialogTitle>
         <DialogContent>
-          <Typography variant="body2" color="#64748b">
+          <Typography variant="body2" sx={{ fontSize: '12px' }} color="#64748b">
             Do you want to save this group?
           </Typography>
         </DialogContent>
-        <DialogActions sx={{ px: 3, pb: 2 }}>
+        <DialogActions sx={{ px: 2, pb: 1.5 }}>
           <Button
-            onClick={() => setSaveConfirmOpen(false)}
-            sx={{ color: '#64748b', textTransform: 'none', fontWeight: 600 }}
+            onClick={() => {
+              setSaveConfirmOpen(false);
+              setTimeout(() => saveBtnRef.current?.focus(), 50);
+            }}
+            sx={{ color: '#64748b', textTransform: 'none', fontWeight: 600, fontSize: '12px' }}
           >
             Cancel
           </Button>
           <Button
             variant="contained"
             onClick={handleSaveConfirm}
+            autoFocus
             sx={{
               background: 'linear-gradient(135deg, #3b82f6 0%, #0284c7 100%)',
               textTransform: 'none',
               fontWeight: 600,
               borderRadius: 1.5,
-              px: 3,
+              px: 2.5,
+              fontSize: '12px',
             }}
           >
             OK
@@ -1024,17 +1175,22 @@ export default function GroupCreate() {
           setSavedDialogOpen(false);
           handleClear();
         }}
-        PaperProps={{ sx: { borderRadius: 2.5, p: 1, minWidth: 320 } }}
+        TransitionProps={{
+          onExited: () => {
+            focusGroupName();
+          },
+        }}
+        PaperProps={{ sx: { borderRadius: 2, p: 0.5, minWidth: 280 } }}
       >
-        <DialogTitle sx={{ fontWeight: 600, fontSize: '18px', color: '#1e293b' }}>
+        <DialogTitle sx={{ fontWeight: 600, fontSize: '15px', color: '#1e293b' }}>
           Saved Successfully
         </DialogTitle>
         <DialogContent>
-          <Typography variant="body2" color="#64748b">
+          <Typography variant="body2" sx={{ fontSize: '12px' }} color="#64748b">
             Group has been saved successfully.
           </Typography>
         </DialogContent>
-        <DialogActions sx={{ px: 3, pb: 2 }}>
+        <DialogActions sx={{ px: 2, pb: 1.5 }}>
           <Button
             variant="contained"
             onClick={() => {
@@ -1047,7 +1203,8 @@ export default function GroupCreate() {
               textTransform: 'none',
               fontWeight: 600,
               borderRadius: 1.5,
-              px: 3,
+              px: 2.5,
+              fontSize: '12px',
             }}
           >
             OK
@@ -1058,33 +1215,41 @@ export default function GroupCreate() {
       {/* Edit Confirmation Dialog */}
       <Dialog
         open={editConfirmOpen}
-        onClose={() => setEditConfirmOpen(false)}
-        PaperProps={{ sx: { borderRadius: 2.5, p: 1, minWidth: 320 } }}
+        onClose={() => {
+          setEditConfirmOpen(false);
+          setTimeout(() => editBtnRef.current?.focus(), 50);
+        }}
+        PaperProps={{ sx: { borderRadius: 2, p: 0.5, minWidth: 280 } }}
       >
-        <DialogTitle sx={{ fontWeight: 600, fontSize: '18px', color: '#1e293b' }}>
+        <DialogTitle sx={{ fontWeight: 600, fontSize: '15px', color: '#1e293b' }}>
           Edit Group
         </DialogTitle>
         <DialogContent>
-          <Typography variant="body2" color="#64748b">
+          <Typography variant="body2" sx={{ fontSize: '12px' }} color="#64748b">
             Do you want to update this group?
           </Typography>
         </DialogContent>
-        <DialogActions sx={{ px: 3, pb: 2 }}>
+        <DialogActions sx={{ px: 2, pb: 1.5 }}>
           <Button
-            onClick={() => setEditConfirmOpen(false)}
-            sx={{ color: '#64748b', textTransform: 'none', fontWeight: 600 }}
+            onClick={() => {
+              setEditConfirmOpen(false);
+              setTimeout(() => editBtnRef.current?.focus(), 50);
+            }}
+            sx={{ color: '#64748b', textTransform: 'none', fontWeight: 600, fontSize: '12px' }}
           >
             Cancel
           </Button>
           <Button
             variant="contained"
             onClick={handleEditConfirm}
+            autoFocus
             sx={{
               background: 'linear-gradient(135deg, #3b82f6 0%, #0284c7 100%)',
               textTransform: 'none',
               fontWeight: 600,
               borderRadius: 1.5,
-              px: 3,
+              px: 2.5,
+              fontSize: '12px',
             }}
           >
             OK
@@ -1099,17 +1264,22 @@ export default function GroupCreate() {
           setEditedDialogOpen(false);
           handleClear();
         }}
-        PaperProps={{ sx: { borderRadius: 2.5, p: 1, minWidth: 320 } }}
+        TransitionProps={{
+          onExited: () => {
+            focusGroupName();
+          },
+        }}
+        PaperProps={{ sx: { borderRadius: 2, p: 0.5, minWidth: 280 } }}
       >
-        <DialogTitle sx={{ fontWeight: 600, fontSize: '18px', color: '#1e293b' }}>
+        <DialogTitle sx={{ fontWeight: 600, fontSize: '15px', color: '#1e293b' }}>
           Updated Successfully
         </DialogTitle>
         <DialogContent>
-          <Typography variant="body2" color="#64748b">
+          <Typography variant="body2" sx={{ fontSize: '12px' }} color="#64748b">
             Group has been updated successfully.
           </Typography>
         </DialogContent>
-        <DialogActions sx={{ px: 3, pb: 2 }}>
+        <DialogActions sx={{ px: 2, pb: 1.5 }}>
           <Button
             variant="contained"
             onClick={() => {
@@ -1122,7 +1292,8 @@ export default function GroupCreate() {
               textTransform: 'none',
               fontWeight: 600,
               borderRadius: 1.5,
-              px: 3,
+              px: 2.5,
+              fontSize: '12px',
             }}
           >
             OK
@@ -1133,12 +1304,20 @@ export default function GroupCreate() {
       {/* Change Group Name Dialog */}
       <Dialog
         open={changeNameDialogOpen}
-        onClose={() => setChangeNameDialogOpen(false)}
+        onClose={() => {
+          setChangeNameDialogOpen(false);
+          focusGroupName();
+        }}
+        TransitionProps={{
+          onExited: () => {
+            focusGroupName();
+          },
+        }}
         maxWidth="xs"
         fullWidth
-        PaperProps={{ sx: { borderRadius: 2.5, p: 1 } }}
+        PaperProps={{ sx: { borderRadius: 2, p: 0.5 } }}
       >
-        <DialogTitle sx={{ fontWeight: 600, fontSize: '18px', color: '#1e293b' }}>
+        <DialogTitle sx={{ fontWeight: 600, fontSize: '15px', color: '#1e293b' }}>
           Change Group Name
         </DialogTitle>
         <DialogContent>
@@ -1148,12 +1327,14 @@ export default function GroupCreate() {
             label="Group Code"
             value={changeNameCode}
             disabled
-            margin="normal"
-            InputLabelProps={{ shrink: true }}
+            margin="dense"
+            InputLabelProps={{ shrink: true, sx: { fontSize: '11.5px' } }}
             sx={{
               '& .MuiOutlinedInput-root': {
-                borderRadius: '8px',
+                borderRadius: '6px',
                 bgcolor: '#f1f5f9',
+                fontSize: '11.5px',
+                height: '33px',
               },
             }}
           />
@@ -1163,13 +1344,23 @@ export default function GroupCreate() {
             label="Group Name"
             value={changeNameValue}
             onChange={(e) => setChangeNameValue(e.target.value)}
-            margin="normal"
+            margin="dense"
             required
             autoFocus
-            InputLabelProps={{ shrink: true }}
+            InputLabelProps={{ shrink: true, sx: { fontSize: '11.5px' } }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                if (!changeNameSaving && changeNameValue.trim()) {
+                  handleChangeNameSave();
+                }
+              }
+            }}
             sx={{
               '& .MuiOutlinedInput-root': {
-                borderRadius: '8px',
+                borderRadius: '6px',
+                fontSize: '11.5px',
+                height: '33px',
                 '& fieldset': { borderColor: '#e2e8f0' },
                 '&:hover fieldset': { borderColor: '#cbd5e1' },
                 '&.Mui-focused fieldset': { borderColor: '#3b82f6' },
@@ -1177,10 +1368,13 @@ export default function GroupCreate() {
             }}
           />
         </DialogContent>
-        <DialogActions sx={{ px: 3, pb: 2 }}>
+        <DialogActions sx={{ px: 2, pb: 1.5 }}>
           <Button
-            onClick={() => setChangeNameDialogOpen(false)}
-            sx={{ color: '#64748b', textTransform: 'none', fontWeight: 600 }}
+            onClick={() => {
+              setChangeNameDialogOpen(false);
+              focusGroupName();
+            }}
+            sx={{ color: '#64748b', textTransform: 'none', fontWeight: 600, fontSize: '12px' }}
           >
             Cancel
           </Button>
@@ -1193,7 +1387,8 @@ export default function GroupCreate() {
               textTransform: 'none',
               fontWeight: 600,
               borderRadius: 1.5,
-              px: 3,
+              px: 2.5,
+              fontSize: '12px',
             }}
           >
             {changeNameSaving ? 'Updating...' : 'Update'}

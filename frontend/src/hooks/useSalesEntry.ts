@@ -53,6 +53,7 @@ export function useSalesEntry(config: SalesEntryConfig) {
     const [otherCharges, setOtherCharges] = useState(0);
     const [freightCharge, setFreightCharge] = useState(0);
     const [roundOff, setRoundOff] = useState(0);
+    const [autoRoundOff, setAutoRoundOff] = useState(false);
     const [narration, setNarration] = useState('');
     const [cashReceived, setCashReceived] = useState(0);
     const [oldBalance, setOldBalance] = useState(0);
@@ -122,6 +123,28 @@ export function useSalesEntry(config: SalesEntryConfig) {
 
         return { itemsGross, itemsDiscount, itemsVat, subTotal, grandTotal, totalItems };
     }, [lines, otherDiscount, otherCharges, freightCharge, roundOff]);
+
+    const handleAutoRoundOffToggle = useCallback((checked: boolean) => {
+        setAutoRoundOff(checked);
+        if (checked) {
+            const baseTotal = updateGrandTotals.subTotal - otherDiscount + otherCharges + freightCharge;
+            const rounded = Math.round(baseTotal);
+            const diff = parseFloat((rounded - baseTotal).toFixed(2));
+            setRoundOff(diff);
+        } else {
+            setRoundOff(0);
+        }
+    }, [updateGrandTotals.subTotal, otherDiscount, otherCharges, freightCharge]);
+
+    useEffect(() => {
+        if (!autoRoundOff) return;
+        const baseTotal = updateGrandTotals.subTotal - otherDiscount + otherCharges + freightCharge;
+        const rounded = Math.round(baseTotal);
+        const diff = parseFloat((rounded - baseTotal).toFixed(2));
+        if (diff !== roundOff) {
+            setRoundOff(diff);
+        }
+    }, [autoRoundOff, updateGrandTotals.subTotal, otherDiscount, otherCharges, freightCharge, roundOff]);
 
     const updateLine = useCallback((id: string, field: keyof LineItem, value: any) => {
         setLines(prev => prev.map(l => {
@@ -228,12 +251,12 @@ export function useSalesEntry(config: SalesEntryConfig) {
             customerAddress, setCustomerAddress, customers, setCustomers,
             billingAddress, setBillingAddress, billingPhone, setBillingPhone, shippingName, setShippingName, shippingAddress, setShippingAddress, shippingPhone, setShippingPhone,
             otherDiscount, setOtherDiscount, otherDiscPercent, setOtherDiscPercent, otherCharges, setOtherCharges,
-            freightCharge, setFreightCharge, roundOff, setRoundOff, narration, setNarration, cashReceived, setCashReceived,
+            freightCharge, setFreightCharge, roundOff, setRoundOff, autoRoundOff, setAutoRoundOff, narration, setNarration, cashReceived, setCashReceived,
             oldBalance, setOldBalance, products, setProducts, lines, setLines, invoiceIds, setInvoiceIds, loading, setLoading, isSaved, setIsSaved, activeLineId, setActiveLineId, returnType, setReturnType,
             errorDialogOpen, setErrorDialogOpen, errorDialogMessage, setErrorDialogMessage,
         },
         helpers: {
-            updateLine, handleProductSelect, handleClear, updateGrandTotals, removeLine: (id: string) => setLines(prev => prev.filter(l => l.id !== id)),
+            updateLine, handleProductSelect, handleClear, updateGrandTotals, handleAutoRoundOffToggle, removeLine: (id: string) => setLines(prev => prev.filter(l => l.id !== id)),
         },
         navigation: {
             handleFirst: () => { }, // To be implemented

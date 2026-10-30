@@ -72,6 +72,51 @@ const SalesEntryLayout: React.FC<SalesEntryLayoutProps> = ({
     children,
     isReturn = false,
 }) => {
+    const printButtonRef = React.useRef<HTMLButtonElement>(null);
+    const actionButtonsContainerRef = React.useRef<HTMLDivElement>(null);
+
+    React.useEffect(() => {
+        if (isSaved) {
+            setTimeout(() => {
+                printButtonRef.current?.focus();
+            }, 100);
+        }
+    }, [isSaved]);
+
+    const handleActionButtonKeyDown = (e: React.KeyboardEvent<HTMLElement>) => {
+        if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
+            return;
+        }
+        const container = actionButtonsContainerRef.current;
+        if (!container) return;
+
+        const buttons = Array.from(
+            container.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')
+        ).filter((btn) => btn.offsetParent !== null);
+
+        if (buttons.length === 0) return;
+
+        const activeEl = document.activeElement as HTMLButtonElement | null;
+        const currentIndex = activeEl ? buttons.indexOf(activeEl) : -1;
+
+        e.preventDefault();
+        e.stopPropagation();
+
+        if (currentIndex === -1) {
+            buttons[0]?.focus();
+            return;
+        }
+
+        let nextIndex = currentIndex;
+        if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+            nextIndex = (currentIndex + 1) % buttons.length;
+        } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+            nextIndex = (currentIndex - 1 + buttons.length) % buttons.length;
+        }
+
+        buttons[nextIndex]?.focus();
+    };
+
     return (
         <Box
             sx={{
@@ -112,46 +157,161 @@ const SalesEntryLayout: React.FC<SalesEntryLayoutProps> = ({
             {footerContent}
 
             {/* Action Buttons */}
-            <Paper elevation={0} sx={{ p: 0.8, mt: 0.5, bgcolor: 'white', borderRadius: 1.2, border: '1px solid #cbd5e1', display: 'flex', gap: 0.75, flexWrap: 'wrap', alignItems: 'center' }}>
-                <Button variant="contained" size="small" startIcon={<ClearIcon />} onClick={onClear} sx={{ bgcolor: '#16a34a', color: '#fff', borderRadius: 1.2, textTransform: 'none', fontWeight: 600, px: 1.5, height: 28, fontSize: '0.75rem', boxShadow: 'none', '&:hover': { bgcolor: '#000000' } }}>
-                    Clear
-                </Button>
-                <Button variant="contained" size="small" startIcon={<SaveIcon />} onClick={onSave} disabled={isSaved || loading} sx={{ bgcolor: '#16a34a', color: '#fff', borderRadius: 1.2, textTransform: 'none', fontWeight: 600, px: 1.5, height: 28, fontSize: '0.75rem', boxShadow: 'none', '&:hover': { bgcolor: '#000000' }, '&.Mui-disabled': { bgcolor: '#d1d5db', color: '#9ca3af' } }}>
-                    {isEditMode ? 'Update' : 'Save'}
-                </Button>
-                {isEditMode && (
-                    <>
-                        <Button variant="contained" size="small" startIcon={<EditIcon />} onClick={onEdit} disabled={!isEditMode || loading} sx={{ bgcolor: '#16a34a', color: '#fff', borderRadius: 1.2, textTransform: 'none', fontWeight: 600, px: 1.5, height: 28, fontSize: '0.75rem', boxShadow: 'none', '&:hover': { bgcolor: '#000000' }, '&.Mui-disabled': { bgcolor: '#d1d5db', color: '#9ca3af' } }}>
-                            Edit
-                        </Button>
-                        <Button variant="contained" size="small" startIcon={<DeleteIcon />} onClick={onDelete} disabled={!isEditMode} sx={{ bgcolor: '#16a34a', color: '#fff', borderRadius: 1.2, textTransform: 'none', fontWeight: 600, px: 1.5, height: 28, fontSize: '0.75rem', boxShadow: 'none', '&:hover': { bgcolor: '#000000' }, '&.Mui-disabled': { bgcolor: '#d1d5db', color: '#9ca3af' } }}>
-                            Delete
-                        </Button>
-                    </>
-                )}
-                <Button variant="contained" size="small" startIcon={<SearchIcon />} onClick={onSearch} sx={{ bgcolor: '#16a34a', color: '#fff', borderRadius: 1.2, textTransform: 'none', fontWeight: 600, px: 1.5, height: 28, fontSize: '0.75rem', boxShadow: 'none', '&:hover': { bgcolor: '#000000' } }}>
-                    Search
-                </Button>
-                <Button variant="contained" size="small" startIcon={<PrintIcon />} onClick={onPrint} disabled={!isSaved} sx={{ bgcolor: '#16a34a', color: '#fff', borderRadius: 1.2, textTransform: 'none', fontWeight: 600, px: 1.5, height: 28, fontSize: '0.75rem', boxShadow: 'none', '&:hover': { bgcolor: '#000000' }, '&.Mui-disabled': { bgcolor: '#d1d5db', color: '#9ca3af' } }}>
-                    Print
-                </Button>
+            <Paper elevation={0} sx={{ p: 0.8, mt: 0.5, bgcolor: 'white', borderRadius: 1.2, border: '1px solid #cbd5e1' }}>
+                <Box
+                    ref={actionButtonsContainerRef}
+                    onKeyDown={handleActionButtonKeyDown}
+                    sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap', alignItems: 'center' }}
+                >
+                    <Button
+                        variant="contained"
+                        size="small"
+                        startIcon={<ClearIcon />}
+                        onClick={onClear}
+                        sx={{
+                            bgcolor: '#16a34a', color: '#fff', borderRadius: 1.2, textTransform: 'none', fontWeight: 600, px: 1.5, height: 28, fontSize: '0.75rem', boxShadow: 'none',
+                            '&:hover': { bgcolor: '#000000' },
+                            '&:focus, &:focus-visible': { outline: '2px solid #000000', outlineOffset: 1 },
+                        }}
+                    >
+                        Clear
+                    </Button>
+                    <Button
+                        variant="contained"
+                        size="small"
+                        startIcon={<SaveIcon />}
+                        onClick={onSave}
+                        disabled={isSaved || loading}
+                        sx={{
+                            bgcolor: '#16a34a', color: '#fff', borderRadius: 1.2, textTransform: 'none', fontWeight: 600, px: 1.5, height: 28, fontSize: '0.75rem', boxShadow: 'none',
+                            '&:hover': { bgcolor: '#000000' },
+                            '&.Mui-disabled': { bgcolor: '#d1d5db', color: '#9ca3af' },
+                            '&:focus, &:focus-visible': { outline: '2px solid #000000', outlineOffset: 1 },
+                        }}
+                    >
+                        {isEditMode ? 'Update' : 'Save'}
+                    </Button>
+                    {isEditMode && (
+                        <>
+                            <Button
+                                variant="contained"
+                                size="small"
+                                startIcon={<EditIcon />}
+                                onClick={onEdit}
+                                disabled={!isEditMode || loading}
+                                sx={{
+                                    bgcolor: '#16a34a', color: '#fff', borderRadius: 1.2, textTransform: 'none', fontWeight: 600, px: 1.5, height: 28, fontSize: '0.75rem', boxShadow: 'none',
+                                    '&:hover': { bgcolor: '#000000' },
+                                    '&.Mui-disabled': { bgcolor: '#d1d5db', color: '#9ca3af' },
+                                    '&:focus, &:focus-visible': { outline: '2px solid #000000', outlineOffset: 1 },
+                                }}
+                            >
+                                Edit
+                            </Button>
+                            <Button
+                                variant="contained"
+                                size="small"
+                                startIcon={<DeleteIcon />}
+                                onClick={onDelete}
+                                disabled={!isEditMode}
+                                sx={{
+                                    bgcolor: '#16a34a', color: '#fff', borderRadius: 1.2, textTransform: 'none', fontWeight: 600, px: 1.5, height: 28, fontSize: '0.75rem', boxShadow: 'none',
+                                    '&:hover': { bgcolor: '#000000' },
+                                    '&.Mui-disabled': { bgcolor: '#d1d5db', color: '#9ca3af' },
+                                    '&:focus, &:focus-visible': { outline: '2px solid #000000', outlineOffset: 1 },
+                                }}
+                            >
+                                Delete
+                            </Button>
+                        </>
+                    )}
+                    <Button
+                        variant="contained"
+                        size="small"
+                        startIcon={<SearchIcon />}
+                        onClick={onSearch}
+                        sx={{
+                            bgcolor: '#16a34a', color: '#fff', borderRadius: 1.2, textTransform: 'none', fontWeight: 600, px: 1.5, height: 28, fontSize: '0.75rem', boxShadow: 'none',
+                            '&:hover': { bgcolor: '#000000' },
+                            '&:focus, &:focus-visible': { outline: '2px solid #000000', outlineOffset: 1 },
+                        }}
+                    >
+                        Search
+                    </Button>
+                    <Button
+                        ref={printButtonRef}
+                        variant="contained"
+                        size="small"
+                        startIcon={<PrintIcon />}
+                        onClick={onPrint || (() => window.print())}
+                        disabled={!isSaved}
+                        sx={{
+                            bgcolor: '#16a34a', color: '#fff', borderRadius: 1.2, textTransform: 'none', fontWeight: 600, px: 1.5, height: 28, fontSize: '0.75rem', boxShadow: 'none',
+                            '&:hover': { bgcolor: '#000000' },
+                            '&.Mui-disabled': { bgcolor: '#d1d5db', color: '#9ca3af' },
+                            '&:focus, &:focus-visible': { outline: '2px solid #000000', outlineOffset: 1 },
+                        }}
+                    >
+                        Print
+                    </Button>
 
-                {onFirst && (
-                    <>
-                        <Button variant="contained" size="small" onClick={onFirst} sx={{ minWidth: 26, height: 24, borderRadius: 1.2, bgcolor: '#334155', '&:hover': { bgcolor: '#1e293b' }, '&.Mui-disabled': { bgcolor: '#e2e8f0', color: '#94a3b8' } }}>
-                            <FirstIcon sx={{ fontSize: 16 }} />
-                        </Button>
-                        <Button variant="contained" size="small" onClick={onPrev} sx={{ minWidth: 26, height: 24, borderRadius: 1.2, bgcolor: '#334155', '&:hover': { bgcolor: '#1e293b' }, '&.Mui-disabled': { bgcolor: '#e2e8f0', color: '#94a3b8' } }}>
-                            <PrevIcon sx={{ fontSize: 16 }} />
-                        </Button>
-                        <Button variant="contained" size="small" onClick={onNext} sx={{ minWidth: 26, height: 24, borderRadius: 1.2, bgcolor: '#334155', '&:hover': { bgcolor: '#1e293b' }, '&.Mui-disabled': { bgcolor: '#e2e8f0', color: '#94a3b8' } }}>
-                            <NextIcon sx={{ fontSize: 16 }} />
-                        </Button>
-                        <Button variant="contained" size="small" onClick={onLast} sx={{ minWidth: 26, height: 24, borderRadius: 1.2, bgcolor: '#334155', '&:hover': { bgcolor: '#1e293b' }, '&.Mui-disabled': { bgcolor: '#e2e8f0', color: '#94a3b8' } }}>
-                            <LastIcon sx={{ fontSize: 16 }} />
-                        </Button>
-                    </>
-                )}
+                    {onFirst && (
+                        <>
+                            <Button
+                                variant="contained"
+                                size="small"
+                                onClick={onFirst}
+                                sx={{
+                                    minWidth: 26, height: 24, borderRadius: 1.2, bgcolor: '#334155',
+                                    '&:hover': { bgcolor: '#1e293b' },
+                                    '&.Mui-disabled': { bgcolor: '#e2e8f0', color: '#94a3b8' },
+                                    '&:focus, &:focus-visible': { outline: '2px solid #000000', outlineOffset: 1 },
+                                }}
+                            >
+                                <FirstIcon sx={{ fontSize: 16 }} />
+                            </Button>
+                            <Button
+                                variant="contained"
+                                size="small"
+                                onClick={onPrev}
+                                sx={{
+                                    minWidth: 26, height: 24, borderRadius: 1.2, bgcolor: '#334155',
+                                    '&:hover': { bgcolor: '#1e293b' },
+                                    '&.Mui-disabled': { bgcolor: '#e2e8f0', color: '#94a3b8' },
+                                    '&:focus, &:focus-visible': { outline: '2px solid #000000', outlineOffset: 1 },
+                                }}
+                            >
+                                <PrevIcon sx={{ fontSize: 16 }} />
+                            </Button>
+                            <Button
+                                variant="contained"
+                                size="small"
+                                onClick={onNext}
+                                sx={{
+                                    minWidth: 26, height: 24, borderRadius: 1.2, bgcolor: '#334155',
+                                    '&:hover': { bgcolor: '#1e293b' },
+                                    '&.Mui-disabled': { bgcolor: '#e2e8f0', color: '#94a3b8' },
+                                    '&:focus, &:focus-visible': { outline: '2px solid #000000', outlineOffset: 1 },
+                                }}
+                            >
+                                <NextIcon sx={{ fontSize: 16 }} />
+                            </Button>
+                            <Button
+                                variant="contained"
+                                size="small"
+                                onClick={onLast}
+                                sx={{
+                                    minWidth: 26, height: 24, borderRadius: 1.2, bgcolor: '#334155',
+                                    '&:hover': { bgcolor: '#1e293b' },
+                                    '&.Mui-disabled': { bgcolor: '#e2e8f0', color: '#94a3b8' },
+                                    '&:focus, &:focus-visible': { outline: '2px solid #000000', outlineOffset: 1 },
+                                }}
+                            >
+                                <LastIcon sx={{ fontSize: 16 }} />
+                            </Button>
+                        </>
+                    )}
+                </Box>
             </Paper>
             {children}
         </Box>

@@ -1,5 +1,4 @@
-import React from 'react';
-import { Typography, TextField, Grid, Paper } from '@mui/material';
+import { Typography, TextField, Grid, Paper, Box, Checkbox, Tooltip } from '@mui/material';
 
 interface SalesSummaryProps {
     grossAmount: number;
@@ -10,12 +9,14 @@ interface SalesSummaryProps {
     otherCharges: number;
     freightCharge: number;
     roundOff: number;
+    autoRoundOff?: boolean;
 
     setOtherDiscPercent: (val: number) => void;
     setOtherDiscount: (val: number) => void;
     setOtherCharges: (val: number) => void;
     setFreightCharge: (val: number) => void;
     setRoundOff: (val: number) => void;
+    handleAutoRoundOffToggle?: (checked: boolean) => void;
 
     narration: string;
     setNarration: (val: string) => void;
@@ -30,11 +31,13 @@ const SalesSummary: React.FC<SalesSummaryProps> = ({
     otherCharges,
     freightCharge,
     roundOff,
+    autoRoundOff,
     setOtherDiscPercent,
     setOtherDiscount,
     setOtherCharges,
     setFreightCharge,
     setRoundOff,
+    handleAutoRoundOffToggle,
     narration,
     setNarration
 }) => {
@@ -109,12 +112,32 @@ const SalesSummary: React.FC<SalesSummaryProps> = ({
                             />
                         </Grid>
                         <Grid item xs={6}>
-                            <Typography sx={{ fontSize: '0.75rem', color: '#64748b', mb: 0.3 }}>Round Off</Typography>
+                            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.3 }}>
+                                <Typography sx={{ fontSize: '0.75rem', color: '#64748b' }}>Round Off</Typography>
+                                {handleAutoRoundOffToggle && (
+                                    <Tooltip title="Round Off Total (Auto Round)" arrow placement="top">
+                                        <Checkbox
+                                            size="small"
+                                            checked={!!autoRoundOff}
+                                            onChange={(e) => handleAutoRoundOffToggle(e.target.checked)}
+                                            sx={{
+                                                p: 0,
+                                                color: '#94a3b8',
+                                                '&.Mui-checked': { color: '#0f766e' },
+                                                '& .MuiSvgIcon-root': { fontSize: '1rem' },
+                                            }}
+                                        />
+                                    </Tooltip>
+                                )}
+                            </Box>
                             <TextField
                                 size="small"
                                 type="number"
                                 value={roundOff === 0 ? '' : roundOff}
-                                onChange={(e) => setRoundOff(parseFloat(e.target.value) || 0)}
+                                onChange={(e) => {
+                                    if (handleAutoRoundOffToggle) handleAutoRoundOffToggle(false);
+                                    setRoundOff(parseFloat(e.target.value) || 0);
+                                }}
                                 fullWidth
                                 sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.2, height: 32 }, '& .MuiInputBase-input': { fontSize: '0.84rem', py: '4px !important' } }}
                             />

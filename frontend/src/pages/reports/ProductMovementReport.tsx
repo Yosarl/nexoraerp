@@ -1,5 +1,5 @@
-import PlaceholderPage from '../../components/PlaceholderPage';
+import StockLedgerReport from './StockLedgerReport';
 
 export default function ProductMovementReport() {
-  return <PlaceholderPage title="Product Movement Report" message="Product movement / stock movement report. Under development." />;
+  return <StockLedgerReport />;
 }

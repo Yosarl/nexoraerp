@@ -3,7 +3,7 @@ import authRoutes from './authRoutes';
 import companyRoutes from './companyRoutes';
 import financialYearRoutes from './financialYearRoutes';
 import productRoutes from './productRoutes';
-import openingStockRoutes from './openingStockRoutes';
+import openingPurchaseRoutes from './openingPurchaseRoutes';
 import salesRoutes from './salesRoutes';
 import purchaseRoutes from './purchaseRoutes';
 import stockRoutes from './stockRoutes';
@@ -19,6 +19,8 @@ import purchaseOrderRoutes from './purchaseOrderRoutes';
 import purchaseReturnRoutes from './purchaseReturnRoutes';
 import billReferenceRoutes from './billReferenceRoutes';
 import bankReconciliationRoutes from './bankReconciliationRoutes';
+import riayatiRoutes from './riayatiRoutes';
+import stockAdjustmentRoutes from './stockAdjustmentRoutes';
 
 const router = Router();
 
@@ -27,7 +29,9 @@ router.use('/users', userRoutes);
 router.use('/companies', companyRoutes);
 router.use('/financial-years', financialYearRoutes);
 router.use('/products', productRoutes);
-router.use('/opening-stock', openingStockRoutes);
+router.use('/opening-purchase', openingPurchaseRoutes);
+router.use('/opening-stock', openingPurchaseRoutes);
+router.use('/stock-adjustments', stockAdjustmentRoutes);
 router.use('/sales', salesRoutes);
 router.use('/purchases', purchaseRoutes);
 router.use('/stock', stockRoutes);
@@ -42,6 +46,7 @@ router.use('/purchase-orders', purchaseOrderRoutes);
 router.use('/purchase-returns', purchaseReturnRoutes);
 router.use('/bill-references', billReferenceRoutes);
 router.use('/bank-reconciliation', bankReconciliationRoutes);
+router.use('/riayati', riayatiRoutes);
 
 router.get('/health', (_req, res) => res.json({ ok: true }));
 

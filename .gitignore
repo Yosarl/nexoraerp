@@ -36,3 +36,7 @@ Thumbs.db
 # Uploaded files
 uploads/
 backend/uploads/
+
+# Backups
+backups*/
+backups/

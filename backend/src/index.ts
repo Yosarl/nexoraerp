@@ -6,7 +6,7 @@ import { logger } from './utils/logger';
 async function main(): Promise<void> {
   await connectDb();
   app.listen(config.port, () => {
-    logger.info(`Server running on port ${config.port} [updated ledger logic]`);
+    logger.info(`Server running on port ${config.port} [Riayati ORC & Frequency updated]`);
   });
 }
 

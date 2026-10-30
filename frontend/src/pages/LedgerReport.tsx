@@ -1,4 +1,5 @@
-import { useEffect, useState, useRef, useMemo, Fragment } from 'react';
+import { useEffect, useState, useRef, useMemo, useCallback, Fragment } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import {
   Box,
   Typography,
@@ -55,6 +56,12 @@ interface LedgerTransaction {
   bankDate?: string;
   isReconciled?: boolean;
   chequeNumber?: string;
+  voucherId?: string;
+  voucherType?: string;
+  referenceType?: string;
+  referenceId?: string;
+  referenceNo?: string;
+  invoiceType?: string;
 }
 
 interface GroupedTransactionRow {
@@ -69,8 +76,15 @@ interface GroupedTransactionRow {
   balanceIsDebit: boolean;
   narration?: string;
   isInvoiceRow?: boolean;
+  isInvoice?: boolean;
   chequeStatus?: 'PENDING' | 'CLEARED' | 'BOUNCED';
   chequeNumber?: string;
+  voucherId?: string;
+  voucherType?: string;
+  referenceType?: string;
+  referenceId?: string;
+  referenceNo?: string;
+  invoiceType?: string;
 }
 
 interface InvoiceGroup {
@@ -91,8 +105,8 @@ const formatDateDisplay = (dateStr?: string | Date) => {
   const d = new Date(dateStr);
   if (isNaN(d.getTime())) return String(dateStr);
   const day = String(d.getDate()).padStart(2, '0');
-  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  return `${day}-${months[d.getMonth()]}-${d.getFullYear()}`;
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  return `${day}-${month}-${d.getFullYear()}`;
 };
 
 function cleanUserNarration(rawNarration?: string, invoiceNo?: string, voucherNo?: string): string {
@@ -194,8 +208,15 @@ function groupTransactionsByAgainstRef(transactions: LedgerTransaction[]): Invoi
         balanceIsDebit: true,
         narration: t.narration,
         isInvoiceRow: true,
+        isInvoice: t.isInvoice ?? true,
         chequeStatus: t.chequeStatus,
         chequeNumber: t.chequeNumber,
+        voucherId: t.voucherId,
+        voucherType: t.voucherType,
+        referenceType: t.referenceType,
+        referenceId: t.referenceId,
+        referenceNo: t.referenceNo,
+        invoiceType: t.invoiceType,
       });
     }
   }
@@ -220,8 +241,15 @@ function groupTransactionsByAgainstRef(transactions: LedgerTransaction[]): Invoi
           balanceIsDebit: true,
           narration: t.narration,
           isInvoiceRow: false,
+          isInvoice: false,
           chequeStatus: t.chequeStatus,
           chequeNumber: t.chequeNumber,
+          voucherId: t.voucherId,
+          voucherType: t.voucherType,
+          referenceType: t.referenceType,
+          referenceId: t.referenceId,
+          referenceNo: t.referenceNo,
+          invoiceType: t.invoiceType,
         });
       }
     } else {
@@ -244,8 +272,15 @@ function groupTransactionsByAgainstRef(transactions: LedgerTransaction[]): Invoi
             balanceIsDebit: true,
             narration: t.narration,
             isInvoiceRow: false,
+            isInvoice: false,
             chequeStatus: t.chequeStatus,
             chequeNumber: t.chequeNumber,
+            voucherId: t.voucherId,
+            voucherType: t.voucherType,
+            referenceType: t.referenceType,
+            referenceId: t.referenceId,
+            referenceNo: t.referenceNo,
+            invoiceType: t.invoiceType,
           });
         } else {
           const matchedGroup = refs.map((r) => groupsMap.get(r.toUpperCase())).find(Boolean);
@@ -263,8 +298,15 @@ function groupTransactionsByAgainstRef(transactions: LedgerTransaction[]): Invoi
             balanceIsDebit: true,
             narration: t.narration,
             isInvoiceRow: false,
+            isInvoice: false,
             chequeStatus: t.chequeStatus,
             chequeNumber: t.chequeNumber,
+            voucherId: t.voucherId,
+            voucherType: t.voucherType,
+            referenceType: t.referenceType,
+            referenceId: t.referenceId,
+            referenceNo: t.referenceNo,
+            invoiceType: t.invoiceType,
           });
         }
       } else {
@@ -292,8 +334,15 @@ function groupTransactionsByAgainstRef(transactions: LedgerTransaction[]): Invoi
             balanceIsDebit: true,
             narration: t.narration,
             isInvoiceRow: false,
+            isInvoice: false,
             chequeStatus: t.chequeStatus,
             chequeNumber: t.chequeNumber,
+            voucherId: t.voucherId,
+            voucherType: t.voucherType,
+            referenceType: t.referenceType,
+            referenceId: t.referenceId,
+            referenceNo: t.referenceNo,
+            invoiceType: t.invoiceType,
           });
         } else {
           const onAccountGroup = getOrCreateGroup('__ON_ACCOUNT__', 'On Account / Other', false);
@@ -309,8 +358,15 @@ function groupTransactionsByAgainstRef(transactions: LedgerTransaction[]): Invoi
             balanceIsDebit: true,
             narration: t.narration,
             isInvoiceRow: false,
+            isInvoice: false,
             chequeStatus: t.chequeStatus,
             chequeNumber: t.chequeNumber,
+            voucherId: t.voucherId,
+            voucherType: t.voucherType,
+            referenceType: t.referenceType,
+            referenceId: t.referenceId,
+            referenceNo: t.referenceNo,
+            invoiceType: t.invoiceType,
           });
         }
       }
@@ -461,6 +517,8 @@ interface LedgerAccountOption {
 }
 
 export default function LedgerReport() {
+  const navigate = useNavigate();
+  const location = useLocation();
   const [accounts, setAccounts] = useState<LedgerAccountOption[]>([]);
   const [selectedAccount, setSelectedAccount] = useState<LedgerAccountOption | null>(null);
   const [fromDate, setFromDate] = useState(() => new Date().toISOString().split('T')[0]);
@@ -472,6 +530,157 @@ export default function LedgerReport() {
 
   const companyId = useAppSelector((s) => s.app.selectedCompanyId);
   const financialYearId = useAppSelector((s) => s.app.selectedFinancialYearId);
+
+  const handleRowDoubleClick = (row: LedgerTransaction | GroupedTransactionRow) => {
+    const entryName = (row.entryName || '').toLowerCase();
+    const vNo = (row.voucherNo || '').toUpperCase();
+    const refType = (row.referenceType || '').toLowerCase();
+    const vType = (row.voucherType || '').toLowerCase();
+    const targetId = row.referenceId || row.voucherId;
+    const invNo = row.voucherNo && row.voucherNo !== '-' ? row.voucherNo : (row.referenceNo || row.reference);
+    const invoiceType = (row.invoiceType || '').toUpperCase();
+
+    // 1. Sales Return
+    if (refType === 'salesreturn' || entryName.includes('sales return') || invoiceType === 'RETURN') {
+      navigate('/entry/sales-return', {
+        state: { returnId: targetId, invoiceId: targetId, invoiceNo: invNo },
+      });
+      return;
+    }
+
+    // 2. Sales B2B / B2C / POS / Quotation
+    const isSales =
+      refType === 'salesinvoice' ||
+      entryName.includes('sales') ||
+      vNo.startsWith('B2C') ||
+      vNo.startsWith('B2B') ||
+      vNo.startsWith('INV') ||
+      vNo.startsWith('POS') ||
+      vNo.startsWith('QTN') ||
+      row.isInvoice;
+
+    if (isSales) {
+      if (invoiceType === 'POS' || vNo.startsWith('POS') || entryName.includes('sales pos')) {
+        navigate('/entry/pos', {
+          state: { invoiceId: targetId, invoiceNo: invNo },
+        });
+        return;
+      }
+      if (invoiceType === 'QUOTATION' || vNo.startsWith('QTN') || entryName.includes('quotation')) {
+        navigate('/entry/quotation-sales', {
+          state: { invoiceId: targetId, invoiceNo: invNo },
+        });
+        return;
+      }
+      if (
+        invoiceType === 'B2B' ||
+        vNo.startsWith('B2B') ||
+        entryName.includes('b2b') ||
+        (entryName === 'sales' && !vNo.startsWith('B2C') && !vNo.startsWith('POS'))
+      ) {
+        navigate('/entry/sales-b2b', {
+          state: { invoiceId: targetId, invoiceNo: invNo },
+        });
+        return;
+      }
+      navigate('/entry/sales-b2c', {
+        state: { invoiceId: targetId, invoiceNo: invNo },
+      });
+      return;
+    }
+
+    // 3. Purchase Return
+    if (refType === 'purchasereturn' || entryName.includes('purchase return')) {
+      navigate('/entry/purchase-return', {
+        state: { returnId: targetId, invoiceId: targetId, invoiceNo: invNo },
+      });
+      return;
+    }
+
+    // 4. Purchase Invoice
+    if (
+      refType === 'purchaseinvoice' ||
+      entryName.includes('purchase') ||
+      vNo.startsWith('PUR')
+    ) {
+      navigate('/entry/purchase', {
+        state: { invoiceId: targetId, invoiceNo: invNo },
+      });
+      return;
+    }
+
+    // 5. Vouchers
+    if (
+      vType === 'chequepayment' ||
+      entryName.includes('cheque payment') ||
+      entryName.includes('bank payment')
+    ) {
+      navigate('/entry/voucher/cheque-payment', {
+        state: { voucherId: row.voucherId || targetId },
+      });
+      return;
+    }
+
+    if (
+      vType === 'chequereceipt' ||
+      entryName.includes('cheque receipt') ||
+      entryName.includes('bank receipt')
+    ) {
+      navigate('/entry/voucher/cheque-receipt', {
+        state: { voucherId: row.voucherId || targetId },
+      });
+      return;
+    }
+
+    if (vType === 'payment' || entryName.includes('payment voucher') || entryName === 'payment') {
+      navigate('/entry/voucher/payment', {
+        state: { voucherId: row.voucherId || targetId },
+      });
+      return;
+    }
+
+    if (vType === 'receipt' || entryName.includes('receipt voucher') || entryName === 'receipt') {
+      navigate('/entry/voucher/receipt', {
+        state: { voucherId: row.voucherId || targetId },
+      });
+      return;
+    }
+
+    if (vType === 'contra' || entryName.includes('contra')) {
+      navigate('/entry/voucher/contra', {
+        state: { voucherId: row.voucherId || targetId },
+      });
+      return;
+    }
+
+    if (vType === 'journal' || entryName.includes('journal')) {
+      navigate('/entry/voucher/journal', {
+        state: { voucherId: row.voucherId || targetId },
+      });
+      return;
+    }
+
+    if (vType === 'opening' || entryName.includes('opening')) {
+      navigate('/entry/opening-balance');
+      return;
+    }
+
+    if (entryName.includes('damage') || entryName.includes('wastage')) {
+      navigate('/entry/damage-wastage');
+      return;
+    }
+
+    if (entryName.includes('stock adjustment')) {
+      navigate('/entry/stock-adjustment');
+      return;
+    }
+
+    if (row.voucherId) {
+      navigate('/entry/voucher/receipt', {
+        state: { voucherId: row.voucherId },
+      });
+    }
+  };
 
   const isBankAccount = useMemo(() => {
     if (!selectedAccount) return false;
@@ -486,23 +695,123 @@ export default function LedgerReport() {
     return false;
   }, [selectedAccount]);
 
+  const selectedAccountRef = useRef<LedgerAccountOption | null>(selectedAccount);
+  selectedAccountRef.current = selectedAccount;
+  const fromDateRef = useRef(fromDate);
+  fromDateRef.current = fromDate;
+  const toDateRef = useRef(toDate);
+  toDateRef.current = toDate;
+  const companyIdRef = useRef(companyId);
+  companyIdRef.current = companyId;
+  const financialYearIdRef = useRef(financialYearId);
+  financialYearIdRef.current = financialYearId;
+  const handledTargetAccountIdRef = useRef<string | null>(null);
+
+  const loadLedgerData = useCallback(async (targetAccId?: string, fDate?: string, tDate?: string) => {
+    const cId = companyIdRef.current;
+    const fyId = financialYearIdRef.current;
+    const accId = targetAccId || selectedAccountRef.current?._id;
+    const from = fDate || fromDateRef.current;
+    const to = tDate || toDateRef.current;
+
+    if (!cId || !fyId || !accId || !from || !to) {
+      setData(null);
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await ledgerApi.report(cId, fyId, accId, from, to);
+      setData(res.data.data as LedgerReportData);
+    } catch (e) {
+      console.error('Failed to load ledger report', e);
+      setData(null);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (!companyId) return;
+    const navState = location.state as { accountId?: string; fromDate?: string; toDate?: string } | undefined;
+    const queryParams = new URLSearchParams(location.search);
+    const targetAccountId = navState?.accountId || queryParams.get('accountId');
+    const targetFromDate = navState?.fromDate || queryParams.get('fromDate');
+    const targetToDate = navState?.toDate || queryParams.get('toDate');
+
+    if (targetFromDate) setFromDate(targetFromDate);
+    if (targetToDate) setToDate(targetToDate);
+
+    const isNewNavTarget = Boolean(targetAccountId && targetAccountId !== handledTargetAccountIdRef.current);
+    if (isNewNavTarget) {
+      handledTargetAccountIdRef.current = targetAccountId!;
+    }
+
     ledgerAccountApi.list(companyId).then((res) => {
       const list = (res.data.data as LedgerAccountOption[]) ?? [];
       setAccounts(list);
+      setSelectedAccount((prev) => {
+        if (isNewNavTarget) {
+          const matched = list.find((a) => a._id === targetAccountId);
+          if (matched) return matched;
+        }
+        if (prev && list.some((a) => a._id === prev._id)) return prev;
+        const cashAcc = list.find(
+          (a) =>
+            a.name?.trim().toUpperCase() === 'CASH IN HAND' ||
+            a.code?.trim().toUpperCase() === 'CASH001' ||
+            a.name?.trim().toUpperCase().includes('CASH IN HAND') ||
+            a.name?.trim().toUpperCase() === 'CASH'
+        );
+        return cashAcc || (list.length > 0 ? list[0] : null);
+      });
     });
-  }, [companyId]);
+  }, [companyId, location.state, location.search]);
 
-  const loadReport = () => {
-    if (!companyId || !financialYearId || !selectedAccount || !fromDate || !toDate) return;
-    setLoading(true);
-    ledgerApi
-      .report(companyId, financialYearId, selectedAccount._id, fromDate, toDate)
-      .then((res) => setData(res.data.data as LedgerReportData))
-      .catch((e) => console.error('Failed to load ledger report', e))
-      .finally(() => setLoading(false));
-  };
+  useEffect(() => {
+    if (!companyId || !financialYearId || !selectedAccount || !fromDate || !toDate) {
+      setData(null);
+      return;
+    }
+    loadLedgerData(selectedAccount._id, fromDate, toDate);
+  }, [companyId, financialYearId, selectedAccount, fromDate, toDate, loadLedgerData]);
+
+  // Window activated & live update: refresh ledger report without resetting selected account or page state
+  useEffect(() => {
+    const onWindowActivated = (e: any) => {
+      const p = e.detail?.path;
+      if (p === '/report/ledger') {
+        // 1. Refresh accounts list in case new ledgers were created, preserving selected account
+        if (companyIdRef.current) {
+          ledgerAccountApi.list(companyIdRef.current).then((res) => {
+            const list = (res.data.data as LedgerAccountOption[]) ?? [];
+            setAccounts(list);
+            if (selectedAccountRef.current) {
+              const matched = list.find((a) => a._id === selectedAccountRef.current?._id);
+              if (matched) setSelectedAccount(matched);
+            }
+          }).catch(() => {});
+        }
+        // 2. Refresh report data for currently selected account
+        loadLedgerData();
+      }
+    };
+
+    const onDatabaseUpdated = () => {
+      if (window.location.hash.includes('/report/ledger') || window.location.pathname.includes('/report/ledger')) {
+        loadLedgerData();
+      }
+    };
+
+    window.addEventListener('app:window-activated', onWindowActivated);
+    window.addEventListener('app:database-updated', onDatabaseUpdated);
+    window.addEventListener('app:ledgers-updated', onWindowActivated);
+
+    return () => {
+      window.removeEventListener('app:window-activated', onWindowActivated);
+      window.removeEventListener('app:database-updated', onDatabaseUpdated);
+      window.removeEventListener('app:ledgers-updated', onWindowActivated);
+    };
+  }, [loadLedgerData]);
 
   const invoiceGroups = useMemo(() => {
     if (!data?.transactions) return [];
@@ -599,27 +908,6 @@ export default function LedgerReport() {
           onChange={setToDate}
         />
 
-        <Button
-          variant="contained"
-          onClick={loadReport}
-          disabled={loading || !selectedAccount}
-          startIcon={loading ? <CircularProgress size={16} color="inherit" /> : <SearchIcon sx={{ fontSize: 19 }} />}
-          sx={{
-            height: 40,
-            px: 2.5,
-            bgcolor: '#0097a7',
-            '&:hover': { bgcolor: '#00838f' },
-            borderRadius: '8px',
-            textTransform: 'none',
-            fontWeight: 600,
-            fontSize: '0.88rem',
-            boxShadow: 'none',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          Load Report
-        </Button>
-
         {/* Against Ref Checkbox Toggle */}
         <FormControlLabel
           control={
@@ -682,8 +970,15 @@ export default function LedgerReport() {
         )}
       </Box>
 
+      {/* Loading state */}
+      {loading && (
+        <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', py: 8 }}>
+          <CircularProgress size={32} sx={{ color: '#0097a7' }} />
+        </Box>
+      )}
+
       {/* Transactions Table */}
-      {data && (
+      {!loading && data && (
         <TableContainer
           component={Paper}
           variant="outlined"
@@ -766,6 +1061,13 @@ export default function LedgerReport() {
                         {/* Group Header Row */}
                         <TableRow
                           onClick={() => toggleGroup(group.key)}
+                          onDoubleClick={(e) => {
+                            e.stopPropagation();
+                            if (group.transactions && group.transactions.length > 0) {
+                              handleRowDoubleClick(group.transactions[0]);
+                            }
+                          }}
+                          title="Click to collapse/expand. Double-click to open invoice."
                           sx={{
                             bgcolor: '#f8fafc',
                             cursor: 'pointer',
@@ -869,8 +1171,11 @@ export default function LedgerReport() {
                               <TableRow
                                 key={`${group.key}-${rowIdx}`}
                                 hover
+                                onDoubleClick={() => handleRowDoubleClick(t)}
+                                title="Double-click to open transaction"
                                 sx={{
                                   bgcolor: rowBg,
+                                  cursor: 'pointer',
                                   '&:hover': { bgcolor: hoverBg },
                                   '& td': { py: 0.7, px: 1.25, fontWeight: 700, borderRight: '1px solid #f1f5f9' },
                                   '& td:last-child': { borderRight: 'none' },
@@ -1056,8 +1361,11 @@ export default function LedgerReport() {
                       <TableRow
                         key={i}
                         hover
+                        onDoubleClick={() => handleRowDoubleClick(t)}
+                        title="Double-click to open transaction"
                         sx={{
                           bgcolor: rowBg,
+                          cursor: 'pointer',
                           '&:hover': { bgcolor: hoverBg },
                           '& td': { py: 0.75, px: 1.25, fontWeight: 700, borderRight: '1px solid #f1f5f9' },
                           '& td:last-child': { borderRight: 'none' },
@@ -1322,7 +1630,7 @@ export default function LedgerReport() {
       )}
 
       {/* Cheque & Reconciliation Summary Cards */}
-      {data && (
+      {!loading && data && (
         <Box
           sx={{
             mt: 1.8,

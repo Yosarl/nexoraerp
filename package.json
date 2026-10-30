@@ -7,13 +7,15 @@
     "install:all": "npm install && cd backend && npm install && cd ../frontend && npm install",
     "dev:backend": "cd backend && npm run dev",
     "dev:frontend": "cd frontend && npm run dev",
-    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev": "npm run build:backend && concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
     "build:backend": "cd backend && npm run build",
     "build:frontend": "cd frontend && npm run build",
     "build": "npm run build:backend && npm run build:frontend",
     "clear-data": "cd backend && npm run clear-data",
     "seed": "cd backend && npm run seed",
     "fresh-start": "cd backend && npm run clear-data && npm run seed",
+    "backup": "cd backend && npm run backup",
+    "restore": "cd backend && npm run restore",
     "electron:dev": "npm run build:backend && concurrently \"npm run dev:backend\" \"cd frontend && npm run electron:dev\"",
     "electron:build": "cd frontend && npm run electron:build",
     "electron:build:win": "cd frontend && npm run electron:build:win",
@@ -24,6 +26,7 @@
     "concurrently": "^8.2.2"
   },
   "dependencies": {
-    "all": "^0.0.0"
+    "all": "^0.0.0",
+    "motion": "^14.4.0"
   }
 }

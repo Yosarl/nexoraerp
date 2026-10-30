@@ -20,7 +20,7 @@ import {
 } from '@mui/material';
 import UploadFileIcon from '@mui/icons-material/UploadFile';
 import { useAppSelector } from '../../store/hooks';
-import { openingStockApi } from '../../services/api';
+import { openingPurchaseApi } from '../../services/api';
 
 const FIELDS = ['productCode', 'productName', 'barcode', 'category', 'quantity', 'cost', 'vendor'] as const;
 const FIELD_LABELS: Record<string, string> = {
@@ -52,7 +52,7 @@ function parseCSV(text: string): string[][] {
   });
 }
 
-export default function ImportOpeningStock() {
+export default function ImportOpeningPurchase() {
   const [activeStep, setActiveStep] = useState(0);
   const [file, setFile] = useState<File | null>(null);
   const [rows, setRows] = useState<string[][]>([]);
@@ -112,7 +112,7 @@ export default function ImportOpeningStock() {
     setLoading(true);
     setResult(null);
     try {
-      const res = await openingStockApi.importProductsAndStock(companyId, financialYearId, {
+      const res = await openingPurchaseApi.importProductsAndStock(companyId, financialYearId, {
         mapping: mapping as unknown as Record<string, number>,
         rows,
         headers,
@@ -140,10 +140,10 @@ export default function ImportOpeningStock() {
 
   return (
     <Box>
-      <Typography variant="h4" gutterBottom>Import Opening Stock Products</Typography>
+      <Typography variant="h4" gutterBottom>Import Opening Purchase Products</Typography>
       <Alert severity="info" sx={{ mb: 2 }}>
         Upload a CSV or Excel file with columns for product code, name, barcode, category, quantity, cost, and optional vendor.
-        New products will be created where code/barcode does not exist; then opening stock will be recorded.
+        New products will be created where code/barcode does not exist; then opening purchase will be recorded.
       </Alert>
       <Stepper activeStep={activeStep} sx={{ mb: 3 }}>
         {steps.map((label) => <Step key={label}><StepLabel>{label}</StepLabel></Step>)}

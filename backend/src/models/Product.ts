@@ -36,6 +36,18 @@ export interface IProduct extends Document {
   specialPrice?: number;
   specialPrice2?: number;
   imageUrl?: string;
+  officialCode?: string;
+  genericName?: string;
+  medCodeProvider?: string;
+  strength?: string;
+  strengthUnit?: string;
+  dosageForm?: string;
+  manufacturer?: string;
+  packageUnit?: string;
+  packageSize?: string;
+  routeOfAdmin?: string;
+  isControlledSubstance?: boolean;
+  controlledSubstance?: string;
   multiUnits: IMultiUnit[];
   allowBatches?: boolean;
   purchasePriceLegacy?: number;
@@ -90,6 +102,18 @@ const ProductSchema = new Schema<IProduct>(
     specialPrice: { type: Number },
     specialPrice2: { type: Number },
     imageUrl: { type: String },
+    officialCode: { type: String },
+    genericName: { type: String },
+    medCodeProvider: { type: String },
+    strength: { type: String },
+    strengthUnit: { type: String },
+    dosageForm: { type: String },
+    manufacturer: { type: String },
+    packageUnit: { type: String },
+    packageSize: { type: String },
+    routeOfAdmin: { type: String },
+    isControlledSubstance: { type: Boolean, default: false },
+    controlledSubstance: { type: String },
     multiUnits: { type: [MultiUnitSchema], default: [] },
     allowBatches: { type: Boolean, default: true },
     sellingPrice: { type: Number, default: 0 },
@@ -116,6 +140,8 @@ ProductSchema.index(
 ProductSchema.index({ companyId: 1, name: 'text' });
 ProductSchema.index({ companyId: 1, internationalBarcode: 1 }, { sparse: true });
 ProductSchema.index({ companyId: 1, systemBarcode: 1 }, { sparse: true });
+ProductSchema.index({ companyId: 1, officialCode: 1 }, { sparse: true });
+ProductSchema.index({ companyId: 1, genericName: 1 }, { sparse: true });
 ProductSchema.index({ companyId: 1, categoryId: 1 });
 ProductSchema.index({ companyId: 1, defaultVendorId: 1 });
 

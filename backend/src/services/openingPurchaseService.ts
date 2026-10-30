@@ -3,13 +3,82 @@ import { Product } from '../models/Product';
 import { InventoryTransaction } from '../models/InventoryTransaction';
 import { Company } from '../models/Company';
 import { LedgerAccount } from '../models/LedgerAccount';
+import { LedgerGroup } from '../models/LedgerGroup';
 import { UnitOfMeasure } from '../models/UnitOfMeasure';
 import { AuditLog } from '../models/AuditLog';
-import { AppError } from '../middlewares/errorHandler';
+import { AppError, isDuplicateKeyError } from '../middlewares/errorHandler';
 import * as voucherService from './voucherService';
 import * as ledgerService from './ledgerService';
 import * as productService from './productService';
-import { OpeningStockEntry } from '../models/OpeningStockEntry';
+import { OpeningPurchaseEntry } from '../models/OpeningPurchaseEntry';
+import { Voucher } from '../models/Voucher';
+
+export async function getOpeningAccountsLedger(companyId: string): Promise<any> {
+  let account = await LedgerAccount.findOne({
+    companyId,
+    $or: [
+      { name: { $regex: /^opening\s*accounts?$/i } },
+      { aliasName: { $regex: /^opening\s*accounts?$/i } },
+      { code: { $regex: /^opening/i } },
+    ],
+  });
+  if (account) return account;
+
+  account = await LedgerAccount.findOne({
+    companyId,
+    $or: [
+      { code: { $regex: /EQUITY|CAPITAL/i } },
+      { name: { $regex: /CAPITAL|EQUITY/i } },
+    ],
+  });
+  if (account) return account;
+
+  const equityGroup = await LedgerGroup.findOne({
+    companyId,
+    type: { $in: ['EQUITY', 'Equity'] },
+  });
+  if (equityGroup) {
+    account = await LedgerAccount.findOne({ companyId, groupId: equityGroup._id });
+    if (account) return account;
+  }
+
+  return null;
+}
+
+export async function getOpeningPurchaseAccount(companyId: string): Promise<any> {
+  let account = await LedgerAccount.findOne({
+    companyId,
+    $or: [
+      { name: /^opening\s*purchase(\s*account|\s*a\/?c)?$/i },
+      { aliasName: /^opening\s*purchase(\s*account|\s*a\/?c)?$/i },
+      { code: /^OP_PUR|ACC0008|OPPUR/i },
+    ],
+  });
+  if (account) return account;
+
+  const purGroup = await LedgerGroup.findOne({
+    companyId,
+    $or: [
+      { code: 'PURCH' },
+      { code: 'PURCH_AC' },
+      { name: /^purchases?$/i },
+      { type: { $in: ['EXPENSE', 'Expense'] } },
+    ],
+  });
+
+  account = await LedgerAccount.create({
+    companyId,
+    name: 'Opening Purchase A/c',
+    code: 'OPPUR001',
+    type: 'Expense',
+    groupId: purGroup?._id,
+  });
+  return account;
+}
+
+export async function getStockInHandLedger(companyId: string): Promise<any> {
+  return getOpeningPurchaseAccount(companyId);
+}
 
 export interface OpeningStockItem {
   productId: string;
@@ -26,14 +95,10 @@ export async function postOpeningStock(
   const company = await Company.findById(companyId);
   if (!company) throw new AppError('Company not found', 404);
 
-  const stockAccount = await LedgerAccount.findOne({
-    companyId,
-    code: /STOCK|INVENTORY/i,
-    type: 'Other',
-  });
-  const equityGroup = await LedgerAccount.findOne({ companyId, code: /EQUITY|CAPITAL/i });
-  const stockLedgerId = stockAccount?._id.toString();
-  const equityLedgerId = equityGroup?._id.toString();
+  const openingPurchaseAcc = await getOpeningPurchaseAccount(companyId);
+  const openingAccount = await getOpeningAccountsLedger(companyId);
+  const openingPurchaseLedgerId = openingPurchaseAcc?._id?.toString();
+  const equityLedgerId = openingAccount?._id?.toString();
 
   let totalStockValue = 0;
   const invTxns: Array<{
@@ -71,15 +136,15 @@ export async function postOpeningStock(
   await InventoryTransaction.insertMany(invTxns);
 
   let voucherId: string | undefined;
-  if (stockLedgerId && equityLedgerId && totalStockValue > 0) {
+  if (openingPurchaseLedgerId && equityLedgerId && totalStockValue > 0) {
     const voucher = await voucherService.createAndPost({
       companyId,
       financialYearId,
       voucherType: 'Opening',
       date,
-      narration: 'Opening stock',
+      narration: 'Opening Purchase',
       lines: [
-        { ledgerAccountId: stockLedgerId, debitAmount: totalStockValue, creditAmount: 0 },
+        { ledgerAccountId: openingPurchaseLedgerId, debitAmount: totalStockValue, creditAmount: 0 },
         { ledgerAccountId: equityLedgerId, debitAmount: 0, creditAmount: totalStockValue },
       ],
       createdBy: userId,
@@ -216,20 +281,25 @@ export async function importProductsAndOpeningStock(
 
 // ─── Document-based Opening Stock Entry (list / get / create / update) ───
 
-const OPENING_STOCK_ENTRY_PREFIX = 'OS';
+const OPENING_STOCK_ENTRY_PREFIX = 'OP';
 
-export async function getNextOpeningStockEntryNo(
+export async function getNextOpeningPurchaseEntryNo(
   companyId: string,
-  financialYearId: string
+  _financialYearId?: string
 ): Promise<string> {
-  const last = await OpeningStockEntry.findOne({ companyId, financialYearId })
-    .sort({ entryNo: -1 })
-    .select('entryNo')
-    .lean();
-  if (!last?.entryNo) return `${OPENING_STOCK_ENTRY_PREFIX}-000001`;
-  const match = last.entryNo.match(/-(\d+)$/);
-  const num = match ? parseInt(match[1], 10) + 1 : 1;
-  return `${OPENING_STOCK_ENTRY_PREFIX}-${num.toString().padStart(6, '0')}`;
+  // Unique index is companyId + entryNo (not per financial year), so the next
+  // number must be the company-wide max. String sort on entryNo is also unsafe.
+  const docs = await OpeningPurchaseEntry.find({ companyId }).select('entryNo').lean();
+  let maxNum = 0;
+  for (const doc of docs) {
+    if (!doc.entryNo) continue;
+    const match = doc.entryNo.match(/-(\d+)$/);
+    if (match) {
+      const num = parseInt(match[1], 10);
+      if (num > maxNum) maxNum = num;
+    }
+  }
+  return `${OPENING_STOCK_ENTRY_PREFIX}-${String(maxNum + 1).padStart(6, '0')}`;
 }
 
 export interface OpeningStockBatchInput {
@@ -248,7 +318,7 @@ export interface OpeningStockBatchInput {
   multiUnitId?: string;
 }
 
-export interface CreateOpeningStockEntryInput {
+export interface CreateOpeningPurchaseEntryInput {
   companyId: string;
   financialYearId: string;
   date?: string;
@@ -266,7 +336,8 @@ function createInvTxnsAndVoucher(
   entryNo: string,
   date: Date,
   batches: Array<{ productId: mongoose.Types.ObjectId; quantity: number; purchasePrice: number; discAmount: number }>,
-  userId?: string
+  userId?: string,
+  taxMode: 'inclusive' | 'exclusive' = 'inclusive'
 ): Promise<string | undefined> {
   let totalStockValue = 0;
   const invTxns: Array<{
@@ -278,6 +349,7 @@ function createInvTxnsAndVoucher(
     quantityIn: number;
     quantityOut: number;
     costPrice: number;
+    taxMode: 'inclusive' | 'exclusive';
     referenceType: string;
     referenceId: mongoose.Types.ObjectId;
     narration: string;
@@ -296,27 +368,28 @@ function createInvTxnsAndVoucher(
       quantityIn: b.quantity,
       quantityOut: 0,
       costPrice,
-      referenceType: 'OpeningStockEntry',
+      taxMode,
+      referenceType: 'OpeningPurchaseEntry',
       referenceId: entryId,
-      narration: `Opening Stock ${entryNo}`,
+      narration: `Opening Purchase ${entryNo}`,
       createdBy: userId,
     });
   }
 
   return InventoryTransaction.insertMany(invTxns).then(async () => {
-    const stockAccount = await LedgerAccount.findOne({ companyId, code: /STOCK|INVENTORY/i, type: 'Other' });
-    const equityGroup = await LedgerAccount.findOne({ companyId, code: /EQUITY|CAPITAL/i });
-    const stockLedgerId = stockAccount?._id.toString();
-    const equityLedgerId = equityGroup?._id.toString();
-    if (!stockLedgerId || !equityLedgerId || totalStockValue <= 0) return undefined;
+    const openingPurchaseAcc = await getOpeningPurchaseAccount(companyId);
+    const openingAccount = await getOpeningAccountsLedger(companyId);
+    const openingPurchaseLedgerId = openingPurchaseAcc?._id?.toString();
+    const equityLedgerId = openingAccount?._id?.toString();
+    if (!openingPurchaseLedgerId || !equityLedgerId || totalStockValue <= 0) return undefined;
     const voucher = await voucherService.createAndPost({
       companyId,
       financialYearId,
       voucherType: 'Opening',
       date,
-      narration: `Opening Stock ${entryNo}`,
+      narration: `Opening Purchase ${entryNo}`,
       lines: [
-        { ledgerAccountId: stockLedgerId, debitAmount: totalStockValue, creditAmount: 0 },
+        { ledgerAccountId: openingPurchaseLedgerId, debitAmount: totalStockValue, creditAmount: 0 },
         { ledgerAccountId: equityLedgerId, debitAmount: 0, creditAmount: totalStockValue },
       ],
       createdBy: userId,
@@ -325,14 +398,14 @@ function createInvTxnsAndVoucher(
   });
 }
 
-export async function createOpeningStockEntry(
-  input: CreateOpeningStockEntryInput
+export async function createOpeningPurchaseEntry(
+  input: CreateOpeningPurchaseEntryInput
 ): Promise<{ entryId: string; entryNo: string }> {
   const company = await Company.findById(input.companyId);
   if (!company) throw new AppError('Company not found', 404);
   if (!input.batches || input.batches.length === 0) throw new AppError('At least one batch is required', 400);
 
-  const entryNo = await getNextOpeningStockEntryNo(input.companyId, input.financialYearId);
+  let entryNo = await getNextOpeningPurchaseEntryNo(input.companyId, input.financialYearId);
   const date = input.date ? new Date(input.date) : new Date();
 
   let totalAmount = 0;
@@ -375,18 +448,29 @@ export async function createOpeningStockEntry(
     });
   }
 
-  const doc = await OpeningStockEntry.create({
+  const entryPayload = {
     companyId: input.companyId,
     financialYearId: input.financialYearId,
-    entryNo,
     date,
     vatType: input.vatType ?? 'Vat',
     taxMode: input.taxMode ?? 'inclusive',
-    narration: input.narration ?? 'Opening stock',
+    narration: input.narration ?? 'Opening purchase',
     batches: batchDocs,
     totalAmount: parseFloat(totalAmount.toFixed(2)),
     createdBy: input.createdBy,
-  });
+  };
+
+  let doc;
+  for (let attempt = 0; attempt < 8; attempt++) {
+    try {
+      doc = await OpeningPurchaseEntry.create({ ...entryPayload, entryNo });
+      break;
+    } catch (err) {
+      if (!isDuplicateKeyError(err) || attempt === 7) throw err;
+      entryNo = await getNextOpeningPurchaseEntryNo(input.companyId, input.financialYearId);
+    }
+  }
+  if (!doc) throw new AppError('Failed to save opening purchase entry', 500);
 
   const voucherId = await createInvTxnsAndVoucher(
     input.companyId,
@@ -400,9 +484,10 @@ export async function createOpeningStockEntry(
       purchasePrice: b.purchasePrice,
       discAmount: b.discAmount,
     })),
-    input.createdBy
+    input.createdBy,
+    input.taxMode ?? 'inclusive'
   );
-  if (voucherId) await OpeningStockEntry.updateOne({ _id: doc._id }, { voucherId: new mongoose.Types.ObjectId(voucherId) });
+  if (voucherId) await OpeningPurchaseEntry.updateOne({ _id: doc._id }, { voucherId: new mongoose.Types.ObjectId(voucherId) });
 
   return { entryId: doc._id.toString(), entryNo };
 }
@@ -411,7 +496,7 @@ export async function listOpeningStockEntries(
   companyId: string,
   financialYearId: string
 ): Promise<Array<{ _id: string; entryNo: string; date: string; totalAmount: number }>> {
-  const list = await OpeningStockEntry.find({ companyId, financialYearId })
+  const list = await OpeningPurchaseEntry.find({ companyId, financialYearId })
     .sort({ date: 1, createdAt: 1 })
     .limit(500)
     .lean();
@@ -423,7 +508,7 @@ export async function listOpeningStockEntries(
   }));
 }
 
-export async function getOpeningStockEntryById(
+export async function getOpeningPurchaseEntryById(
   entryId: string,
   companyId: string
 ): Promise<{
@@ -450,7 +535,7 @@ export async function getOpeningStockEntryById(
     multiUnitId?: string;
   }>;
 } | null> {
-  const doc = await OpeningStockEntry.findOne({ _id: entryId, companyId }).lean();
+  const doc = await OpeningPurchaseEntry.findOne({ _id: entryId, companyId }).lean();
   if (!doc) return null;
   return {
     _id: doc._id.toString(),
@@ -478,19 +563,19 @@ export async function getOpeningStockEntryById(
   };
 }
 
-export async function updateOpeningStockEntry(
+export async function updateOpeningPurchaseEntry(
   entryId: string,
   companyId: string,
-  input: CreateOpeningStockEntryInput
+  input: CreateOpeningPurchaseEntryInput
 ): Promise<{ entryId: string; entryNo: string }> {
-  const doc = await OpeningStockEntry.findOne({ _id: entryId, companyId });
-  if (!doc) throw new AppError('Opening stock entry not found', 404);
+  const doc = await OpeningPurchaseEntry.findOne({ _id: entryId, companyId });
+  if (!doc) throw new AppError('Opening purchase entry not found', 404);
   if (!input.batches || input.batches.length === 0) throw new AppError('At least one batch is required', 400);
 
   const entryNo = doc.entryNo;
   const date = input.date ? new Date(input.date) : doc.date;
 
-  await InventoryTransaction.deleteMany({ referenceType: 'OpeningStockEntry', referenceId: doc._id });
+  await InventoryTransaction.deleteMany({ referenceType: 'OpeningPurchaseEntry', referenceId: doc._id });
 
   if (doc.voucherId) {
     const { LedgerEntry } = await import('../models/LedgerEntry');
@@ -538,14 +623,14 @@ export async function updateOpeningStockEntry(
     });
   }
 
-  await OpeningStockEntry.updateOne(
+  await OpeningPurchaseEntry.updateOne(
     { _id: entryId, companyId },
     {
       $set: {
         date,
         vatType: input.vatType ?? 'Vat',
         taxMode: input.taxMode ?? 'inclusive',
-        narration: input.narration ?? 'Opening stock',
+        narration: input.narration ?? 'Opening purchase',
         batches: batchDocs,
         totalAmount: parseFloat(totalAmount.toFixed(2)),
       },
@@ -565,22 +650,77 @@ export async function updateOpeningStockEntry(
       purchasePrice: b.purchasePrice,
       discAmount: b.discAmount,
     })),
-    input.createdBy
+    input.createdBy,
+    input.taxMode ?? 'inclusive'
   );
-  if (voucherId) await OpeningStockEntry.updateOne({ _id: entryId, companyId }, { voucherId: new mongoose.Types.ObjectId(voucherId) });
+  if (voucherId) await OpeningPurchaseEntry.updateOne({ _id: entryId, companyId }, { voucherId: new mongoose.Types.ObjectId(voucherId) });
 
   return { entryId, entryNo };
 }
 
-export async function deleteOpeningStockEntry(entryId: string, companyId: string): Promise<boolean> {
-  const doc = await OpeningStockEntry.findOne({ _id: entryId, companyId });
+export async function deleteOpeningPurchaseEntry(entryId: string, companyId: string): Promise<boolean> {
+  const doc = await OpeningPurchaseEntry.findOne({ _id: entryId, companyId });
   if (!doc) return false;
-  await InventoryTransaction.deleteMany({ referenceType: 'OpeningStockEntry', referenceId: doc._id });
+  await InventoryTransaction.deleteMany({ referenceType: 'OpeningPurchaseEntry', referenceId: doc._id });
   if (doc.voucherId) {
     const { LedgerEntry } = await import('../models/LedgerEntry');
     await LedgerEntry.deleteMany({ voucherId: doc.voucherId });
     await voucherService.deleteVoucher(doc.voucherId.toString());
   }
-  const result = await OpeningStockEntry.deleteOne({ _id: entryId, companyId });
+  const result = await OpeningPurchaseEntry.deleteOne({ _id: entryId, companyId });
   return result.deletedCount > 0;
 }
+
+export async function syncOpeningPurchaseVouchers(companyId: string): Promise<number> {
+  const entries = await OpeningPurchaseEntry.find({ companyId });
+  let synced = 0;
+  const openingPurchaseAcc = await getOpeningPurchaseAccount(companyId);
+  const openingAccount = await getOpeningAccountsLedger(companyId);
+  const openingPurchaseLedgerId = openingPurchaseAcc?._id?.toString();
+  const equityLedgerId = openingAccount?._id?.toString();
+
+  if (!openingPurchaseLedgerId || !equityLedgerId) return 0;
+
+  for (const entry of entries) {
+    if (entry.voucherId) {
+      const v = await Voucher.findById(entry.voucherId);
+      if (v) continue;
+    }
+    if ((entry.totalAmount || 0) <= 0) continue;
+
+    const voucher = await voucherService.createAndPost({
+      companyId,
+      financialYearId: entry.financialYearId.toString(),
+      voucherType: 'Opening',
+      date: entry.date,
+      narration: entry.narration || `Opening Purchase ${entry.entryNo}`,
+      lines: [
+        { ledgerAccountId: openingPurchaseLedgerId, debitAmount: entry.totalAmount, creditAmount: 0 },
+        { ledgerAccountId: equityLedgerId, debitAmount: 0, creditAmount: entry.totalAmount },
+      ],
+      createdBy: entry.createdBy?.toString(),
+    });
+
+    await OpeningPurchaseEntry.updateOne({ _id: entry._id }, { voucherId: voucher._id });
+    synced++;
+  }
+  return synced;
+}
+
+export const syncOpeningStockVouchers = syncOpeningPurchaseVouchers;
+
+// Aliases for compatibility
+export const createOpeningStockEntry = createOpeningPurchaseEntry;
+export const listOpeningPurchaseEntries = listOpeningStockEntries;
+export const getOpeningStockEntryById = getOpeningPurchaseEntryById;
+export const getNextOpeningStockEntryNo = getNextOpeningPurchaseEntryNo;
+export const updateOpeningStockEntry = updateOpeningPurchaseEntry;
+export const deleteOpeningStockEntry = deleteOpeningPurchaseEntry;
+export const postOpeningPurchase = postOpeningStock;
+export const importProductsAndOpeningPurchase = importProductsAndOpeningStock;
+
+export type OpeningPurchaseItem = OpeningStockItem;
+export type OpeningPurchaseBatchInput = OpeningStockBatchInput;
+export type CreateOpeningStockEntryInput = CreateOpeningPurchaseEntryInput;
+
+

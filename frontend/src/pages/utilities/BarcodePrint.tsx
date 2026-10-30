@@ -1,5 +1,5 @@
-import PlaceholderPage from '../../components/PlaceholderPage';
+import BarcodeDesign from './BarcodeDesign';
 
 export default function BarcodePrint() {
-  return <PlaceholderPage title="Barcode Print" message="Print barcode labels. Under development." />;
+  return <BarcodeDesign />;
 }

@@ -12,7 +12,7 @@ interface AppState {
 const initialState: AppState = {
   selectedCompanyId: savedCompanyId,
   selectedFinancialYearId: savedFinancialYearId,
-  drawerOpen: true,
+  drawerOpen: false,
 };
 
 const appSlice = createSlice({

@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Pharmacy POS Sales</title>
+<script src="./vendor/react.js"></script>
+<script src="./vendor/react-dom.js"></script>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;font-family:'Plus Jakarta Sans',system-ui,sans-serif;background:#eef2f1;color:#12201e}
+.lb{font-size:12px;font-weight:600;color:#4b5f5c;margin-bottom:6px;display:block}
+.fld{height:44px;box-sizing:border-box;width:100%;border:1px solid #c6d2cf;border-radius:10px;padding:0 12px;font:500 14px 'Plus Jakarta Sans',system-ui,sans-serif;color:#12201e;background:#fff}
+.fld:focus{outline:2px solid #0f6b62;outline-offset:0;border-color:#0f6b62}
+.ib{width:44px;height:44px;border-radius:10px;border:1px solid #c6d2cf;background:#fff;color:#0f6b62;cursor:pointer;display:flex;align-items:center;justify-content:center;flex:none}
+.sb{height:44px;border-radius:10px;border:1px solid #c6d2cf;background:#fff;color:#12201e;font:600 14px 'Plus Jakarta Sans',system-ui,sans-serif;cursor:pointer;padding:0 16px}
+.qb{width:36px;height:36px;border-radius:8px;border:1px solid #c6d2cf;background:#fff;font:700 18px 'Plus Jakarta Sans',system-ui,sans-serif;cursor:pointer;color:#12201e}
+.tile{text-align:left;border:1px solid #d5dfdc;background:#fff;border-radius:12px;padding:12px 14px;cursor:pointer;font-family:'Plus Jakarta Sans',system-ui,sans-serif;color:#12201e;min-height:64px}
+.tile:hover{border-color:#0f6b62;background:#f2f9f8}
+</style>
+</helmet>
+<div style="width:1600px;height:1000px;box-sizing:border-box;display:flex;flex-direction:column;background:#eef2f1">
+
+<div style="height:68px;flex:none;background:#fff;border-bottom:1px solid #d5dfdc;display:flex;align-items:center;gap:28px;padding:0 24px">
+<div style="font-size:20px;font-weight:800;color:#0b4f48;letter-spacing:-0.3px">Sales Invoice</div>
+<div style="display:flex;gap:20px;align-items:center;flex-grow:1">
+<div><span class="lb" style="margin:0 0 2px">Invoice date</span><div style="font-size:14px;font-weight:600">28/09/2026</div></div>
+<div><span class="lb" style="margin:0 0 2px">Invoice no.</span><div style="font-size:14px;font-weight:600;color:#4b5f5c">Auto-generated</div></div>
+<div style="width:220px"><label class="lb" for="sm" style="margin:0 0 2px">Salesman</label>
+<select id="sm" class="fld" style="height:36px;padding:0 8px"><option>-- Select --</option></select></div>
+<div style="width:260px"><label class="lb" for="cu" style="margin:0 0 2px">Customer</label>
+<select id="cu" class="fld" style="height:36px;padding:0 8px"><option>Walk-in customer</option></select></div>
+</div>
+
+</div>
+
+<div style="flex-grow:1;display:flex;gap:16px;padding:16px;min-height:0">
+
+<div style="flex-grow:1;display:flex;flex-direction:column;gap:14px;min-width:0">
+<div style="display:flex;gap:10px">
+<div style="flex-grow:1;position:relative">
+<label for="q" style="position:absolute;left:-9999px">Search or scan item</label>
+<input id="q" class="fld" style="height:54px;font-size:16px;padding-left:46px" placeholder="Scan barcode or search item by name, generic, batch">
+<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#4b5f5c" stroke-width="2" stroke-linecap="round" style="position:absolute;left:14px;top:16px"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-4-4"></path></svg>
+</div>
+<button class="sb" style="height:54px;padding:0 22px;color:#0b4f48;border-color:#0f6b62">Add item</button>
+</div>
+
+<div style="flex-grow:1;background:#fff;border:1px solid #d5dfdc;border-radius:14px;display:flex;flex-direction:column;min-height:0;overflow:hidden">
+<div style="display:grid;grid-template-columns:48px minmax(0,1fr) 80px 150px 110px 90px 120px 52px;align-items:center;height:44px;flex:none;background:#0f6b62;color:#fff;font-size:12px;font-weight:700;letter-spacing:0.4px;padding:0 8px">
+<div>#</div><div>DESCRIPTION / BATCH</div><div style="text-align:center">RX</div><div style="text-align:center">QTY</div><div style="text-align:right">UNIT PRICE</div><div style="text-align:right">VAT</div><div style="text-align:right">TOTAL</div><div></div>
+</div>
+<div style="flex-grow:1;overflow:auto">
+<sc-if value="{{ empty }}" hint-placeholder-val="{{ false }}">
+<div style="padding:60px 0;text-align:center;color:#4b5f5c;font-size:15px;font-weight:500">Cart is empty. Scan an item or tap a quick item below.</div>
+</sc-if>
+<sc-for list="{{ items }}" as="it" hint-placeholder-count="3">
+<div style="display:grid;grid-template-columns:48px minmax(0,1fr) 80px 150px 110px 90px 120px 52px;align-items:center;min-height:64px;padding:0 8px;border-bottom:1px solid #e3eae8">
+<div style="font-size:14px;color:#4b5f5c;font-weight:600">{{ it.n }}</div>
+<div style="min-width:0">
+<div style="display:flex;align-items:center;gap:8px"><span style="font-size:15px;font-weight:700">{{ it.name }}</span>
+<sc-if value="{{ it.rx }}" hint-placeholder-val="{{ false }}"><span style="background:#b3360a;color:#fff;font-size:11px;font-weight:800;padding:2px 7px;border-radius:5px">Rx</span></sc-if></div>
+<div style="font-size:12px;color:#4b5f5c;margin-top:2px">Batch {{ it.batch }} · Exp {{ it.exp }}</div>
+</div>
+<div style="display:flex;justify-content:center"><button class="qb" style="color:#0f6b62;border-color:#0f6b62" aria-label="Add prescription">+</button></div>
+<div style="display:flex;align-items:center;justify-content:center;gap:8px">
+<button class="qb" aria-label="Decrease quantity" onClick="{{ it.dec }}">−</button>
+<span style="min-width:26px;text-align:center;font-size:16px;font-weight:700">{{ it.qty }}</span>
+<button class="qb" aria-label="Increase quantity" onClick="{{ it.inc }}">+</button>
+</div>
+<div style="text-align:right;font-size:14px;font-weight:500">{{ it.price }}</div>
+<div style="text-align:right;font-size:14px;color:#4b5f5c">{{ it.vat }}</div>
+<div style="text-align:right;font-size:16px;font-weight:800">{{ it.total }}</div>
+<div style="display:flex;justify-content:center"><button class="ib" style="width:38px;height:38px;color:#b3360a" aria-label="Remove item" onClick="{{ it.del }}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"></path></svg></button></div>
+</div>
+</sc-for>
+</div>
+</div>
+
+<div>
+<div style="font-size:12px;font-weight:700;color:#4b5f5c;letter-spacing:0.4px;margin-bottom:8px">QUICK ITEMS</div>
+<div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px">
+<sc-for list="{{ tiles }}" as="t" hint-placeholder-count="4">
+<button class="tile" onClick="{{ t.add }}"><div style="font-size:14px;font-weight:700">{{ t.name }}</div><div style="font-size:13px;color:#0b4f48;font-weight:600;margin-top:4px">AED {{ t.price }}</div></button>
+</sc-for>
+</div>
+</div>
+</div>
+
+<div style="width:500px;flex:none;display:flex;flex-direction:column;gap:14px">
+
+<div style="background:#fff;border:1px solid #d5dfdc;border-radius:14px;padding:16px;display:flex;flex-direction:column;gap:14px;flex-grow:1;justify-content:space-between">
+<div style="display:flex;gap:8px">
+<sc-for list="{{ methods }}" as="m" hint-placeholder-count="3">
+<button class="sb" style="flex-grow:1;padding:0 8px;{{ m.sel }}" onClick="{{ m.pick }}">{{ m.label }}</button>
+</sc-for>
+</div>
+<div><label class="lb" for="eid">Emirates ID</label>
+<div style="display:flex;gap:8px"><input id="eid" class="fld" placeholder="784-XXXX-XXXXXXX-X"><button class="ib" aria-label="Look up patient"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-4-4"></path></svg></button></div></div>
+<button class="sb" style="height:40px;width:100%;color:#0b4f48;border-color:#0f6b62">Patient details</button>
+<div><label class="lb" for="pn">Patient</label><select id="pn" class="fld" style="height:54px;font-size:15px"><option>Select patient</option></select></div>
+<div><label class="lb" for="dr">Doctor</label>
+<div style="display:flex;gap:8px"><select id="dr" class="fld" style="height:54px;font-size:15px"><option>Select doctor</option></select><button class="ib" style="width:54px;height:54px;background:#0f6b62;color:#fff;border-color:#0f6b62" aria-label="Add doctor"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg></button></div></div>
+<div style="display:flex;align-items:center">
+<label style="display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600;color:#0b4f48"><input type="checkbox" style="width:20px;height:20px;accent-color:#0f6b62">Riayati sale</label>
+</div>
+</div>
+
+<div style="background:#fff;border:1px solid #d5dfdc;border-radius:14px;padding:12px 16px;display:flex;flex-direction:column;gap:5px">
+<div style="display:flex;justify-content:space-between;font-size:14px"><span style="color:#4b5f5c">Subtotal</span><span style="font-weight:600">{{ sub }}</span></div>
+<div style="display:flex;justify-content:space-between;align-items:center;font-size:14px"><label for="dc" style="color:#4b5f5c">Discount</label><input id="dc" class="fld" style="width:110px;height:36px;text-align:right" value="{{ disc }}" onInput="{{ setDisc }}"></div>
+<div style="display:flex;justify-content:space-between;font-size:14px"><span style="color:#4b5f5c">Taxable</span><span style="font-weight:600">{{ taxable }}</span></div>
+<div style="display:flex;justify-content:space-between;font-size:14px"><span style="color:#4b5f5c">VAT</span><span style="font-weight:600">{{ vat }}</span></div>
+<div style="display:flex;justify-content:space-between;font-size:14px"><span style="color:#4b5f5c">Round off</span><span style="font-weight:600">{{ round }}</span></div>
+<div style="display:flex;justify-content:space-between;align-items:baseline;border-top:1px dashed #b7c5c2;padding-top:8px;margin-top:2px"><span style="font-size:15px;font-weight:700">Grand total</span><span style="font-size:28px;font-weight:800;color:#0b4f48;letter-spacing:-0.5px">AED {{ grand }}</span></div>
+<div style="display:flex;gap:8px;margin-top:4px">
+<button class="sb" style="flex-grow:1">Print</button><button class="sb" style="flex-grow:1">Email</button><button class="sb" style="flex-grow:1" onClick="{{ clear }}">Clear</button>
+</div>
+<button style="height:54px;border-radius:12px;border:0;background:#0f6b62;color:#fff;font:800 20px 'Plus Jakarta Sans',system-ui,sans-serif;cursor:pointer;margin-top:2px">Save &amp; Charge  AED {{ grand }}</button>
+</div>
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1600,"height":1000}}'>
+class Component extends DCLogic {
+constructor(props) {
+super(props);
+this.state = {
+method: 'cash',
+disc: '0.00',
+items: [
+{ id: 1, name: 'Paracetamol 500 mg', rx: false, batch: 'B2417', exp: '08/2027', qty: 2, price: 8.5, vat: 5 },
+{ id: 2, name: 'Amoxicillin 500 mg', rx: true, batch: 'B1893', exp: '03/2027', qty: 1, price: 32, vat: 0 }
+]
+};
+}
+renderVals() {
+const s = this.state;
+const f = (n) => n.toFixed(2);
+const upd = (id, d) => this.setState({ items: s.items.map((x) => x.id === id ? { ...x, qty: Math.max(1, x.qty + d) } : x) });
+const catalog = [
+{ id: 11, name: 'Vitamin D3 1000 IU', rx: false, batch: 'B3001', exp: '11/2027', price: 24, vat: 5 },
+{ id: 12, name: 'Cetirizine 10 mg', rx: false, batch: 'B2755', exp: '06/2027', price: 12, vat: 5 },
+{ id: 13, name: 'Metformin 500 mg', rx: true, batch: 'B1120', exp: '01/2028', price: 18, vat: 0 },
+{ id: 14, name: 'Oral rehydration salts', rx: false, batch: 'B2990', exp: '09/2027', price: 6.5, vat: 5 }
+];
+const add = (p) => () => {
+const ex = s.items.find((x) => x.id === p.id);
+this.setState({ items: ex ? s.items.map((x) => x.id === p.id ? { ...x, qty: x.qty + 1 } : x) : [...s.items, { ...p, qty: 1 }] });
+};
+let sub = 0, vatT = 0;
+const items = s.items.map((x, i) => {
+const net = x.qty * x.price; const v = net * x.vat / 100;
+sub += net; vatT += v;
+return { n: i + 1, name: x.name, rx: x.rx, batch: x.batch, exp: x.exp, qty: x.qty, price: f(x.price), vat: f(v), total: f(net + v),
+inc: () => upd(x.id, 1), dec: () => upd(x.id, -1), del: () => this.setState({ items: s.items.filter((y) => y.id !== x.id) }) };
+});
+const disc = Math.min(Math.max(parseFloat(s.disc) || 0, 0), sub);
+const taxable = sub - disc;
+const vat = sub > 0 ? vatT * (taxable / sub) : 0;
+const gross = taxable + vat;
+const grand = Math.round(gross * 20) / 20;
+const rd = grand - gross;
+const on = 'background:#0f6b62;color:#fff;border-color:#0f6b62;';
+const methods = [['cash', 'Payment details']].map(([k, label]) => ({
+label, sel: s.method === k ? on : '', pick: () => this.setState({ method: k }) }));
+return {
+items, empty: s.items.length === 0, methods,
+tiles: catalog.map((p) => ({ name: p.name, price: f(p.price), add: add(p) })),
+sub: f(sub), taxable: f(taxable), vat: f(vat), round: (rd >= 0 ? '+' : '−') + f(Math.abs(rd)), grand: f(grand),
+disc: s.disc,
+setDisc: (e) => this.setState({ disc: e.target.value }),
+clear: () => this.setState({ items: [], disc: '0.00' })
+};
+}
+}
+</script>
+</body>
+</html>

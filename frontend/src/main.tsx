@@ -7,6 +7,11 @@ import { ThemeProvider, createTheme } from '@mui/material/styles';
 import App from './App';
 import { store } from './store';
 
+import { initGlobalDialogKeyboardNav } from './utils/dialogKeyboardNav';
+
+// Initialize global dialog keyboard navigation and focus management
+initGlobalDialogKeyboardNav();
+
 const theme = createTheme({
   palette: {
     primary: { main: '#1976d2' },
@@ -26,6 +31,12 @@ const theme = createTheme({
         'input[type=number]': {
           MozAppearance: 'textfield !important',
           appearance: 'textfield !important',
+        },
+        // Prominent visual focus ring for buttons inside any dialogue box
+        '.MuiDialog-root .MuiDialogActions-root button:focus, .MuiDialog-root .MuiDialogActions-root button:focus-visible, .MuiDialog-root [role="dialog"] button:focus, .MuiDialog-root [role="dialog"] button:focus-visible': {
+          boxShadow: '0 0 0 2px #ffffff, 0 0 0 4.5px #2563eb !important',
+          outline: 'none !important',
+          transition: 'box-shadow 0.15s ease-in-out',
         },
       },
     },

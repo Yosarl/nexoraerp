@@ -27,7 +27,7 @@ import {
   DialogContent,
   DialogActions,
   Button,
-  Tooltip,
+  Badge,
 } from '@mui/material';
 import SearchIcon from '@mui/icons-material/Search';
 import InventoryIcon from '@mui/icons-material/Inventory';
@@ -35,9 +35,16 @@ import ArrowDropUpIcon from '@mui/icons-material/ArrowDropUp';
 import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown';
 import CloseIcon from '@mui/icons-material/Close';
 import LayersIcon from '@mui/icons-material/Layers';
+import RefreshIcon from '@mui/icons-material/Refresh';
+import AddIcon from '@mui/icons-material/Add';
+import SettingsSuggestIcon from '@mui/icons-material/SettingsSuggest';
+import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
+import CompareArrowsIcon from '@mui/icons-material/CompareArrows';
 import { useSelector } from 'react-redux';
 import type { RootState } from '../../store';
 import { stockApi, productApi } from '../../services/api';
+import StockMovementModal from '../../components/reports/StockMovementModal';
+import ColumnManagerDrawer, { ColumnDefinition, mergeReportColumns } from '../../components/reports/ColumnManagerDrawer';
 
 interface StockItem {
   rowId: string;
@@ -51,6 +58,7 @@ interface StockItem {
   qtyAvailable: number;
   purchaseRate: number;
   totalPurchaseRate: number;
+  grossValue: number;
   sellingPrice: number;
   retailPrice: number;
   wholesalePrice: number;
@@ -61,7 +69,7 @@ interface StockItem {
   sellerName: string;
 }
 
-type SortKey = keyof StockItem;
+type SortKey = keyof StockItem | 'sl' | 'barcode';
 type SortDir = 'asc' | 'desc';
 type ReportMode = 'batch' | 'avg' | 'lastPurchase';
 
@@ -70,10 +78,24 @@ interface SearchFieldOption {
   label: string;
 }
 
+interface AdvancedStockFilters {
+  sellerName: string;
+  category: string;
+  brand: string;
+  itemName: string;
+}
+
+const DEFAULT_ADVANCED_FILTERS: AdvancedStockFilters = {
+  sellerName: 'All',
+  category: 'All',
+  brand: 'All',
+  itemName: 'All',
+};
+
 const SEARCH_FIELDS: SearchFieldOption[] = [
   { id: 'all', label: 'All' },
   { id: 'itemName', label: 'Item Name' },
-  { id: 'imei', label: 'IMEI / Barcode' },
+  { id: 'imei', label: 'Official Med. Code / Barcode' },
   { id: 'batchNumber', label: 'Batch No' },
   { id: 'itemGroup', label: 'Item Group' },
   { id: 'brand', label: 'Brand' },
@@ -88,8 +110,51 @@ const SEARCH_FIELDS: SearchFieldOption[] = [
   { id: 'expiryDate', label: 'Expiry Date' },
   { id: 'branch', label: 'Branch' },
   { id: 'sellerName', label: 'Seller Name' },
-  { id: 'totalPurchaseRate', label: 'Total P. Rate' },
+  { id: 'totalPurchaseRate', label: 'Cost Value' },
+  { id: 'grossValue', label: 'Gross Value' },
 ];
+
+const DEFAULT_STOCK_COLUMNS: ColumnDefinition[] = [
+  { id: 'imei', label: 'Official Med. Code', defaultLabel: 'Official Med. Code', width: 130, defaultWidth: 130, visible: true, align: 'left', sortable: true },
+  { id: 'barcode', label: 'Barcode', defaultLabel: 'Barcode', width: 100, defaultWidth: 100, visible: true, align: 'left', sortable: true },
+  { id: 'itemName', label: 'Item Name', defaultLabel: 'Item Name', width: 220, defaultWidth: 220, visible: true, align: 'left', sortable: true },
+  { id: 'batchNumber', label: 'Batch No', defaultLabel: 'Batch No', width: 95, defaultWidth: 95, visible: true, align: 'left', sortable: true },
+  { id: 'expiryDate', label: 'Expiry Date', defaultLabel: 'Expiry Date', width: 95, defaultWidth: 95, visible: true, align: 'center', sortable: true },
+  { id: 'sl', label: 'SL', defaultLabel: 'SL', width: 45, defaultWidth: 45, visible: true, align: 'center', sortable: false },
+  { id: 'qtyAvailable', label: 'Qty', defaultLabel: 'Qty', width: 70, defaultWidth: 70, visible: true, align: 'center', sortable: true },
+  { id: 'purchaseRate', label: 'P. Rate', defaultLabel: 'P. Rate', width: 80, defaultWidth: 80, visible: true, align: 'right', sortable: true },
+  { id: 'totalPurchaseRate', label: 'Cost Value', defaultLabel: 'Cost Value', width: 95, defaultWidth: 95, visible: true, align: 'right', sortable: true },
+  { id: 'grossValue', label: 'Gross Value', defaultLabel: 'Gross Value', width: 95, defaultWidth: 95, visible: true, align: 'right', sortable: true },
+  { id: 'sellingPrice', label: 'Selling Price', defaultLabel: 'Selling Price', width: 95, defaultWidth: 95, visible: true, align: 'right', sortable: true },
+  { id: 'retailPrice', label: 'Retail Price', defaultLabel: 'Retail Price', width: 95, defaultWidth: 95, visible: true, align: 'right', sortable: true },
+  { id: 'branch', label: 'Branch', defaultLabel: 'Branch', width: 110, defaultWidth: 110, visible: true, align: 'left', sortable: true },
+  { id: 'sellerName', label: 'Salesman Name', defaultLabel: 'Salesman Name', width: 105, defaultWidth: 105, visible: true, align: 'left', sortable: true },
+  { id: 'itemGroup', label: 'Item Group', defaultLabel: 'Item Group', width: 100, defaultWidth: 100, visible: true, align: 'left', sortable: true },
+  { id: 'brand', label: 'Brand', defaultLabel: 'Brand', width: 100, defaultWidth: 100, visible: true, align: 'left', sortable: true },
+  { id: 'category', label: 'Category', defaultLabel: 'Category', width: 110, defaultWidth: 110, visible: true, align: 'left', sortable: true },
+  { id: 'wholesalePrice', label: 'Wholesale Price', defaultLabel: 'Wholesale Price', width: 95, defaultWidth: 95, visible: true, align: 'right', sortable: true },
+  { id: 'specialPrice1', label: 'Sp. Price 1', defaultLabel: 'Sp. Price 1', width: 85, defaultWidth: 85, visible: true, align: 'right', sortable: true },
+  { id: 'specialPrice2', label: 'Sp. Price 2', defaultLabel: 'Sp. Price 2', width: 85, defaultWidth: 85, visible: true, align: 'right', sortable: true },
+];
+
+const STOCK_REPORT_COLUMNS_KEY = 'stock_report_columns_custom_v3';
+
+function getInitialStockColumns(): ColumnDefinition[] {
+  try {
+    const saved =
+      localStorage.getItem(STOCK_REPORT_COLUMNS_KEY) ||
+      localStorage.getItem('stock_report_columns_custom_v2');
+    if (saved) {
+      const parsed: ColumnDefinition[] = JSON.parse(saved);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return mergeReportColumns(DEFAULT_STOCK_COLUMNS, parsed);
+      }
+    }
+  } catch {
+    // fallback
+  }
+  return DEFAULT_STOCK_COLUMNS;
+}
 
 const COL_HEADER_BASE = {
   bgcolor: '#0f766e',
@@ -144,15 +209,15 @@ function SortArrows({
   );
 }
 
-/** Format ISO date string (yyyy-mm-dd) to dd/mm/yy */
+/** Format ISO date string (yyyy-mm-dd) to dd-mm-yyyy */
 function formatDateDDMMYY(dateStr: string | null): string {
   if (!dateStr) return '-';
   const d = new Date(dateStr);
   if (isNaN(d.getTime())) return '-';
   const dd = String(d.getDate()).padStart(2, '0');
   const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const yy = String(d.getFullYear()).slice(-2);
-  return `${dd}/${mm}/${yy}`;
+  const yyyy = String(d.getFullYear());
+  return `${dd}-${mm}-${yyyy}`;
 }
 
 // All searchable string fields
@@ -161,7 +226,7 @@ const STRING_SEARCH_KEYS: (keyof StockItem)[] = [
 ];
 // All searchable numeric fields
 const NUMERIC_SEARCH_KEYS: (keyof StockItem)[] = [
-  'qtyAvailable', 'purchaseRate', 'totalPurchaseRate', 'sellingPrice',
+  'qtyAvailable', 'purchaseRate', 'totalPurchaseRate', 'grossValue', 'sellingPrice',
   'retailPrice', 'wholesalePrice', 'specialPrice1', 'specialPrice2',
 ];
 
@@ -171,7 +236,6 @@ function filterItems(items: StockItem[], search: string, fieldId: string): Stock
   const sl = search.toLowerCase();
 
   if (fieldId !== 'all') {
-    // Search in a specific field
     const isNumeric = NUMERIC_SEARCH_KEYS.includes(fieldId as keyof StockItem);
     return items.filter((item) => {
       const val = item[fieldId as keyof StockItem];
@@ -181,7 +245,6 @@ function filterItems(items: StockItem[], search: string, fieldId: string): Stock
     });
   }
 
-  // "All" — search across every field
   return items.filter((item) => {
     for (const f of STRING_SEARCH_KEYS) {
       const v = item[f];
@@ -208,13 +271,17 @@ export default function StockReport() {
   const [rowsPerPage, setRowsPerPage] = useState(50);
 
   // Report mode
-  const [mode, setMode] = useState<ReportMode>('batch');
+  const [mode, setMode] = useState<ReportMode>('avg');
 
   // Show only +ve qty filter
   const [showPositiveOnly, setShowPositiveOnly] = useState(false);
 
   // Selected row
   const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
+
+  // Column Manager state
+  const [columns, setColumns] = useState<ColumnDefinition[]>(getInitialStockColumns);
+  const [columnManagerOpen, setColumnManagerOpen] = useState(false);
 
   // Multi-unit dialog state
   const [multiUnitDialogOpen, setMultiUnitDialogOpen] = useState(false);
@@ -259,22 +326,144 @@ export default function StockReport() {
     }
   }, [sortKey, sortDir]);
 
-  // 1. Search filter (across all fields)
+  // Advanced Filters State
+  const [filterDialogOpen, setFilterDialogOpen] = useState(false);
+  const [appliedFilters, setAppliedFilters] = useState<AdvancedStockFilters>(DEFAULT_ADVANCED_FILTERS);
+  const [draftFilters, setDraftFilters] = useState<AdvancedStockFilters>(DEFAULT_ADVANCED_FILTERS);
+
+  // Stock Movement Window State
+  const [stockMovementOpen, setStockMovementOpen] = useState(false);
+  const [selectedMovementItem, setSelectedMovementItem] = useState<StockItem | null>(null);
+
+  // F5 Keyboard Shortcut listener for Column Manager & F6 for Stock Movement
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'F5') {
+        e.preventDefault();
+        setColumnManagerOpen((prev) => !prev);
+      } else if (e.key === 'F6') {
+        e.preventDefault();
+        const selItem = allItems.find((i) => i.rowId === selectedRowId) || null;
+        setSelectedMovementItem(selItem);
+        setStockMovementOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [allItems, selectedRowId]);
+
+  const handleOpenFilter = () => {
+    setDraftFilters(appliedFilters);
+    setFilterDialogOpen(true);
+  };
+
+  const handleCloseFilter = () => {
+    setFilterDialogOpen(false);
+  };
+
+  const handleApplyFilters = () => {
+    setAppliedFilters(draftFilters);
+    setPage(0);
+    handleCloseFilter();
+  };
+
+  const handleResetFilters = () => {
+    setDraftFilters(DEFAULT_ADVANCED_FILTERS);
+    setAppliedFilters(DEFAULT_ADVANCED_FILTERS);
+    setPage(0);
+  };
+
+  const handleResetColumns = () => {
+    setColumns(DEFAULT_STOCK_COLUMNS);
+    try {
+      localStorage.removeItem(STOCK_REPORT_COLUMNS_KEY);
+    } catch {}
+  };
+
+  const activeFiltersCount = useMemo(() => {
+    let count = 0;
+    if (appliedFilters.sellerName && appliedFilters.sellerName !== 'All') count++;
+    if (appliedFilters.category && appliedFilters.category !== 'All') count++;
+    if (appliedFilters.brand && appliedFilters.brand !== 'All') count++;
+    if (appliedFilters.itemName && appliedFilters.itemName !== 'All') count++;
+    return count;
+  }, [appliedFilters]);
+
+  // Dynamic filter options derived from current allItems
+  const sellerOptions = useMemo(() => {
+    const set = new Set<string>();
+    allItems.forEach((i) => {
+      const val = (i.sellerName || '').trim();
+      if (val && val !== '-') set.add(val);
+    });
+    return ['All', ...Array.from(set).sort((a, b) => a.localeCompare(b))];
+  }, [allItems]);
+
+  const categoryOptions = useMemo(() => {
+    const set = new Set<string>();
+    allItems.forEach((i) => {
+      const val = (i.category || '').trim();
+      if (val && val !== '-') set.add(val);
+    });
+    return ['All', ...Array.from(set).sort((a, b) => a.localeCompare(b))];
+  }, [allItems]);
+
+  const brandOptions = useMemo(() => {
+    const set = new Set<string>();
+    allItems.forEach((i) => {
+      const val = (i.brand || '').trim();
+      if (val && val !== '-') set.add(val);
+    });
+    return ['All', ...Array.from(set).sort((a, b) => a.localeCompare(b))];
+  }, [allItems]);
+
+  const itemNameOptions = useMemo(() => {
+    const set = new Set<string>();
+    allItems.forEach((i) => {
+      const val = (i.itemName || '').trim();
+      if (val && val !== '-') set.add(val);
+    });
+    return ['All', ...Array.from(set).sort((a, b) => a.localeCompare(b))];
+  }, [allItems]);
+
+  // 1. Search + Advanced Filter pipeline
   const searchedItems = useMemo(() => {
     return filterItems(allItems, search, searchField.id);
   }, [allItems, search, searchField]);
 
+  const advancedFilteredItems = useMemo(() => {
+    return searchedItems.filter((item) => {
+      if (appliedFilters.sellerName !== 'All' && item.sellerName !== appliedFilters.sellerName) {
+        return false;
+      }
+      if (appliedFilters.category !== 'All' && item.category !== appliedFilters.category) {
+        return false;
+      }
+      if (appliedFilters.brand !== 'All' && item.brand !== appliedFilters.brand) {
+        return false;
+      }
+      if (appliedFilters.itemName !== 'All' && item.itemName !== appliedFilters.itemName) {
+        return false;
+      }
+      return true;
+    });
+  }, [searchedItems, appliedFilters]);
+
   // 2. +ve qty filter
   const filteredItems = useMemo(() => {
-    return showPositiveOnly ? searchedItems.filter((i) => i.qtyAvailable > 0) : searchedItems;
-  }, [searchedItems, showPositiveOnly]);
+    return showPositiveOnly ? advancedFilteredItems.filter((i) => i.qtyAvailable > 0) : advancedFilteredItems;
+  }, [advancedFilteredItems, showPositiveOnly]);
 
   // 3. Sort
   const sortedItems = useMemo(() => {
     if (!sortKey) return filteredItems;
     return [...filteredItems].sort((a, b) => {
-      const av = a[sortKey];
-      const bv = b[sortKey];
+      let av: any = a[sortKey as keyof StockItem];
+      let bv: any = b[sortKey as keyof StockItem];
+      if (sortKey === 'barcode') {
+        av = a.imei;
+        bv = b.imei;
+      }
       if (av == null && bv == null) return 0;
       if (av == null) return 1;
       if (bv == null) return -1;
@@ -296,7 +485,7 @@ export default function StockReport() {
     return sortedItems.slice(start, start + rowsPerPage);
   }, [sortedItems, page, rowsPerPage]);
 
-  // Fetch ALL items from backend (no search, no pagination — we handle it client-side)
+  // Fetch ALL items from backend
   const loadReport = useCallback(async () => {
     if (!companyId) return;
     setLoading(true);
@@ -321,50 +510,195 @@ export default function StockReport() {
     loadReport();
   }, [loadReport]);
 
-  // Reset page when mode changes
-  const handleModeChange = (_: React.ChangeEvent<HTMLInputElement>, value: string) => {
-    setMode(value as ReportMode);
-    setPage(0);
-    setSelectedRowId(null);
+  useEffect(() => {
+    const onWindowActivated = (e: any) => {
+      const p = e.detail?.path;
+      if (p === '/report/stock-report') {
+        loadReport();
+      }
+    };
+    const onDatabaseUpdated = () => {
+      if (window.location.hash.includes('/report/stock-report') || window.location.pathname.includes('/report/stock-report')) {
+        loadReport();
+      }
+    };
+    window.addEventListener('app:window-activated', onWindowActivated);
+    window.addEventListener('app:database-updated', onDatabaseUpdated);
+    window.addEventListener('app:products-updated', onWindowActivated);
+    return () => {
+      window.removeEventListener('app:window-activated', onWindowActivated);
+      window.removeEventListener('app:database-updated', onDatabaseUpdated);
+      window.removeEventListener('app:products-updated', onWindowActivated);
+    };
+  }, [loadReport]);
+
+  const handleChangePage = (_: unknown, newPage: number) => {
+    setPage(newPage);
   };
 
-  // Debounce search
-  const [searchDebounce, setSearchDebounce] = useState('');
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setSearch(searchDebounce);
-      setPage(0);
-    }, 400);
-    return () => clearTimeout(timer);
-  }, [searchDebounce]);
-
-  const handleChangePage = (_: unknown, newPage: number) => setPage(newPage);
   const handleChangeRowsPerPage = (e: React.ChangeEvent<HTMLInputElement>) => {
     setRowsPerPage(parseInt(e.target.value, 10));
     setPage(0);
   };
 
-  // Summary calculations (on all filtered items, not just current page)
-  const totalStockValue = filteredItems.reduce((s, i) => s + i.totalPurchaseRate, 0);
-  const totalSellingValue = filteredItems.reduce((s, i) => s + i.qtyAvailable * i.sellingPrice, 0);
-  const totalRetailValue = filteredItems.reduce((s, i) => s + i.qtyAvailable * i.retailPrice, 0);
-  const totalWholesaleValue = filteredItems.reduce((s, i) => s + i.qtyAvailable * i.wholesalePrice, 0);
-  const totalQty = filteredItems.reduce((s, i) => s + i.qtyAvailable, 0);
+  const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setSearch(e.target.value);
+    setPage(0);
+  };
 
-  // Helper to render a sortable header
-  const SH = ({ label, field, width, align, last }: { label: string; field: SortKey; width: number; align?: string; last?: boolean }) => (
-    <TableCell
-      sx={{
-        ...COL_HEADER_BASE,
-        width,
-        textAlign: align || 'left',
-        ...(last ? { borderRight: 'none' } : {}),
-      }}
-    >
-      {label}
-      <SortArrows field={field} sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
-    </TableCell>
-  );
+  const handleFieldChange = (_: any, value: SearchFieldOption | null) => {
+    if (value) {
+      setSearchField(value);
+      setPage(0);
+    }
+  };
+
+  const handleModeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setMode(e.target.value as ReportMode);
+    setPage(0);
+  };
+
+  // Summary Totals
+  const totalQty = useMemo(() => filteredItems.reduce((s, i) => s + i.qtyAvailable, 0), [filteredItems]);
+  const totalStockValue = useMemo(() => filteredItems.reduce((s, i) => s + i.totalPurchaseRate, 0), [filteredItems]);
+  const totalGrossValue = useMemo(() => filteredItems.reduce((s, i) => s + (i.grossValue || 0), 0), [filteredItems]);
+  const totalSellingValue = useMemo(() => filteredItems.reduce((s, i) => s + (i.sellingPrice * i.qtyAvailable), 0), [filteredItems]);
+  const totalRetailValue = useMemo(() => filteredItems.reduce((s, i) => s + (i.retailPrice * i.qtyAvailable), 0), [filteredItems]);
+  const totalWholesaleValue = useMemo(() => filteredItems.reduce((s, i) => s + (i.wholesalePrice * i.qtyAvailable), 0), [filteredItems]);
+
+  const visibleColumns = useMemo(() => columns.filter((c) => c.visible), [columns]);
+  const tableMinWidth = useMemo(() => Math.max(1200, visibleColumns.reduce((sum, col) => sum + col.width, 0)), [visibleColumns]);
+
+  const renderStockCell = (item: StockItem, colId: string, idx: number) => {
+    const isLowStock = item.qtyAvailable > 0 && item.qtyAvailable <= 5;
+    const isOutOfStock = item.qtyAvailable <= 0;
+    const isExpired = item.expiryDate && new Date(item.expiryDate) < new Date();
+    const isExpiringSoon =
+      item.expiryDate &&
+      !isExpired &&
+      new Date(item.expiryDate) < new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+
+    switch (colId) {
+      case 'sl':
+        return (
+          <Typography sx={{ fontWeight: 700, color: '#64748b', fontSize: '0.75rem', textAlign: 'center' }}>
+            {page * rowsPerPage + idx + 1}
+          </Typography>
+        );
+      case 'imei':
+        return (
+          <Typography sx={{ fontFamily: 'monospace', fontSize: '0.75rem', color: '#1e293b' }}>
+            {item.imei || '-'}
+          </Typography>
+        );
+      case 'barcode':
+        return (
+          <Typography sx={{ fontFamily: 'monospace', fontSize: '0.75rem', color: '#1e293b' }}>
+            {item.imei || '-'}
+          </Typography>
+        );
+      case 'itemName':
+        return (
+          <Typography sx={{ fontWeight: 600, color: '#0f172a', fontSize: '0.78rem' }}>
+            {item.itemName}
+          </Typography>
+        );
+      case 'batchNumber':
+        return <Typography sx={{ fontSize: '0.78rem' }}>{item.batchNumber || '-'}</Typography>;
+      case 'expiryDate':
+        return item.expiryDate ? (
+          <Chip
+            label={formatDateDDMMYY(item.expiryDate)}
+            size="small"
+            sx={{
+              fontWeight: 600,
+              fontSize: '0.7rem',
+              height: 22,
+              bgcolor: isExpired ? '#fef2f2' : isExpiringSoon ? '#fffbeb' : '#f8fafc',
+              color: isExpired ? '#dc2626' : isExpiringSoon ? '#d97706' : '#334155',
+              border: `1px solid ${isExpired ? '#fecaca' : isExpiringSoon ? '#fde68a' : '#e2e8f0'}`,
+            }}
+          />
+        ) : (
+          <Typography variant="caption" sx={{ color: '#94a3b8' }}>-</Typography>
+        );
+      case 'qtyAvailable':
+        return (
+          <Chip
+            label={item.qtyAvailable}
+            size="small"
+            sx={{
+              fontWeight: 700,
+              fontSize: '0.73rem',
+              height: 22,
+              bgcolor: isOutOfStock ? '#fef2f2' : isLowStock ? '#fffbeb' : '#f0fdf4',
+              color: isOutOfStock ? '#dc2626' : isLowStock ? '#d97706' : '#16a34a',
+              border: `1px solid ${isOutOfStock ? '#fecaca' : isLowStock ? '#fde68a' : '#bbf7d0'}`,
+            }}
+          />
+        );
+      case 'purchaseRate':
+        return (
+          <Typography sx={{ textAlign: 'right', fontSize: '0.78rem' }}>
+            {item.purchaseRate.toFixed(2)}
+          </Typography>
+        );
+      case 'totalPurchaseRate':
+        return (
+          <Typography sx={{ textAlign: 'right', fontWeight: 600, fontSize: '0.78rem' }}>
+            {item.totalPurchaseRate.toFixed(2)}
+          </Typography>
+        );
+      case 'grossValue':
+        return (
+          <Typography sx={{ textAlign: 'right', fontWeight: 600, fontSize: '0.78rem', color: '#0d9488' }}>
+            {(item.grossValue || 0).toFixed(2)}
+          </Typography>
+        );
+      case 'sellingPrice':
+        return (
+          <Typography sx={{ textAlign: 'right', fontSize: '0.78rem' }}>
+            {item.sellingPrice.toFixed(2)}
+          </Typography>
+        );
+      case 'retailPrice':
+        return (
+          <Typography sx={{ textAlign: 'right', fontSize: '0.78rem' }}>
+            {item.retailPrice.toFixed(2)}
+          </Typography>
+        );
+      case 'wholesalePrice':
+        return (
+          <Typography sx={{ textAlign: 'right', fontSize: '0.78rem' }}>
+            {item.wholesalePrice.toFixed(2)}
+          </Typography>
+        );
+      case 'specialPrice1':
+        return (
+          <Typography sx={{ textAlign: 'right', fontSize: '0.78rem' }}>
+            {item.specialPrice1 ? item.specialPrice1.toFixed(2) : '-'}
+          </Typography>
+        );
+      case 'specialPrice2':
+        return (
+          <Typography sx={{ textAlign: 'right', fontSize: '0.78rem' }}>
+            {item.specialPrice2 ? item.specialPrice2.toFixed(2) : '-'}
+          </Typography>
+        );
+      case 'branch':
+        return <Typography sx={{ fontSize: '0.78rem' }}>{item.branch || '-'}</Typography>;
+      case 'sellerName':
+        return <Typography sx={{ fontSize: '0.78rem' }}>{item.sellerName || '-'}</Typography>;
+      case 'itemGroup':
+        return <Typography sx={{ fontSize: '0.78rem' }}>{item.itemGroup || '-'}</Typography>;
+      case 'brand':
+        return <Typography sx={{ fontSize: '0.78rem' }}>{item.brand || '-'}</Typography>;
+      case 'category':
+        return <Typography sx={{ fontSize: '0.78rem' }}>{item.category || '-'}</Typography>;
+      default:
+        return null;
+    }
+  };
 
   if (!companyId) {
     return (
@@ -422,135 +756,198 @@ export default function StockReport() {
               <FormControlLabel
                 value="batch"
                 control={<Radio size="small" sx={{ p: 0.3, '&.Mui-checked': { color: '#0f766e' } }} />}
-                label="Batch Wise"
+                label="Batch"
                 sx={radioLabelSx}
               />
               <FormControlLabel
                 value="avg"
                 control={<Radio size="small" sx={{ p: 0.3, '&.Mui-checked': { color: '#0f766e' } }} />}
-                label="Avg Stock"
+                label="Avg. Stock"
                 sx={radioLabelSx}
               />
               <FormControlLabel
                 value="lastPurchase"
                 control={<Radio size="small" sx={{ p: 0.3, '&.Mui-checked': { color: '#0f766e' } }} />}
-                label="Last Purchase Rate"
+                label="Last Purchase"
                 sx={radioLabelSx}
               />
             </RadioGroup>
           </Grid>
 
+          {/* +ve qty checkbox */}
           <Grid item>
             <FormControlLabel
               control={
                 <Checkbox
                   size="small"
                   checked={showPositiveOnly}
-                  onChange={(e) => setShowPositiveOnly(e.target.checked)}
+                  onChange={(e) => { setShowPositiveOnly(e.target.checked); setPage(0); }}
                   sx={{ p: 0.3, '&.Mui-checked': { color: '#0f766e' } }}
                 />
               }
-              label="Show +ve Qty"
-              sx={{
-                ml: 0,
-                '& .MuiFormControlLabel-label': {
-                  fontSize: '0.76rem',
-                  fontWeight: 600,
-                  color: '#334155',
-                },
-              }}
+              label="+ve Qty"
+              sx={radioLabelSx}
             />
           </Grid>
 
-          {/* Spacer */}
-          <Grid item sx={{ flex: 1 }} />
-
-          {/* Item count & double-click hint */}
-          <Grid item sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <Chip
-              label={`${total} items`}
-              size="small"
-              sx={{ bgcolor: '#f0fdfa', color: '#0f766e', fontWeight: 700, fontSize: '0.72rem', height: 24, border: '1px solid #99f6e4' }}
-            />
-            <Tooltip title="Double-click any row in the table to inspect multi-unit packaging, stock breakdown, and prices">
-              <Chip
-                icon={<LayersIcon sx={{ fontSize: '14px !important', color: '#0f766e !important' }} />}
-                label="Double-click row for Multi-Units"
+          {/* Search Bar with Field Dropdown */}
+          <Grid item xs sx={{ minWidth: 260 }}>
+            <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
+              <Autocomplete
                 size="small"
+                options={SEARCH_FIELDS}
+                getOptionLabel={(o) => o.label}
+                value={searchField}
+                onChange={handleFieldChange}
+                disableClearable
+                isOptionEqualToValue={(option, value) => option.id === value.id}
                 sx={{
-                  bgcolor: '#f8fafc',
-                  color: '#334155',
-                  fontWeight: 600,
-                  fontSize: '0.72rem',
-                  height: 24,
-                  border: '1px solid #cbd5e1',
-                  cursor: 'help',
+                  width: 140,
+                  flexShrink: 0,
+                  '& .MuiOutlinedInput-root': {
+                    height: 34,
+                    fontSize: '0.78rem',
+                    bgcolor: '#f8fafc',
+                    borderRadius: 1.5,
+                  },
+                }}
+                renderInput={(params) => (
+                  <TextField {...params} variant="outlined" placeholder="Field" />
+                )}
+              />
+              <TextField
+                size="small"
+                placeholder={searchField.id === 'all' ? 'Search all fields...' : `Search by ${searchField.label}...`}
+                value={search}
+                onChange={handleSearchChange}
+                fullWidth
+                InputProps={{
+                  startAdornment: (
+                    <InputAdornment position="start">
+                      <SearchIcon sx={{ color: '#0f766e', fontSize: 18 }} />
+                    </InputAdornment>
+                  ),
+                  endAdornment: search ? (
+                    <InputAdornment position="end">
+                      <IconButton size="small" onClick={() => setSearch('')} sx={{ p: 0.3 }}>
+                        <CloseIcon sx={{ fontSize: 14 }} />
+                      </IconButton>
+                    </InputAdornment>
+                  ) : null,
+                }}
+                sx={{
+                  '& .MuiOutlinedInput-root': {
+                    height: 34,
+                    fontSize: '0.78rem',
+                    bgcolor: '#f8fafc',
+                    borderRadius: 1.5,
+                  },
                 }}
               />
-            </Tooltip>
+            </Box>
           </Grid>
 
-          {/* Search Field Combobox */}
+          {/* Refresh Button */}
           <Grid item>
-            <Autocomplete
+            <Button
               size="small"
-              options={SEARCH_FIELDS}
-              getOptionLabel={(opt) => opt.label}
-              value={searchField}
-              onChange={(_, v) => {
-                setSearchField(v || SEARCH_FIELDS[0]);
-                setPage(0);
-              }}
-              disableClearable
-              sx={{ width: 160 }}
-              renderInput={(params) => (
-                <TextField
-                  {...params}
-                  label="Search In"
-                  InputLabelProps={{ shrink: true }}
-                  sx={{
-                    '& .MuiOutlinedInput-root': {
-                      borderRadius: 1.5, bgcolor: '#f8fafc', height: 34,
-                      '& fieldset': { borderColor: '#e2e8f0' },
-                    },
-                    '& .MuiOutlinedInput-input': { fontSize: '0.78rem', py: 0.3 },
-                    '& .MuiInputLabel-root': { fontSize: '0.72rem', fontWeight: 600, color: '#64748b' },
-                  }}
-                />
-              )}
-              renderOption={(props, opt) => (
-                <li {...props} key={opt.id} style={{ fontSize: '0.8rem', fontWeight: opt.id === 'all' ? 700 : 400, color: opt.id === 'all' ? '#0f766e' : '#334155', padding: '5px 14px' }}>
-                  {opt.label}
-                </li>
-              )}
-            />
-          </Grid>
-
-          {/* Search Box */}
-          <Grid item>
-            <TextField
-              size="small"
-              placeholder={searchField.id === 'all' ? 'Search all fields...' : `Search by ${searchField.label}...`}
-              value={searchDebounce}
-              onChange={(e) => setSearchDebounce(e.target.value)}
-              InputProps={{
-                startAdornment: (
-                  <InputAdornment position="start">
-                    <SearchIcon sx={{ color: '#94a3b8', fontSize: 18 }} />
-                  </InputAdornment>
-                ),
-              }}
+              variant="outlined"
+              onClick={loadReport}
+              startIcon={<RefreshIcon sx={{ fontSize: 17 }} />}
               sx={{
-                width: 280,
-                '& .MuiOutlinedInput-root': {
-                  borderRadius: 1.5, bgcolor: '#f8fafc', height: 34,
-                  '& fieldset': { borderColor: '#e2e8f0' },
-                  '&:hover fieldset': { borderColor: '#0f766e' },
-                  '&.Mui-focused fieldset': { borderColor: '#0f766e' },
+                height: 34,
+                borderRadius: 1.5,
+                borderColor: '#0f766e',
+                color: '#0f766e',
+                textTransform: 'none',
+                fontWeight: 600,
+                fontSize: '0.8rem',
+                px: 1.5,
+                bgcolor: '#ffffff',
+                '&:hover': {
+                  borderColor: '#0d5c56',
+                  bgcolor: '#f0fdfa',
                 },
-                '& .MuiOutlinedInput-input': { fontSize: '0.78rem', py: 0.3 },
               }}
-            />
+            >
+              Refresh
+            </Button>
+          </Grid>
+
+          {/* Stock Movement Window Button */}
+          <Grid item>
+            <Button
+              size="small"
+              variant="outlined"
+              onClick={() => {
+                const selItem = allItems.find((i) => i.rowId === selectedRowId) || null;
+                setSelectedMovementItem(selItem);
+                setStockMovementOpen(true);
+              }}
+              startIcon={<CompareArrowsIcon sx={{ fontSize: 17 }} />}
+              sx={{
+                height: 34,
+                borderRadius: 1.5,
+                borderColor: '#0f766e',
+                color: '#0f766e',
+                textTransform: 'none',
+                fontWeight: 700,
+                fontSize: '0.8rem',
+                px: 1.5,
+                bgcolor: '#ffffff',
+                '&:hover': {
+                  borderColor: '#0d5c56',
+                  bgcolor: '#f0fdfa',
+                },
+              }}
+              title="View Stock Movement Ledger (F6)"
+            >
+              Movement
+            </Button>
+          </Grid>
+
+          {/* Filter Button with Red Badge */}
+          <Grid item>
+            <Badge
+              badgeContent={activeFiltersCount}
+              color="error"
+              invisible={activeFiltersCount === 0}
+              sx={{
+                '& .MuiBadge-badge': {
+                  bgcolor: '#ef4444',
+                  color: 'white',
+                  fontWeight: 700,
+                  fontSize: '0.7rem',
+                  minWidth: 18,
+                  height: 18,
+                },
+              }}
+            >
+              <Button
+                size="small"
+                variant="contained"
+                onClick={handleOpenFilter}
+                startIcon={<AddIcon sx={{ fontSize: 17, fontWeight: 700 }} />}
+                sx={{
+                  height: 34,
+                  borderRadius: 1.5,
+                  bgcolor: '#0f766e',
+                  color: '#ffffff',
+                  textTransform: 'none',
+                  fontWeight: 700,
+                  fontSize: '0.82rem',
+                  px: 1.8,
+                  boxShadow: 'none',
+                  '&:hover': {
+                    bgcolor: '#115e59',
+                    boxShadow: 'none',
+                  },
+                }}
+                title="Open Advanced Filters"
+              >
+                ➕ Filter
+              </Button>
+            </Badge>
           </Grid>
         </Grid>
       </Paper>
@@ -565,33 +962,46 @@ export default function StockReport() {
       {/* MIDDLE: Table (fills remaining space) */}
       <Box sx={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', mx: 1, mt: 0.5, mb: 0, borderRadius: '8px 8px 0 0', border: '1px solid #e0e7ef', borderBottom: 'none', bgcolor: 'white' }}>
         <TableContainer sx={{ flex: 1, overflow: 'auto' }}>
-          <Table stickyHeader size="small" sx={{ tableLayout: 'fixed', minWidth: 1900 }}>
+          <Table stickyHeader size="small" sx={{ tableLayout: 'fixed', minWidth: tableMinWidth }}>
             <TableHead>
               <TableRow>
-                <TableCell sx={{ ...COL_HEADER_BASE, width: 35, textAlign: 'center' }}>Sl</TableCell>
-                <TableCell sx={{ ...COL_HEADER_BASE, width: 100 }}>IMEI</TableCell>
-                <SH label="Item Name" field="itemName" width={160} />
-                <SH label="Batch No" field="batchNumber" width={100} />
-                <SH label="Qty" field="qtyAvailable" width={55} align="center" />
-                <SH label="P. Rate" field="purchaseRate" width={72} align="right" />
-                <SH label="Total P. Rate" field="totalPurchaseRate" width={85} align="right" />
-                <SH label="Selling Price" field="sellingPrice" width={95} align="right" />
-                <SH label="Retail Price" field="retailPrice" width={95} align="right" />
-                <SH label="Wholesale" field="wholesalePrice" width={75} align="right" />
-                <SH label="Sp. Price 1" field="specialPrice1" width={72} align="right" />
-                <SH label="Sp. Price 2" field="specialPrice2" width={72} align="right" />
-                <SH label="Expiry Date" field="expiryDate" width={85} align="center" />
-                <SH label="Branch" field="branch" width={90} />
-                <SH label="Seller Name" field="sellerName" width={90} />
-                <SH label="Item Group" field="itemGroup" width={90} />
-                <SH label="Brand" field="brand" width={85} />
-                <SH label="Category" field="category" width={90} last />
+                {visibleColumns.map((col, idx) => (
+                  <TableCell
+                    key={col.id}
+                    sx={{
+                      ...COL_HEADER_BASE,
+                      width: col.width,
+                      textAlign: col.align || 'left',
+                      borderRight: idx === visibleColumns.length - 1 ? 'none' : '1px solid rgba(255,255,255,0.12)',
+                    }}
+                  >
+                    <Box
+                      sx={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: col.align === 'center' ? 'center' : col.align === 'right' ? 'flex-end' : 'flex-start',
+                      }}
+                    >
+                      <Typography sx={{ fontWeight: 600, fontSize: '0.72rem', color: 'white' }}>
+                        {col.label}
+                      </Typography>
+                      {col.sortable !== false && (
+                        <SortArrows
+                          field={col.id as SortKey}
+                          sortKey={sortKey}
+                          sortDir={sortDir}
+                          onSort={handleSort}
+                        />
+                      )}
+                    </Box>
+                  </TableCell>
+                ))}
               </TableRow>
             </TableHead>
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={18} align="center" sx={{ py: 8 }}>
+                  <TableCell colSpan={visibleColumns.length || 1} align="center" sx={{ py: 8 }}>
                     <CircularProgress size={28} sx={{ color: '#0f766e' }} />
                     <Typography variant="body2" sx={{ mt: 1, color: '#64748b' }}>
                       Loading stock data...
@@ -600,7 +1010,7 @@ export default function StockReport() {
                 </TableRow>
               ) : paginatedItems.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={18} align="center" sx={{ py: 8 }}>
+                  <TableCell colSpan={visibleColumns.length || 1} align="center" sx={{ py: 8 }}>
                     <InventoryIcon sx={{ fontSize: 44, color: '#e2e8f0', mb: 1 }} />
                     <Typography variant="body2" sx={{ color: '#64748b', fontWeight: 600 }}>
                       No stock data found
@@ -612,14 +1022,7 @@ export default function StockReport() {
                 </TableRow>
               ) : (
                 paginatedItems.map((item, idx) => {
-                  const isLowStock = item.qtyAvailable > 0 && item.qtyAvailable <= 5;
                   const isOutOfStock = item.qtyAvailable <= 0;
-                  const isExpired = item.expiryDate && new Date(item.expiryDate) < new Date();
-                  const isExpiringSoon =
-                    item.expiryDate &&
-                    !isExpired &&
-                    new Date(item.expiryDate) < new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-
                   const cellSx = {
                     py: 0.5,
                     px: 0.6,
@@ -647,76 +1050,18 @@ export default function StockReport() {
                         userSelect: 'none',
                       }}
                     >
-                      <TableCell sx={{ ...cellSx, textAlign: 'center', fontWeight: 700, color: '#64748b', fontSize: '0.75rem' }}>
-                        {page * rowsPerPage + idx + 1}
-                      </TableCell>
-                      <TableCell sx={{ ...cellSx, fontFamily: 'monospace', fontSize: '0.75rem' }}>
-                        {item.imei || '-'}
-                      </TableCell>
-                      <TableCell sx={{ ...cellSx, fontWeight: 600, color: '#0f172a' }}>
-                        {item.itemName}
-                      </TableCell>
-                      <TableCell sx={{ ...cellSx }}>
-                        {item.batchNumber || '-'}
-                      </TableCell>
-                      <TableCell sx={{ ...cellSx, textAlign: 'center' }}>
-                        <Chip
-                          label={item.qtyAvailable}
-                          size="small"
+                      {visibleColumns.map((col) => (
+                        <TableCell
+                          key={col.id}
                           sx={{
-                            fontWeight: 700,
-                            fontSize: '0.73rem',
-                            height: 22,
-                            bgcolor: isOutOfStock ? '#fef2f2' : isLowStock ? '#fffbeb' : '#f0fdf4',
-                            color: isOutOfStock ? '#dc2626' : isLowStock ? '#d97706' : '#16a34a',
-                            border: `1px solid ${isOutOfStock ? '#fecaca' : isLowStock ? '#fde68a' : '#bbf7d0'}`,
+                            ...cellSx,
+                            textAlign: col.align || 'left',
+                            width: col.width,
                           }}
-                        />
-                      </TableCell>
-                      <TableCell sx={{ ...cellSx, textAlign: 'right' }}>
-                        {item.purchaseRate.toFixed(2)}
-                      </TableCell>
-                      <TableCell sx={{ ...cellSx, textAlign: 'right', fontWeight: 600 }}>
-                        {item.totalPurchaseRate.toFixed(2)}
-                      </TableCell>
-                      <TableCell sx={{ ...cellSx, textAlign: 'right' }}>
-                        {item.sellingPrice.toFixed(2)}
-                      </TableCell>
-                      <TableCell sx={{ ...cellSx, textAlign: 'right' }}>
-                        {item.retailPrice.toFixed(2)}
-                      </TableCell>
-                      <TableCell sx={{ ...cellSx, textAlign: 'right' }}>
-                        {item.wholesalePrice.toFixed(2)}
-                      </TableCell>
-                      <TableCell sx={{ ...cellSx, textAlign: 'right' }}>
-                        {item.specialPrice1 ? item.specialPrice1.toFixed(2) : '-'}
-                      </TableCell>
-                      <TableCell sx={{ ...cellSx, textAlign: 'right' }}>
-                        {item.specialPrice2 ? item.specialPrice2.toFixed(2) : '-'}
-                      </TableCell>
-                      <TableCell sx={{ ...cellSx, textAlign: 'center' }}>
-                        {item.expiryDate ? (
-                          <Chip
-                            label={formatDateDDMMYY(item.expiryDate)}
-                            size="small"
-                            sx={{
-                              fontWeight: 600,
-                              fontSize: '0.7rem',
-                              height: 22,
-                              bgcolor: isExpired ? '#fef2f2' : isExpiringSoon ? '#fffbeb' : '#f8fafc',
-                              color: isExpired ? '#dc2626' : isExpiringSoon ? '#d97706' : '#334155',
-                              border: `1px solid ${isExpired ? '#fecaca' : isExpiringSoon ? '#fde68a' : '#e2e8f0'}`,
-                            }}
-                          />
-                        ) : (
-                          <Typography variant="caption" sx={{ color: '#94a3b8' }}>-</Typography>
-                        )}
-                      </TableCell>
-                      <TableCell sx={{ ...cellSx }}>{item.branch}</TableCell>
-                      <TableCell sx={{ ...cellSx }}>{item.sellerName}</TableCell>
-                      <TableCell sx={{ ...cellSx }}>{item.itemGroup || '-'}</TableCell>
-                      <TableCell sx={{ ...cellSx }}>{item.brand || '-'}</TableCell>
-                      <TableCell sx={{ ...cellSx }}>{item.category || '-'}</TableCell>
+                        >
+                          {renderStockCell(item, col.id, idx)}
+                        </TableCell>
+                      ))}
                     </TableRow>
                   );
                 })
@@ -769,7 +1114,8 @@ export default function StockReport() {
         {[
           { label: 'Items', value: String(total), color: '#ffffff' },
           { label: 'Total Qty', value: String(totalQty), color: '#ffffff' },
-          { label: 'Stock Value (Cost)', value: totalStockValue.toFixed(2), color: '#a7f3d0' },
+          { label: 'Stock Value Cost', value: totalStockValue.toFixed(2), color: '#a7f3d0' },
+          { label: 'Stock Value Gross', value: totalGrossValue.toFixed(2), color: '#86efac' },
           { label: 'Stock Value (Selling)', value: totalSellingValue.toFixed(2), color: '#99f6e4' },
           { label: 'Retail Value', value: totalRetailValue.toFixed(2), color: '#a5f3fc' },
           { label: 'Wholesale Value', value: totalWholesaleValue.toFixed(2), color: '#c4b5fd' },
@@ -810,298 +1156,430 @@ export default function StockReport() {
           },
         }}
       >
-        {/* Header */}
         <DialogTitle
           sx={{
-            m: 0,
-            py: 1.8,
-            px: 3,
-            background: 'linear-gradient(135deg, #0f766e 0%, #134e4a 100%)',
+            bgcolor: '#0f766e',
             color: 'white',
+            px: 3,
+            py: 2,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
           }}
         >
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-            <Box
-              sx={{
-                width: 36,
-                height: 36,
-                borderRadius: 1.5,
-                bgcolor: 'rgba(255,255,255,0.15)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
-            >
-              <LayersIcon sx={{ color: 'white', fontSize: 22 }} />
-            </Box>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.2 }}>
+            <LayersIcon sx={{ fontSize: 24, color: '#99f6e4' }} />
             <Box>
-              <Typography variant="subtitle1" sx={{ fontWeight: 700, fontSize: '1.05rem', lineHeight: 1.2 }}>
-                Multi-Unit Details
+              <Typography variant="subtitle1" sx={{ fontWeight: 700, lineHeight: 1.2, color: 'white' }}>
+                Multi-Unit & Pricing Breakdown
               </Typography>
-              <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.8)', fontSize: '0.76rem' }}>
-                Unit IMEI, available stock breakdown, and selling rates
+              <Typography variant="caption" sx={{ color: '#ccfbf1', display: 'block', mt: 0.2 }}>
+                {selectedStockItem?.itemName} {selectedStockItem?.imei ? `(IMEI: ${selectedStockItem.imei})` : ''}
               </Typography>
             </Box>
           </Box>
-          <IconButton
-            onClick={() => setMultiUnitDialogOpen(false)}
-            sx={{
-              color: 'white',
-              bgcolor: 'rgba(255,255,255,0.1)',
-              '&:hover': { bgcolor: 'rgba(255,255,255,0.2)' },
-              p: 0.8,
-            }}
-          >
+          <IconButton size="small" onClick={() => setMultiUnitDialogOpen(false)} sx={{ color: 'white', '&:hover': { bgcolor: 'rgba(255,255,255,0.1)' } }}>
+            <CloseIcon fontSize="small" />
+          </IconButton>
+        </DialogTitle>
+
+        <DialogContent sx={{ p: 3, bgcolor: '#f8fafc' }}>
+          {multiUnitLoading ? (
+            <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 6 }}>
+              <CircularProgress size={32} sx={{ color: '#0f766e' }} />
+              <Typography variant="body2" sx={{ mt: 1.5, color: '#64748b' }}>
+                Loading product multi-unit configuration...
+              </Typography>
+            </Box>
+          ) : multiUnitError ? (
+            <Alert severity="error" sx={{ my: 2 }}>{multiUnitError}</Alert>
+          ) : multiUnitProduct ? (
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2.5 }}>
+              {/* Top Overview Cards */}
+              <Grid container spacing={1.5}>
+                <Grid item xs={12} sm={3}>
+                  <Paper elevation={0} sx={{ p: 1.5, bgcolor: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 2 }}>
+                    <Typography variant="caption" sx={{ color: '#64748b', fontWeight: 600, textTransform: 'uppercase' }}>Primary Unit</Typography>
+                    <Typography variant="h6" sx={{ color: '#0f766e', fontWeight: 700, mt: 0.2 }}>
+                      {multiUnitProduct.unit || 'PCS'}
+                    </Typography>
+                  </Paper>
+                </Grid>
+                <Grid item xs={12} sm={3}>
+                  <Paper elevation={0} sx={{ p: 1.5, bgcolor: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 2 }}>
+                    <Typography variant="caption" sx={{ color: '#64748b', fontWeight: 600, textTransform: 'uppercase' }}>Stock Available</Typography>
+                    <Typography variant="h6" sx={{ color: '#0f172a', fontWeight: 700, mt: 0.2 }}>
+                      {selectedStockItem?.qtyAvailable ?? 0} {multiUnitProduct.unit || 'PCS'}
+                    </Typography>
+                  </Paper>
+                </Grid>
+                <Grid item xs={12} sm={3}>
+                  <Paper elevation={0} sx={{ p: 1.5, bgcolor: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 2 }}>
+                    <Typography variant="caption" sx={{ color: '#64748b', fontWeight: 600, textTransform: 'uppercase' }}>Batch No</Typography>
+                    <Typography variant="body1" sx={{ color: '#0f172a', fontWeight: 600, mt: 0.5 }}>
+                      {selectedStockItem?.batchNumber || 'N/A'}
+                    </Typography>
+                  </Paper>
+                </Grid>
+                <Grid item xs={12} sm={3}>
+                  <Paper elevation={0} sx={{ p: 1.5, bgcolor: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 2 }}>
+                    <Typography variant="caption" sx={{ color: '#64748b', fontWeight: 600, textTransform: 'uppercase' }}>Expiry Date</Typography>
+                    <Typography variant="body1" sx={{ color: '#0f172a', fontWeight: 600, mt: 0.5 }}>
+                      {formatDateDDMMYY(selectedStockItem?.expiryDate || null)}
+                    </Typography>
+                  </Paper>
+                </Grid>
+              </Grid>
+
+              {/* Multi-Unit Breakdown Table */}
+              <Paper elevation={0} sx={{ border: '1px solid #e2e8f0', borderRadius: 2, overflow: 'hidden' }}>
+                <Box sx={{ px: 2, py: 1.2, bgcolor: '#f1f5f9', borderBottom: '1px solid #e2e8f0', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 700, color: '#334155' }}>
+                    Configured Units & Conversion Rates
+                  </Typography>
+                  <Chip
+                    label={`${(multiUnitProduct.multiUnits?.length || 0) + 1} Units Available`}
+                    size="small"
+                    sx={{ height: 22, fontSize: '0.7rem', fontWeight: 600, bgcolor: '#e0f2fe', color: '#0369a1' }}
+                  />
+                </Box>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow sx={{ bgcolor: '#f8fafc' }}>
+                      <TableCell sx={{ fontWeight: 700, fontSize: '0.75rem', color: '#475569' }}>Unit Name</TableCell>
+                      <TableCell sx={{ fontWeight: 700, fontSize: '0.75rem', color: '#475569' }} align="center">Conversion Factor</TableCell>
+                      <TableCell sx={{ fontWeight: 700, fontSize: '0.75rem', color: '#475569' }} align="center">Equivalent Stock</TableCell>
+                      <TableCell sx={{ fontWeight: 700, fontSize: '0.75rem', color: '#475569' }} align="right">Purchase Rate</TableCell>
+                      <TableCell sx={{ fontWeight: 700, fontSize: '0.75rem', color: '#475569' }} align="right">Selling Price</TableCell>
+                      <TableCell sx={{ fontWeight: 700, fontSize: '0.75rem', color: '#475569' }} align="right">Retail Price</TableCell>
+                      <TableCell sx={{ fontWeight: 700, fontSize: '0.75rem', color: '#475569' }} align="right">Wholesale Price</TableCell>
+                      <TableCell sx={{ fontWeight: 700, fontSize: '0.75rem', color: '#475569' }} align="right">Special 1</TableCell>
+                      <TableCell sx={{ fontWeight: 700, fontSize: '0.75rem', color: '#475569' }} align="right">Special 2</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {/* Primary Base Unit Row */}
+                    <TableRow sx={{ bgcolor: '#ffffff' }}>
+                      <TableCell sx={{ fontWeight: 600, color: '#0f766e', fontSize: '0.8rem' }}>
+                        {multiUnitProduct.unit || 'PCS'}
+                        <Chip label="Base Unit" size="small" sx={{ ml: 1, height: 18, fontSize: '0.65rem', fontWeight: 600, bgcolor: '#f0fdf4', color: '#16a34a' }} />
+                      </TableCell>
+                      <TableCell align="center" sx={{ fontSize: '0.8rem' }}>1</TableCell>
+                      <TableCell align="center" sx={{ fontWeight: 700, color: '#0f172a', fontSize: '0.8rem' }}>
+                        {selectedStockItem?.qtyAvailable ?? 0} {multiUnitProduct.unit || 'PCS'}
+                      </TableCell>
+                      <TableCell align="right" sx={{ fontSize: '0.8rem' }}>{selectedStockItem?.purchaseRate?.toFixed(2) ?? '-'}</TableCell>
+                      <TableCell align="right" sx={{ fontSize: '0.8rem', fontWeight: 600 }}>{selectedStockItem?.sellingPrice?.toFixed(2) ?? '-'}</TableCell>
+                      <TableCell align="right" sx={{ fontSize: '0.8rem' }}>{selectedStockItem?.retailPrice?.toFixed(2) ?? '-'}</TableCell>
+                      <TableCell align="right" sx={{ fontSize: '0.8rem' }}>{selectedStockItem?.wholesalePrice?.toFixed(2) ?? '-'}</TableCell>
+                      <TableCell align="right" sx={{ fontSize: '0.8rem' }}>{selectedStockItem?.specialPrice1 ? selectedStockItem.specialPrice1.toFixed(2) : '-'}</TableCell>
+                      <TableCell align="right" sx={{ fontSize: '0.8rem' }}>{selectedStockItem?.specialPrice2 ? selectedStockItem.specialPrice2.toFixed(2) : '-'}</TableCell>
+                    </TableRow>
+
+                    {/* Secondary Multi-Units */}
+                    {multiUnitProduct.multiUnits && multiUnitProduct.multiUnits.length > 0 ? (
+                      multiUnitProduct.multiUnits.map((mu: any, idx: number) => {
+                        const factor = mu.conversionFactor || 1;
+                        const convertedStock = factor > 0 ? ((selectedStockItem?.qtyAvailable ?? 0) / factor).toFixed(2) : '0';
+                        return (
+                          <TableRow key={idx} sx={{ bgcolor: idx % 2 === 0 ? '#fafafa' : '#ffffff' }}>
+                            <TableCell sx={{ fontWeight: 600, color: '#334155', fontSize: '0.8rem' }}>
+                              {mu.unitName || mu.unit || `Unit ${idx + 1}`}
+                            </TableCell>
+                            <TableCell align="center" sx={{ fontSize: '0.8rem', color: '#64748b' }}>
+                              1 {mu.unitName || mu.unit} = {factor} {multiUnitProduct.unit}
+                            </TableCell>
+                            <TableCell align="center" sx={{ fontWeight: 700, color: '#0284c7', fontSize: '0.8rem' }}>
+                              {convertedStock} {mu.unitName || mu.unit}
+                            </TableCell>
+                            <TableCell align="right" sx={{ fontSize: '0.8rem' }}>
+                              {mu.purchasePrice ? Number(mu.purchasePrice).toFixed(2) : (selectedStockItem ? (selectedStockItem.purchaseRate * factor).toFixed(2) : '-')}
+                            </TableCell>
+                            <TableCell align="right" sx={{ fontSize: '0.8rem', fontWeight: 600 }}>
+                              {mu.salesPrice ? Number(mu.salesPrice).toFixed(2) : (selectedStockItem ? (selectedStockItem.sellingPrice * factor).toFixed(2) : '-')}
+                            </TableCell>
+                            <TableCell align="right" sx={{ fontSize: '0.8rem' }}>
+                              {mu.retailPrice ? Number(mu.retailPrice).toFixed(2) : (selectedStockItem ? (selectedStockItem.retailPrice * factor).toFixed(2) : '-')}
+                            </TableCell>
+                            <TableCell align="right" sx={{ fontSize: '0.8rem' }}>
+                              {mu.wholesalePrice ? Number(mu.wholesalePrice).toFixed(2) : (selectedStockItem ? (selectedStockItem.wholesalePrice * factor).toFixed(2) : '-')}
+                            </TableCell>
+                            <TableCell align="right" sx={{ fontSize: '0.8rem' }}>
+                              {mu.specialPrice1 ? Number(mu.specialPrice1).toFixed(2) : '-'}
+                            </TableCell>
+                            <TableCell align="right" sx={{ fontSize: '0.8rem' }}>
+                              {mu.specialPrice2 ? Number(mu.specialPrice2).toFixed(2) : '-'}
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })
+                    ) : (
+                      <TableRow>
+                        <TableCell colSpan={9} align="center" sx={{ py: 2.5, color: '#94a3b8' }}>
+                          No secondary multi-units configured for this item in Product Master.
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </Paper>
+            </Box>
+          ) : null}
+        </DialogContent>
+
+        <DialogActions sx={{ px: 3, py: 1.5, bgcolor: '#f1f5f9', borderTop: '1px solid #e2e8f0' }}>
+          <Button onClick={() => setMultiUnitDialogOpen(false)} variant="contained" sx={{ bgcolor: '#0f766e', '&:hover': { bgcolor: '#115e59' }, textTransform: 'none', px: 3 }}>
+            Close
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Advanced Stock Filters Window */}
+      <Dialog
+        open={filterDialogOpen}
+        onClose={handleCloseFilter}
+        maxWidth="xs"
+        fullWidth
+        PaperProps={{
+          sx: {
+            borderRadius: 2.5,
+            border: '1.5px solid #0f766e',
+            boxShadow: '0 20px 35px -5px rgba(15, 118, 110, 0.25), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
+            overflow: 'hidden',
+          },
+        }}
+      >
+        {/* Header */}
+        <DialogTitle
+          sx={{
+            bgcolor: '#0f766e',
+            color: 'white',
+            px: 2.5,
+            py: 1.5,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+          }}
+        >
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <SettingsSuggestIcon sx={{ color: 'white', fontSize: 22 }} />
+            <Typography sx={{ fontWeight: 700, fontSize: '0.98rem' }}>
+              Advanced Stock Filters
+            </Typography>
+          </Box>
+          <IconButton size="small" onClick={handleCloseFilter} sx={{ color: 'white', '&:hover': { bgcolor: 'rgba(255,255,255,0.15)' } }}>
             <CloseIcon sx={{ fontSize: 18 }} />
           </IconButton>
         </DialogTitle>
 
-        <DialogContent sx={{ p: 0, bgcolor: '#f8fafc' }}>
-          {multiUnitLoading ? (
-            <Box sx={{ p: 6, textAlign: 'center' }}>
-              <CircularProgress size={36} sx={{ color: '#0f766e' }} />
-              <Typography variant="body2" sx={{ mt: 1.5, color: '#64748b', fontWeight: 500 }}>
-                Loading Multi-Unit information...
-              </Typography>
-            </Box>
-          ) : multiUnitError ? (
-            <Box sx={{ p: 3 }}>
-              <Alert severity="error">{multiUnitError}</Alert>
-            </Box>
-          ) : selectedStockItem ? (() => {
-            const baseUnitCode = typeof multiUnitProduct?.unitOfMeasureId === 'object' && multiUnitProduct.unitOfMeasureId?.shortCode
-              ? multiUnitProduct.unitOfMeasureId.shortCode
-              : (typeof multiUnitProduct?.unitOfMeasureId === 'object' && multiUnitProduct.unitOfMeasureId?.name
-                ? multiUnitProduct.unitOfMeasureId.name
-                : 'PCS');
+        {/* Form Fields */}
+        <DialogContent sx={{ p: 2.5, bgcolor: '#f8fafc', display: 'flex', flexDirection: 'column', gap: 1.8 }}>
+          {/* Seller Name */}
+          <Box>
+            <Typography sx={{ fontSize: '0.82rem', fontWeight: 600, color: '#475569', mb: 0.5 }}>
+              Seller Name
+            </Typography>
+            <Autocomplete
+              size="small"
+              options={sellerOptions}
+              value={draftFilters.sellerName}
+              onChange={(_, newVal) => setDraftFilters((prev) => ({ ...prev, sellerName: newVal || 'All' }))}
+              disableClearable
+              popupIcon={<KeyboardArrowDownIcon sx={{ fontSize: 18, color: '#64748b' }} />}
+              sx={{
+                bgcolor: 'white',
+                borderRadius: 1.5,
+                '& .MuiOutlinedInput-root': {
+                  borderRadius: 1.5,
+                  fontSize: '0.84rem',
+                  height: 38,
+                  '& fieldset': { borderColor: '#cbd5e1' },
+                  '&:hover fieldset': { borderColor: '#94a3b8' },
+                  '&.Mui-focused fieldset': { borderColor: '#0f766e' },
+                  py: 0,
+                  px: 1,
+                },
+                '& .MuiOutlinedInput-input': {
+                  py: 0.4,
+                  fontSize: '0.84rem',
+                },
+              }}
+              renderInput={(params) => <TextField {...params} />}
+            />
+          </Box>
 
-            const hasMultiUnits = Array.isArray(multiUnitProduct?.multiUnits) && multiUnitProduct.multiUnits.length > 0;
-            const currentQty = selectedStockItem.qtyAvailable;
+          {/* Category */}
+          <Box>
+            <Typography sx={{ fontSize: '0.82rem', fontWeight: 600, color: '#475569', mb: 0.5 }}>
+              Category
+            </Typography>
+            <Autocomplete
+              size="small"
+              options={categoryOptions}
+              value={draftFilters.category}
+              onChange={(_, newVal) => setDraftFilters((prev) => ({ ...prev, category: newVal || 'All' }))}
+              disableClearable
+              popupIcon={<KeyboardArrowDownIcon sx={{ fontSize: 18, color: '#64748b' }} />}
+              sx={{
+                bgcolor: 'white',
+                borderRadius: 1.5,
+                '& .MuiOutlinedInput-root': {
+                  borderRadius: 1.5,
+                  fontSize: '0.84rem',
+                  height: 38,
+                  '& fieldset': { borderColor: '#cbd5e1' },
+                  '&:hover fieldset': { borderColor: '#94a3b8' },
+                  '&.Mui-focused fieldset': { borderColor: '#0f766e' },
+                  py: 0,
+                  px: 1,
+                },
+                '& .MuiOutlinedInput-input': {
+                  py: 0.4,
+                  fontSize: '0.84rem',
+                },
+              }}
+              renderInput={(params) => <TextField {...params} />}
+            />
+          </Box>
 
-            return (
-              <Box sx={{ p: 2.5 }}>
-                {/* Product Summary Header Card */}
-                <Paper
-                  elevation={0}
-                  sx={{
-                    p: 2,
-                    mb: 2,
-                    borderRadius: 2,
-                    bgcolor: '#ffffff',
-                    border: '1px solid #e2e8f0',
-                  }}
-                >
-                  <Grid container spacing={2} alignItems="center">
-                    <Grid item xs={12} sm={7}>
-                      <Typography variant="caption" sx={{ color: '#64748b', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-                        Product Name
-                      </Typography>
-                      <Typography variant="h6" sx={{ fontWeight: 700, color: '#0f172a', fontSize: '1.05rem', lineHeight: 1.3 }}>
-                        {selectedStockItem.itemName}
-                      </Typography>
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 0.8, flexWrap: 'wrap' }}>
-                        {multiUnitProduct?.code && (
-                          <Chip
-                            label={`Code: ${multiUnitProduct.code}`}
-                            size="small"
-                            sx={{ bgcolor: '#f1f5f9', color: '#475569', fontWeight: 600, fontSize: '0.72rem', height: 22 }}
-                          />
-                        )}
-                        {selectedStockItem.brand && (
-                          <Chip
-                            label={`Brand: ${selectedStockItem.brand}`}
-                            size="small"
-                            sx={{ bgcolor: '#f1f5f9', color: '#475569', fontWeight: 500, fontSize: '0.72rem', height: 22 }}
-                          />
-                        )}
-                        {selectedStockItem.category && (
-                          <Chip
-                            label={`Category: ${selectedStockItem.category}`}
-                            size="small"
-                            sx={{ bgcolor: '#f1f5f9', color: '#475569', fontWeight: 500, fontSize: '0.72rem', height: 22 }}
-                          />
-                        )}
-                      </Box>
-                    </Grid>
+          {/* Brand */}
+          <Box>
+            <Typography sx={{ fontSize: '0.82rem', fontWeight: 600, color: '#475569', mb: 0.5 }}>
+              Brand
+            </Typography>
+            <Autocomplete
+              size="small"
+              options={brandOptions}
+              value={draftFilters.brand}
+              onChange={(_, newVal) => setDraftFilters((prev) => ({ ...prev, brand: newVal || 'All' }))}
+              disableClearable
+              popupIcon={<KeyboardArrowDownIcon sx={{ fontSize: 18, color: '#64748b' }} />}
+              sx={{
+                bgcolor: 'white',
+                borderRadius: 1.5,
+                '& .MuiOutlinedInput-root': {
+                  borderRadius: 1.5,
+                  fontSize: '0.84rem',
+                  height: 38,
+                  '& fieldset': { borderColor: '#cbd5e1' },
+                  '&:hover fieldset': { borderColor: '#94a3b8' },
+                  '&.Mui-focused fieldset': { borderColor: '#0f766e' },
+                  py: 0,
+                  px: 1,
+                },
+                '& .MuiOutlinedInput-input': {
+                  py: 0.4,
+                  fontSize: '0.84rem',
+                },
+              }}
+              renderInput={(params) => <TextField {...params} />}
+            />
+          </Box>
 
-                    <Grid item xs={12} sm={5}>
-                      <Box sx={{ display: 'flex', gap: 1.5, justifyContent: { xs: 'flex-start', sm: 'flex-end' }, flexWrap: 'wrap' }}>
-                        <Box sx={{ p: 1.2, bgcolor: '#f0fdfa', borderRadius: 1.5, border: '1px solid #99f6e4', minWidth: 120 }}>
-                          <Typography variant="caption" sx={{ color: '#0f766e', fontWeight: 600, display: 'block', fontSize: '0.68rem', textTransform: 'uppercase' }}>
-                            Current Base Stock
-                          </Typography>
-                          <Typography variant="body1" sx={{ fontWeight: 800, color: '#0f766e', fontSize: '1.05rem' }}>
-                            {currentQty} <span style={{ fontSize: '0.8rem', fontWeight: 600 }}>{baseUnitCode}</span>
-                          </Typography>
-                        </Box>
-                        {selectedStockItem.batchNumber && (
-                          <Box sx={{ p: 1.2, bgcolor: '#f8fafc', borderRadius: 1.5, border: '1px solid #e2e8f0', minWidth: 110 }}>
-                            <Typography variant="caption" sx={{ color: '#64748b', fontWeight: 600, display: 'block', fontSize: '0.68rem', textTransform: 'uppercase' }}>
-                              Batch Number
-                            </Typography>
-                            <Typography variant="body1" sx={{ fontWeight: 700, color: '#334155', fontSize: '0.95rem' }}>
-                              {selectedStockItem.batchNumber}
-                            </Typography>
-                          </Box>
-                        )}
-                      </Box>
-                    </Grid>
-                  </Grid>
-                </Paper>
-
-                {/* Multi-Unit Details Table */}
-                <Paper
-                  elevation={0}
-                  sx={{
-                    borderRadius: 2,
-                    border: '1px solid #e2e8f0',
-                    overflow: 'hidden',
-                    bgcolor: '#ffffff',
-                  }}
-                >
-                  <Box sx={{ px: 2, py: 1.2, bgcolor: '#f8fafc', borderBottom: '1px solid #e2e8f0', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <Typography variant="subtitle2" sx={{ fontWeight: 700, color: '#334155', fontSize: '0.82rem', textTransform: 'uppercase', letterSpacing: 0.5 }}>
-                      Units, IMEIs & Rates
-                    </Typography>
-                    <Typography variant="caption" sx={{ color: '#64748b', fontSize: '0.73rem' }}>
-                      Currency: AED
-                    </Typography>
-                  </Box>
-
-                  <TableContainer>
-                    <Table size="small">
-                      <TableHead>
-                        <TableRow sx={{ bgcolor: '#f1f5f9' }}>
-                          <TableCell sx={{ fontWeight: 700, fontSize: '0.72rem', color: '#475569', textTransform: 'uppercase', py: 1 }}>Unit</TableCell>
-                          <TableCell sx={{ fontWeight: 700, fontSize: '0.72rem', color: '#475569', textTransform: 'uppercase', py: 1 }}>IMEI / Barcode</TableCell>
-                          <TableCell sx={{ fontWeight: 700, fontSize: '0.72rem', color: '#475569', textTransform: 'uppercase', py: 1, textAlign: 'center' }}>Pcs Inside</TableCell>
-                          <TableCell sx={{ fontWeight: 700, fontSize: '0.72rem', color: '#475569', textTransform: 'uppercase', py: 1, textAlign: 'right' }}>Stock in Unit</TableCell>
-                          <TableCell sx={{ fontWeight: 700, fontSize: '0.72rem', color: '#475569', textTransform: 'uppercase', py: 1, textAlign: 'right' }}>Retail Price</TableCell>
-                          <TableCell sx={{ fontWeight: 700, fontSize: '0.72rem', color: '#475569', textTransform: 'uppercase', py: 1, textAlign: 'right' }}>Wholesale</TableCell>
-                          <TableCell sx={{ fontWeight: 700, fontSize: '0.72rem', color: '#475569', textTransform: 'uppercase', py: 1, textAlign: 'right' }}>Sp. Price 1</TableCell>
-                          <TableCell sx={{ fontWeight: 700, fontSize: '0.72rem', color: '#475569', textTransform: 'uppercase', py: 1, textAlign: 'right' }}>Sp. Price 2</TableCell>
-                        </TableRow>
-                      </TableHead>
-                      <TableBody>
-                        {/* 1. Base Unit Row */}
-                        <TableRow sx={{ bgcolor: '#f0fdfa', '&:hover': { bgcolor: '#ccfbf1' } }}>
-                          <TableCell sx={{ py: 1, fontSize: '0.8rem', fontWeight: 700, color: '#0f766e' }}>
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                              <span>{baseUnitCode}</span>
-                              <Chip label="Base Unit" size="small" sx={{ height: 18, fontSize: '0.65rem', fontWeight: 700, bgcolor: '#0f766e', color: 'white' }} />
-                            </Box>
-                          </TableCell>
-                          <TableCell sx={{ py: 1, fontSize: '0.78rem', fontFamily: 'monospace', color: '#334155' }}>
-                            {selectedStockItem.imei || multiUnitProduct?.imei || '—'}
-                          </TableCell>
-                          <TableCell sx={{ py: 1, fontSize: '0.78rem', textAlign: 'center', color: '#64748b' }}>
-                            1
-                          </TableCell>
-                          <TableCell sx={{ py: 1, fontSize: '0.82rem', textAlign: 'right', fontWeight: 700, color: '#0f766e' }}>
-                            {currentQty} {baseUnitCode}
-                          </TableCell>
-                          <TableCell sx={{ py: 1, fontSize: '0.8rem', textAlign: 'right', fontWeight: 600 }}>
-                            {(multiUnitProduct?.retailPrice ?? selectedStockItem.retailPrice ?? 0).toFixed(2)}
-                          </TableCell>
-                          <TableCell sx={{ py: 1, fontSize: '0.8rem', textAlign: 'right', fontWeight: 500 }}>
-                            {(multiUnitProduct?.wholesalePrice ?? selectedStockItem.wholesalePrice ?? 0).toFixed(2)}
-                          </TableCell>
-                          <TableCell sx={{ py: 1, fontSize: '0.8rem', textAlign: 'right', color: '#64748b' }}>
-                            {(multiUnitProduct?.specialPrice ?? selectedStockItem.specialPrice1) ? Number(multiUnitProduct?.specialPrice ?? selectedStockItem.specialPrice1).toFixed(2) : '—'}
-                          </TableCell>
-                          <TableCell sx={{ py: 1, fontSize: '0.8rem', textAlign: 'right', color: '#64748b' }}>
-                            {(multiUnitProduct?.specialPrice2 ?? selectedStockItem.specialPrice2) ? Number(multiUnitProduct?.specialPrice2 ?? selectedStockItem.specialPrice2).toFixed(2) : '—'}
-                          </TableCell>
-                        </TableRow>
-
-                        {/* 2. Multi-Unit Rows */}
-                        {hasMultiUnits && multiUnitProduct.multiUnits.map((mu: any, mIdx: number) => {
-                          const unitName = typeof mu.unitId === 'object' && mu.unitId?.shortCode
-                            ? mu.unitId.shortCode
-                            : (typeof mu.unitId === 'object' && mu.unitId?.name ? mu.unitId.name : 'Unit');
-                          const conv = Number(mu.conversion) || 1;
-                          const exactStock = conv > 0 ? (currentQty / conv) : 0;
-                          const wholeStock = conv > 0 ? Math.floor(currentQty / conv) : 0;
-                          const remPcs = conv > 0 ? (currentQty % conv) : 0;
-
-                          return (
-                            <TableRow key={mu.multiUnitId || mIdx} sx={{ '&:hover': { bgcolor: '#f8fafc' } }}>
-                              <TableCell sx={{ py: 1, fontSize: '0.8rem', fontWeight: 600, color: '#1e293b' }}>
-                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                  <span>{unitName}</span>
-                                  <Chip label="Multi Unit" size="small" sx={{ height: 18, fontSize: '0.65rem', fontWeight: 600, bgcolor: '#f5f3ff', color: '#7c3aed', border: '1px solid #ddd6fe' }} />
-                                </Box>
-                              </TableCell>
-                              <TableCell sx={{ py: 1, fontSize: '0.78rem', fontFamily: 'monospace', color: '#1e293b' }}>
-                                {mu.imei || '—'}
-                              </TableCell>
-                              <TableCell sx={{ py: 1, fontSize: '0.78rem', textAlign: 'center', color: '#475569', fontWeight: 600 }}>
-                                {conv} {baseUnitCode}
-                              </TableCell>
-                              <TableCell sx={{ py: 1, textAlign: 'right' }}>
-                                <Typography variant="body2" sx={{ fontWeight: 700, color: exactStock > 0 ? '#0f766e' : '#dc2626', fontSize: '0.82rem' }}>
-                                  {exactStock.toFixed(2)} {unitName}
-                                </Typography>
-                                {conv > 1 && currentQty > 0 && (
-                                  <Typography variant="caption" sx={{ color: '#64748b', fontSize: '0.68rem', display: 'block' }}>
-                                    {wholeStock} {unitName}{remPcs > 0 ? ` + ${remPcs} ${baseUnitCode}` : ''}
-                                  </Typography>
-                                )}
-                              </TableCell>
-                              <TableCell sx={{ py: 1, fontSize: '0.8rem', textAlign: 'right', fontWeight: 600 }}>
-                                {mu.retail != null ? Number(mu.retail).toFixed(2) : '—'}
-                              </TableCell>
-                              <TableCell sx={{ py: 1, fontSize: '0.8rem', textAlign: 'right', fontWeight: 500 }}>
-                                {mu.wholesale != null ? Number(mu.wholesale).toFixed(2) : '—'}
-                              </TableCell>
-                              <TableCell sx={{ py: 1, fontSize: '0.8rem', textAlign: 'right', color: '#64748b' }}>
-                                {mu.specialPrice1 != null ? Number(mu.specialPrice1).toFixed(2) : '—'}
-                              </TableCell>
-                              <TableCell sx={{ py: 1, fontSize: '0.8rem', textAlign: 'right', color: '#64748b' }}>
-                                {mu.specialPrice2 != null ? Number(mu.specialPrice2).toFixed(2) : '—'}
-                              </TableCell>
-                            </TableRow>
-                          );
-                        })}
-                      </TableBody>
-                    </Table>
-                  </TableContainer>
-
-                  {!hasMultiUnits && (
-                    <Box sx={{ p: 2, textAlign: 'center', bgcolor: '#f8fafc', borderTop: '1px solid #f1f5f9' }}>
-                      <Typography variant="caption" sx={{ color: '#64748b', fontStyle: 'italic' }}>
-                        No additional multi-unit packaging defined for this product. The base unit rates apply.
-                      </Typography>
-                    </Box>
-                  )}
-                </Paper>
-              </Box>
-            );
-          })() : null}
+          {/* Item Name */}
+          <Box>
+            <Typography sx={{ fontSize: '0.82rem', fontWeight: 600, color: '#475569', mb: 0.5 }}>
+              Item Name
+            </Typography>
+            <Autocomplete
+              size="small"
+              options={itemNameOptions}
+              value={draftFilters.itemName}
+              onChange={(_, newVal) => setDraftFilters((prev) => ({ ...prev, itemName: newVal || 'All' }))}
+              disableClearable
+              popupIcon={<KeyboardArrowDownIcon sx={{ fontSize: 18, color: '#64748b' }} />}
+              sx={{
+                bgcolor: 'white',
+                borderRadius: 1.5,
+                '& .MuiOutlinedInput-root': {
+                  borderRadius: 1.5,
+                  fontSize: '0.84rem',
+                  height: 38,
+                  '& fieldset': { borderColor: '#cbd5e1' },
+                  '&:hover fieldset': { borderColor: '#94a3b8' },
+                  '&.Mui-focused fieldset': { borderColor: '#0f766e' },
+                  py: 0,
+                  px: 1,
+                },
+                '& .MuiOutlinedInput-input': {
+                  py: 0.4,
+                  fontSize: '0.84rem',
+                },
+              }}
+              renderInput={(params) => <TextField {...params} />}
+            />
+          </Box>
         </DialogContent>
 
-        <DialogActions sx={{ px: 3, py: 1.5, bgcolor: '#f1f5f9', borderTop: '1px solid #e2e8f0' }}>
+        {/* Footer Actions */}
+        <DialogActions sx={{ p: 2, bgcolor: 'white', borderTop: '1px solid #e2e8f0', justifyContent: 'space-between' }}>
           <Button
-            variant="contained"
-            onClick={() => setMultiUnitDialogOpen(false)}
-            autoFocus
+            size="small"
+            onClick={handleResetFilters}
             sx={{
-              bgcolor: '#0f766e',
+              bgcolor: '#f8fafc',
+              color: '#475569',
+              border: '1px solid #cbd5e1',
               textTransform: 'none',
               fontWeight: 600,
-              fontSize: '0.85rem',
-              px: 3,
+              fontSize: '0.82rem',
+              px: 2,
+              py: 0.7,
               borderRadius: 1.5,
-              '&:hover': { bgcolor: '#115e59' },
+              '&:hover': {
+                bgcolor: '#f1f5f9',
+                borderColor: '#94a3b8',
+              },
             }}
           >
-            Done
+            Reset Filters
+          </Button>
+          <Button
+            size="small"
+            variant="contained"
+            onClick={handleApplyFilters}
+            sx={{
+              bgcolor: '#0f766e',
+              color: '#ffffff',
+              textTransform: 'none',
+              fontWeight: 700,
+              fontSize: '0.82rem',
+              px: 2.5,
+              py: 0.7,
+              borderRadius: 1.5,
+              boxShadow: 'none',
+              '&:hover': {
+                bgcolor: '#115e59',
+                boxShadow: 'none',
+              },
+            }}
+          >
+            Apply Filters
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Column Manager Drawer (F5) */}
+      <ColumnManagerDrawer
+        open={columnManagerOpen}
+        onClose={() => setColumnManagerOpen(false)}
+        columns={columns}
+        onColumnsChange={setColumns}
+        onResetDefaults={handleResetColumns}
+        storageKey={STOCK_REPORT_COLUMNS_KEY}
+      />
+
+      {/* Stock Movement Window Modal */}
+      {stockMovementOpen && (
+        <StockMovementModal
+          open={stockMovementOpen}
+          onClose={() => setStockMovementOpen(false)}
+          companyId={companyId || localStorage.getItem('selectedCompanyId') || ''}
+          initialProductId={selectedMovementItem?.productId || undefined}
+          initialProductName={selectedMovementItem?.itemName || undefined}
+          initialProductImei={selectedMovementItem?.imei || undefined}
+        />
+      )}
     </Box>
   );
 }

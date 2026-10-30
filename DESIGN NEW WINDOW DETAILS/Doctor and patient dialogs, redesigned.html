@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Doctor and patient dialogs, redesigned</title>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#e9eeec;--surface:#fff;--sunk:#f3f6f5;--ink:#15302e;--muted:#5d716e;--line:#d3dcd9;--accent:#0f766e;--accent-ink:#fff;--focus:#0f766e33;--err:#b42318;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0d1716;--surface:#15211f;--sunk:#101a19;--ink:#e4efec;--muted:#93aaa6;--line:#28403c;--accent:#2fb5a6;--accent-ink:#04211e;--focus:#2fb5a640;--err:#ff8a7a}}
+:root[data-theme="dark"]{--bg:#0d1716;--surface:#15211f;--sunk:#101a19;--ink:#e4efec;--muted:#93aaa6;--line:#28403c;--accent:#2fb5a6;--accent-ink:#04211e;--focus:#2fb5a640;--err:#ff8a7a}
+*{box-sizing:border-box}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--ink);font:400 14px/1.45 "Instrument Sans",system-ui,"Segoe UI",sans-serif}
+main{max-width:1080px;margin:0 auto;padding:28px 16px 48px;display:grid;grid-template-columns:minmax(0,420px) minmax(0,1fr);gap:28px;align-items:start}
+@media(max-width:860px){main{grid-template-columns:minmax(0,1fr)}}
+.dlg{background:var(--surface);border:1px solid var(--line);border-radius:10px;box-shadow:0 10px 30px #0a1f1c1f;overflow:hidden}
+.bar{display:flex;align-items:center;justify-content:space-between;padding:8px 8px 8px 14px;background:var(--sunk);border-bottom:1px solid var(--line);font-size:12.5px;color:var(--muted)}
+.bar button{all:unset;cursor:pointer;width:28px;height:28px;display:grid;place-items:center;border-radius:6px;font-size:16px}
+.bar button:hover{background:var(--line)}
+.body{padding:22px 22px 8px}
+h2{margin:0;font-size:20px;font-weight:700;letter-spacing:-.01em}
+.sub{margin:2px 0 18px;color:var(--muted)}
+fieldset{border:0;padding:0;margin:0 0 20px}
+legend{padding:0;margin-bottom:10px;font-weight:600;font-size:13px;color:var(--ink)}
+.row{display:grid;gap:12px;margin-bottom:12px}
+.c2{grid-template-columns:1fr 1fr}.c3{grid-template-columns:1.2fr 1fr 1fr}
+@media(max-width:520px){.c2,.c3{grid-template-columns:1fr}}
+label{display:block;font-size:12.5px;font-weight:500;color:var(--muted);margin-bottom:4px}
+label .req{color:var(--err)}
+input,select{width:100%;height:38px;padding:0 11px;font:inherit;color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:7px;outline:0;transition:border-color .12s,box-shadow .12s}
+select{appearance:none;background-image:linear-gradient(45deg,transparent 50%,var(--muted) 50%),linear-gradient(135deg,var(--muted) 50%,transparent 50%);background-position:calc(100% - 17px) 16px,calc(100% - 12px) 16px;background-size:5px 5px;background-repeat:no-repeat;padding-right:30px}
+input:hover,select:hover{border-color:var(--muted)}
+input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--focus)}
+input.bad{border-color:var(--err)}
+.hint{font-size:12px;color:var(--muted);margin-top:4px}
+.hint.bad{color:var(--err)}
+.seg{display:inline-flex;padding:3px;background:var(--sunk);border:1px solid var(--line);border-radius:8px;margin-bottom:14px}
+.seg button{all:unset;cursor:pointer;padding:6px 14px;border-radius:6px;font-weight:500;color:var(--muted)}
+.seg button[aria-pressed=true]{background:var(--surface);color:var(--ink);box-shadow:0 1px 3px #0a1f1c30}
+.seg button:focus-visible,.btn:focus-visible,.bar button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.find{display:flex;gap:8px}
+.find input{flex:1}
+.btn{all:unset;box-sizing:border-box;cursor:pointer;height:38px;padding:0 16px;display:inline-flex;align-items:center;justify-content:center;border-radius:7px;font-weight:600;border:1px solid var(--line);color:var(--ink);background:var(--surface)}
+.btn:hover{background:var(--sunk)}
+.btn.pri{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.btn.pri:hover{filter:brightness(1.08)}
+.btn[disabled]{opacity:.45;cursor:not-allowed;filter:none}
+.foot{display:flex;align-items:center;gap:8px;padding:14px 22px;border-top:1px solid var(--line);background:var(--sunk)}
+.foot .note{flex:1;color:var(--muted);font-size:12.5px}
+.ok{display:none;margin:0 22px 14px;padding:8px 12px;border-radius:7px;background:var(--sunk);border:1px solid var(--accent);font-weight:500}
+.ok.on{display:block}
+.side{color:var(--muted);font-size:13px;margin:0 0 8px}
+.stack{display:grid;gap:28px}
+.theme{position:fixed;top:calc(10px + env(safe-area-inset-top,0px));right:12px}
+</style>
+</head>
+<body>
+<button class="btn theme" id="theme" type="button" aria-label="Toggle light or dark">Theme</button>
+<main>
+<div>
+<p class="side">Doctor details</p>
+<section class="dlg" aria-labelledby="dh">
+  <div class="bar"><span>Doctor Details</span><button type="button" aria-label="Close">×</button></div>
+  <div class="body">
+    <h2 id="dh">Prescribing doctor</h2>
+    <p class="sub">Choose a saved doctor or add a new one.</p>
+    <div class="seg" role="group" aria-label="Doctor source">
+      <button type="button" aria-pressed="true" id="tExist">Saved doctor</button>
+      <button type="button" aria-pressed="false" id="tNew">New doctor</button>
+    </div>
+    <div class="row" id="pick">
+      <div><label for="dSel">Doctor</label>
+      <select id="dSel"><option value="">Select a doctor</option><option>Dr. Amira Al Mansoori</option><option>Dr. Rashid Khan</option><option>Dr. Sara Haddad</option></select></div>
+    </div>
+    <div class="row" id="newName" hidden>
+      <div><label for="dName">Doctor name <span class="req">*</span></label><input id="dName" autocomplete="off"></div>
+    </div>
+    <div class="row c2">
+      <div><label for="dLic">License number <span class="req">*</span></label><input id="dLic" inputmode="numeric" autocomplete="off"><div class="hint" id="dHint">Digits from the doctor's license.</div></div>
+      <div><label for="dProv">Licensing authority</label>
+      <select id="dProv"><option>MOHAP</option><option>DHA</option><option>DOH</option></select></div>
+    </div>
+  </div>
+  <div class="ok" id="dOk" role="status">Doctor saved.</div>
+  <div class="foot">
+    <span class="note" id="dNote">Fill in the license to save.</span>
+    <button class="btn" type="button" id="dClear">Clear</button>
+    <button class="btn pri" type="button" id="dSave" disabled>Save doctor</button>
+  </div>
+</section>
+</div>
+
+<div>
+<p class="side">Patient details</p>
+<section class="dlg" aria-labelledby="ph">
+  <div class="bar"><span>Patient Details</span><button type="button" aria-label="Close">×</button></div>
+  <div class="body">
+    <h2 id="ph">Patient</h2>
+    <p class="sub">Look up by Emirates ID to fill in known details, or enter them manually.</p>
+
+    <fieldset>
+      <legend>Identity</legend>
+      <div class="row">
+        <div><label for="eid">Emirates ID</label>
+        <div class="find"><input id="eid" inputmode="numeric" placeholder="784-0000-0000000-0" maxlength="18" autocomplete="off"><button class="btn" type="button" id="find">Search</button></div>
+        <div class="hint" id="eHint">15 digits, starting with 784.</div></div>
+      </div>
+      <div class="row c2">
+        <div><label for="pn">First name <span class="req">*</span></label><input id="pn"></div>
+        <div><label for="pf">Family name <span class="req">*</span></label><input id="pf"></div>
+      </div>
+      <div class="row c3">
+        <div><label for="dob">Date of birth</label><input id="dob" type="date"></div>
+        <div><label for="gen">Gender</label><select id="gen"><option>Unknown</option><option>Female</option><option>Male</option></select></div>
+        <div><label for="mrn">MRN</label><input id="mrn"></div>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Contact and address</legend>
+      <div class="row c2">
+        <div><label for="ph1">Phone</label><input id="ph1" type="tel" placeholder="+971 5X XXX XXXX"></div>
+        <div><label for="lang">Language</label><select id="lang"><option>Arabic</option><option>English</option><option>Urdu</option><option>Hindi</option></select></div>
+      </div>
+      <div class="row c2">
+        <div><label for="em">Emirate</label><select id="em"><option value="">Select</option><option>Abu Dhabi</option><option>Dubai</option><option>Sharjah</option><option>Ajman</option><option>Umm Al Quwain</option><option>Ras Al Khaimah</option><option>Fujairah</option></select></div>
+        <div><label for="city">City</label><input id="city"></div>
+      </div>
+      <div class="row c2">
+        <div><label for="st">Street address</label><input id="st"></div>
+        <div><label for="co">Country</label><select id="co"><option>United Arab Emirates</option><option>Other</option></select></div>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Prescription</legend>
+      <div class="row c2">
+        <div><label for="rx">Prescription number</label><input id="rx"></div>
+        <div><label for="rxd">Prescription date</label><input id="rxd" type="date"></div>
+      </div>
+    </fieldset>
+  </div>
+  <div class="ok" id="pOk" role="status">Patient saved.</div>
+  <div class="foot">
+    <span class="note" id="pNote">Name is required to save.</span>
+    <button class="btn" type="button" id="pClear">Clear</button>
+    <button class="btn pri" type="button" id="pSave" disabled>Save patient</button>
+  </div>
+</section>
+</div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+// Theme
+$('theme').onclick=()=>{const r=document.documentElement;const dark=r.dataset.theme?r.dataset.theme==='dark':matchMedia('(prefers-color-scheme:dark)').matches;r.dataset.theme=dark?'light':'dark'};
+// Doctor
+let isNew=false;
+function mode(n){isNew=n;$('tNew').setAttribute('aria-pressed',n);$('tExist').setAttribute('aria-pressed',!n);$('pick').hidden=n;$('newName').hidden=!n;dCheck()}
+$('tExist').onclick=()=>mode(false);$('tNew').onclick=()=>mode(true);
+function dCheck(){
+  const name=isNew?$('dName').value.trim():$('dSel').value;
+  const lic=$('dLic').value.trim();
+  const ok=!!name&&/^\d{4,}$/.test(lic);
+  $('dSave').disabled=!ok;
+  $('dNote').textContent=ok?'Ready to save.':(!name?'Choose or enter a doctor.':'Enter a valid license number.');
+  const bad=lic&&!/^\d{4,}$/.test(lic);
+  $('dLic').classList.toggle('bad',!!bad);$('dHint').classList.toggle('bad',!!bad);
+  $('dHint').textContent=bad?'Use digits only, at least 4.':"Digits from the doctor's license.";
+}
+['dSel','dName','dLic'].forEach(i=>$(i).addEventListener('input',dCheck));
+$('dSave').onclick=()=>{$('dOk').classList.add('on');setTimeout(()=>$('dOk').classList.remove('on'),2200)};
+$('dClear').onclick=()=>{['dSel','dName','dLic'].forEach(i=>$(i).value='');$('dProv').selectedIndex=0;mode(false);dCheck()};
+// Patient
+$('eid').addEventListener('input',e=>{
+  const d=e.target.value.replace(/\D/g,'').slice(0,15);
+  const p=[d.slice(0,3),d.slice(3,7),d.slice(7,14),d.slice(14)].filter(Boolean);
+  e.target.value=p.join('-');
+  const bad=d.length>=3&&!d.startsWith('784');
+  e.target.classList.toggle('bad',bad);$('eHint').classList.toggle('bad',bad);
+  $('eHint').textContent=bad?'Emirates IDs start with 784.':(d.length===15?'Valid format.':'15 digits, starting with 784.');
+});
+$('find').onclick=()=>{
+  const d=$('eid').value.replace(/\D/g,'');
+  if(d.length!==15){$('eid').classList.add('bad');$('eHint').classList.add('bad');$('eHint').textContent='Enter all 15 digits to search.';$('eid').focus();return}
+  $('eHint').classList.remove('bad');$('eHint').textContent='No saved record found. Enter details manually.';
+};
+function pCheck(){
+  const ok=$('pn').value.trim()&&$('pf').value.trim();
+  $('pSave').disabled=!ok;$('pNote').textContent=ok?'Ready to save.':'Name is required to save.';
+}
+['pn','pf'].forEach(i=>$(i).addEventListener('input',pCheck));
+$('pSave').onclick=()=>{$('pOk').classList.add('on');setTimeout(()=>$('pOk').classList.remove('on'),2200)};
+$('pClear').onclick=()=>{document.querySelectorAll('section:last-of-type input').forEach(i=>i.value='');document.querySelectorAll('section:last-of-type select').forEach(s=>s.selectedIndex=0);$('eHint').textContent='15 digits, starting with 784.';$('eHint').classList.remove('bad');$('eid').classList.remove('bad');pCheck()};
+</script>
+</body>
+</html>

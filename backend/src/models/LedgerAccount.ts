@@ -81,6 +81,8 @@ export interface ILedgerAccount extends Document {
   mailingName?: string;
   mailingBank?: string;
   againstRef?: boolean;
+  reconciliation?: boolean;
+  isCardAccount?: boolean;
   createdBy?: mongoose.Types.ObjectId;
   createdAt: Date;
   updatedBy?: mongoose.Types.ObjectId;
@@ -163,6 +165,8 @@ const LedgerAccountSchema = new Schema<ILedgerAccount>(
     mailingName: { type: String },
     mailingBank: { type: String },
     againstRef: { type: Boolean, default: true },
+    reconciliation: { type: Boolean, default: true },
+    isCardAccount: { type: Boolean, default: false },
     createdBy: { type: Schema.Types.ObjectId, ref: 'User' },
     updatedBy: { type: Schema.Types.ObjectId, ref: 'User' },
   },

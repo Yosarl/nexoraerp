@@ -32,6 +32,7 @@ export interface ISalesInvoice extends Document {
   vatType: VatType;
   taxMode?: 'inclusive' | 'exclusive';
   cashAccountId?: mongoose.Types.ObjectId;
+  cardAccountId?: mongoose.Types.ObjectId;
   grossAmount: number;
   discountAmount: number;
   taxableAmount: number;
@@ -48,6 +49,18 @@ export interface ISalesInvoice extends Document {
   netBalance: number;
   paymentDetails: IPaymentDetail[];
   narration?: string;
+  // Pharmacy / Medical Fields
+  emiratesId?: string;
+  patientName?: string;
+  doctorName?: string;
+  prescriptionNumber?: string;
+  prescriptionDate?: string;
+  isRiayati?: boolean;
+  riayatiStatus?: 'Success' | 'Partial' | 'Failed' | 'Offline' | 'NotApplicable';
+  riayatiVisitNumber?: string;
+  riayatiAckCode?: string;
+  riayatiError?: string;
+  riayatiSubmittedAt?: Date;
   // Shipping Address
   shippingName?: string;
   shippingAddress?: string;
@@ -87,6 +100,7 @@ const SalesInvoiceSchema = new Schema<ISalesInvoice>(
     vatType: { type: String, enum: ['Vat', 'NonVat'], default: 'Vat' },
     taxMode: { type: String, enum: ['inclusive', 'exclusive'] },
     cashAccountId: { type: Schema.Types.ObjectId, ref: 'LedgerAccount' },
+    cardAccountId: { type: Schema.Types.ObjectId, ref: 'LedgerAccount' },
     grossAmount: { type: Number, default: 0 },
     discountAmount: { type: Number, default: 0 },
     taxableAmount: { type: Number, default: 0 },
@@ -103,6 +117,18 @@ const SalesInvoiceSchema = new Schema<ISalesInvoice>(
     netBalance: { type: Number, default: 0 },
     paymentDetails: [PaymentDetailSchema],
     narration: { type: String },
+    // Pharmacy / Medical Fields
+    emiratesId: { type: String },
+    patientName: { type: String },
+    doctorName: { type: String },
+    prescriptionNumber: { type: String },
+    prescriptionDate: { type: String },
+    isRiayati: { type: Boolean, default: false },
+    riayatiStatus: { type: String, enum: ['Success', 'Partial', 'Failed', 'Offline', 'NotApplicable'] },
+    riayatiVisitNumber: { type: String },
+    riayatiAckCode: { type: String },
+    riayatiError: { type: String },
+    riayatiSubmittedAt: { type: Date },
     // Shipping Address
     shippingName: { type: String },
     shippingAddress: { type: String },

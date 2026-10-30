@@ -35,8 +35,10 @@ const BaseSalesPage: React.FC<BaseSalesPageProps> = ({ type, title, api, holdSto
           value={state.customers.find((c) => c._id === state.customerId) || state.customers[0] || null}
           onChange={(_, v) => {
             if (v) {
-              state.setCustomerId(v._id === 'cash' ? null : v._id);
+              const isCash = v._id === 'cash' || /cash\s*in\s*hand/i.test(v.name || '');
+              state.setCustomerId(isCash ? null : v._id);
               state.setCustomerName(v.name);
+              state.setPaymentType(isCash ? 'Cash' : 'Credit');
             }
           }}
           renderInput={(params) => <TextField {...params} label="Customer" InputLabelProps={{ shrink: true }} sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />}
@@ -97,6 +99,8 @@ const BaseSalesPage: React.FC<BaseSalesPageProps> = ({ type, title, api, holdSto
           setFreightCharge={state.setFreightCharge}
           roundOff={state.roundOff}
           setRoundOff={state.setRoundOff}
+          autoRoundOff={state.autoRoundOff}
+          handleAutoRoundOffToggle={helpers.handleAutoRoundOffToggle}
           narration={state.narration}
           setNarration={state.setNarration}
         />

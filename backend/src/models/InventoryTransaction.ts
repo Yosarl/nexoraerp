@@ -21,6 +21,7 @@ export interface IInventoryTransaction extends Document {
   quantityIn: number;
   quantityOut: number;
   costPrice: number;
+  taxMode?: 'inclusive' | 'exclusive';
   referenceType?: string;
   referenceId?: mongoose.Types.ObjectId;
   batchNumber?: string;
@@ -43,6 +44,7 @@ const InventoryTransactionSchema = new Schema<IInventoryTransaction>(
     quantityIn: { type: Number, default: 0 },
     quantityOut: { type: Number, default: 0 },
     costPrice: { type: Number, default: 0 },
+    taxMode: { type: String, enum: ['inclusive', 'exclusive'] },
     referenceType: { type: String },
     referenceId: { type: Schema.Types.ObjectId },
     batchNumber: { type: String },

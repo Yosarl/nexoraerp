@@ -11,9 +11,10 @@ export const createPOSValidators = [
   body('items.*.productId').notEmpty().withMessage('Product ID is required'),
   body('items.*.quantity').isFloat({ min: 0.001 }).withMessage('Quantity is required'),
   body('items.*.unitPrice').isFloat({ min: 0 }).withMessage('Unit price is required'),
-  body('paymentDetails').isArray({ min: 1 }).withMessage('At least one payment is required'),
+  body('paymentDetails').isArray().withMessage('Payment details must be an array'),
   body('paymentDetails.*.mode').notEmpty().withMessage('Payment mode is required'),
   body('paymentDetails.*.amount').isFloat({ min: 0 }).withMessage('Payment amount is required'),
+  body('paymentType').optional().isIn(['Cash', 'Credit']).withMessage('Invalid payment type'),
 ];
 
 export const createB2CValidators = [
@@ -34,6 +35,25 @@ export async function createPOSSale(
     const userId = req.user!._id.toString();
     const result = await salesService.createPOSSale({ ...req.body, createdBy: userId });
     res.status(201).json({ success: true, data: result });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getNextPOSInvoiceNo(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const companyId = req.query.companyId as string;
+    const financialYearId = req.query.financialYearId as string;
+    if (!companyId || !financialYearId) {
+      res.status(400).json({ success: false, message: 'Company ID and Financial Year ID required' });
+      return;
+    }
+    const invoiceNo = await salesService.getNextInvoiceNo(companyId, financialYearId, 'POS');
+    res.json({ success: true, data: { invoiceNo } });
   } catch (err) {
     next(err);
   }
@@ -163,7 +183,8 @@ export async function listB2CInvoices(
       toDate: req.query.toDate as string,
       page: parseInt(req.query.page as string) || 1,
       limit: parseInt(req.query.limit as string) || 20,
-      type: req.query.type as 'B2C' | 'B2B' | 'Quotation' | undefined,
+      type: req.query.type as 'B2C' | 'B2B' | 'Quotation' | 'POS' | undefined,
+      idsOnly: req.query.idsOnly === '1' || req.query.idsOnly === 'true',
     };
     const data = await salesService.listB2CInvoices(companyId, financialYearId, opts);
     res.json({ success: true, data });
@@ -180,7 +201,7 @@ export async function getB2CInvoice(
   try {
     const invoiceId = req.params.id;
     const companyId = req.query.companyId as string;
-    const type = req.query.type as 'B2C' | 'B2B' | 'Quotation' | undefined;
+    const type = req.query.type as 'B2C' | 'B2B' | 'Quotation' | 'POS' | undefined;
     const excludeReturnId = req.query.excludeReturnId as string | undefined;
     if (!companyId) {
       res.status(400).json({ success: false, message: 'Company ID required' });
@@ -226,7 +247,7 @@ export async function searchB2CByInvoiceNo(
   try {
     const companyId = req.query.companyId as string;
     const invoiceNo = req.query.invoiceNo as string;
-    const type = req.query.type as 'B2C' | 'B2B' | 'Quotation' | undefined;
+    const type = req.query.type as 'B2C' | 'B2B' | 'Quotation' | 'POS' | undefined;
     const excludeReturnId = req.query.excludeReturnId as string | undefined;
     if (!companyId || !invoiceNo) {
       res.status(400).json({ success: false, message: 'Company ID and Invoice No required' });
@@ -399,3 +420,124 @@ export async function deleteSalesReturn(
     next(err);
   }
 }
+
+// ==================== Doctor Controllers ====================
+
+export async function listDoctors(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const companyId = req.query.companyId as string;
+    if (!companyId) {
+      res.status(400).json({ success: false, message: 'Company ID required' });
+      return;
+    }
+    const data = await salesService.getDoctors(companyId);
+    res.json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function createDoctor(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const data = await salesService.createDoctor(req.body);
+    res.status(201).json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ==================== Patient Controllers ====================
+
+export async function listPatients(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const companyId = req.query.companyId as string;
+    const search = req.query.search as string;
+    if (!companyId) {
+      res.status(400).json({ success: false, message: 'Company ID required' });
+      return;
+    }
+    const data = await salesService.getPatients(companyId, search);
+    res.json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function findPatientByEmiratesId(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const companyId = req.query.companyId as string;
+    const eid = req.query.emiratesId as string;
+    if (!companyId || !eid) {
+      res.status(400).json({ success: false, message: 'Company ID and Emirates ID required' });
+      return;
+    }
+    const data = await salesService.findPatientByEmiratesId(companyId, eid);
+    res.json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function createPatient(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const data = await salesService.createPatient(req.body);
+    res.status(201).json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getSalesReport(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const companyId = req.query.companyId as string;
+    const financialYearId = req.query.financialYearId as string | undefined;
+    if (!companyId) {
+      res.status(400).json({ success: false, message: 'Company ID is required' });
+      return;
+    }
+    const filterType = (req.query.filterType as 'default' | 'product' | 'product_total' | 'month' | 'daily' | 'monthly') || 'default';
+    const productId = req.query.productId as string | undefined;
+    const fromDate = req.query.fromDate as string | undefined;
+    const toDate = req.query.toDate as string | undefined;
+    const search = req.query.search as string | undefined;
+    const salesType = req.query.salesType as string | undefined;
+
+    const data = await salesService.getSalesReport(companyId, financialYearId, {
+      filterType,
+      productId,
+      fromDate,
+      toDate,
+      search,
+      salesType,
+    });
+
+    res.json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+}
+

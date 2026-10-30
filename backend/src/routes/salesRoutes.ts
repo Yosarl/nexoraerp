@@ -8,11 +8,14 @@ const router = Router();
 router.use(authenticate);
 
 // POS routes
+router.get('/pos/next-invoice-no', salesController.getNextPOSInvoiceNo);
 router.post(
   '/pos',
   validate(salesController.createPOSValidators),
   salesController.createPOSSale
 );
+// Sales Report
+router.get('/report', salesController.getSalesReport);
 
 router.get('/invoices/:id', salesController.getInvoice);
 
@@ -47,6 +50,14 @@ router.put(
   validate(salesController.createSalesReturnValidators),
   salesController.updateSalesReturn
 );
-router.delete('/return/:id', salesController.deleteSalesReturn);
+// Doctor routes
+router.get('/doctors', salesController.listDoctors);
+router.post('/doctors', salesController.createDoctor);
+
+// Patient routes
+router.get('/patients', salesController.listPatients);
+router.get('/patients/by-emirates-id', salesController.findPatientByEmiratesId);
+router.post('/patients', salesController.createPatient);
 
 export default router;
+

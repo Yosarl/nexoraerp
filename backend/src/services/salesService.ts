@@ -3,14 +3,18 @@ import { SalesInvoice } from '../models/SalesInvoice';
 import { SalesInvoiceItem } from '../models/SalesInvoiceItem';
 import { InventoryTransaction } from '../models/InventoryTransaction';
 import { Product } from '../models/Product';
+import { ProductCategory } from '../models/ProductCategory';
 import { Company } from '../models/Company';
 import { LedgerAccount } from '../models/LedgerAccount';
 import { LedgerGroup } from '../models/LedgerGroup';
 import { Voucher } from '../models/Voucher';
+import { Doctor } from '../models/Doctor';
+import { Patient } from '../models/Patient';
 import { AppError } from '../middlewares/errorHandler';
 import * as ledgerService from './ledgerService';
 import * as voucherService from './voucherService';
 import * as billReferenceService from './billReferenceService';
+import { riayatiHl7Service, RiayatiPatientVisit, RiayatiDispenseRequest } from './hl7/riayatiHl7Service';
 
 /**
  * Find or auto-create a LedgerGroup by type.
@@ -103,18 +107,110 @@ async function findOrCreateSpecialLedger(
   return ledger;
 }
 
+/**
+ * Find or auto-create the "Sales Returns" ledger under DIRECT EXPENSES A/C group.
+ */
+async function findOrCreateSalesReturnLedger(companyId: string) {
+  let dirExpHead = await LedgerGroup.findOne({
+    companyId,
+    $or: [
+      { code: 'DIR_EXP' },
+      { name: /^direct\s*expenses?$/i, parentGroupId: null },
+      { name: /^direct\s*expenses?$/i },
+    ],
+  });
+  if (!dirExpHead) {
+    dirExpHead = await LedgerGroup.create({
+      companyId,
+      name: 'Direct Expense',
+      code: 'DIR_EXP',
+      type: 'EXPENSE',
+    });
+  }
+
+  let group = await LedgerGroup.findOne({
+    companyId,
+    $or: [
+      { code: 'DIR_EXP_AC' },
+      { name: /^direct\s*expenses?\s*a\/?c$/i },
+      { name: /^direct\s*expenses?$/i, parentGroupId: { $ne: null } },
+    ],
+  });
+  if (group) {
+    if (!group.parentGroupId) {
+      await LedgerGroup.updateOne({ _id: group._id }, { $set: { parentGroupId: dirExpHead._id } });
+      group.parentGroupId = dirExpHead._id as any;
+    }
+  } else {
+    group = await LedgerGroup.create({
+      companyId,
+      name: 'DIRECT EXPENSES A/C',
+      code: 'DIR_EXP_AC',
+      type: 'EXPENSE',
+      parentGroupId: dirExpHead._id,
+    });
+  }
+
+  let ledger = await LedgerAccount.findOne({
+    companyId,
+    name: /^(sales\s*returns?|return\s*inward)$/i,
+  });
+
+  if (ledger) {
+    if (ledger.groupId?.toString() !== group._id.toString() || ledger.type !== 'Expense') {
+      await LedgerAccount.updateOne(
+        { _id: ledger._id },
+        { $set: { groupId: group._id, type: 'Expense' } }
+      );
+      ledger.groupId = group._id;
+      ledger.type = 'Expense';
+    }
+    return ledger;
+  }
+
+  // Auto-create
+  const lastAcc = await LedgerAccount.findOne({ companyId, code: /^ACC/ }).sort({ code: -1 }).lean();
+  const num = lastAcc?.code ? parseInt(lastAcc.code.replace(/\D/g, ''), 10) + 1 : 1;
+  const code = `ACC${num.toString().padStart(4, '0')}`;
+  ledger = await LedgerAccount.create({
+    companyId,
+    name: 'Sales Returns',
+    code,
+    type: 'Expense',
+    groupId: group._id,
+  });
+  console.log(`[Auto-created] Sales Returns ledger under Direct Expenses A/C: ${code}`);
+  return ledger;
+}
+
 export interface POSLineItem {
   productId: string;
   quantity: number;
   unitPrice: number;
   discount?: number;
   vatRate?: number;
+  batchNumber?: string;
+  expiryDate?: string;
+  multiUnitId?: string;
+  dosageInstructions?: {
+    duration?: string;
+    durationUnit?: string;
+    timing?: string;
+    frequency?: string;
+    summary?: string;
+  };
+  duration?: string;
+  timing?: string;
+  frequency?: string;
+  description?: string;
+  productName?: string;
 }
 
 export interface POSPayment {
   mode: string;
   amount: number;
   reference?: string;
+  accountId?: string;
 }
 
 export interface CreatePOSSaleInput {
@@ -122,10 +218,26 @@ export interface CreatePOSSaleInput {
   financialYearId: string;
   items: POSLineItem[];
   billDiscount?: number;
+  roundOff?: number;
   paymentDetails: POSPayment[];
+  paymentType?: 'Cash' | 'Credit';
+  cashReceived?: number;
   customerId?: string;
   customerName?: string;
+  customerPhone?: string;
+  customerAddress?: string;
   customerTRN?: string;
+  cashAccountId?: string;
+  cardAccountId?: string;
+  salesmanId?: string;
+  emiratesId?: string;
+  patientName?: string;
+  doctorName?: string;
+  doctorLicenseNo?: string;
+  visitNumber?: string;
+  isRiayati?: boolean;
+  prescriptionNumber?: string;
+  prescriptionDate?: string;
   createdBy?: string;
 }
 
@@ -143,14 +255,14 @@ export async function getNextInvoiceNo(
   const last = await SalesInvoice.findOne({ companyId, financialYearId, type })
     .sort({ invoiceNo: -1 })
     .lean();
-  if (!last?.invoiceNo) return `${prefix}-000001`;
-  // Extract only the numeric part after the dash
-  const match = last.invoiceNo.match(/-(\d+)$/);
+  if (!last?.invoiceNo) return `${prefix}-0001`;
+  // Extract only the numeric part after the dash or space
+  const match = last.invoiceNo.match(/[- ]+(\d+)$/);
   const num = match ? parseInt(match[1], 10) + 1 : 1;
-  return `${prefix}-${num.toString().padStart(6, '0')}`;
+  return `${prefix}-${num.toString().padStart(4, '0')}`;
 }
 
-export async function createPOSSale(input: CreatePOSSaleInput): Promise<{ invoiceId: string; invoiceNo: string }> {
+export async function createPOSSale(input: CreatePOSSaleInput): Promise<{ invoiceId: string; invoiceNo: string; riayatiSubmission?: any }> {
   const company = await Company.findById(input.companyId);
   if (!company) throw new AppError('Company not found', 404);
   const vatRatePct = company.vatConfig?.standardRate ?? 5;
@@ -169,13 +281,61 @@ export async function createPOSSale(input: CreatePOSSaleInput): Promise<{ invoic
     vatAmount: number;
     totalAmount: number;
     costPriceAtSale: number;
+    batchNumber?: string;
+    expiryDate?: string;
+    duration?: string;
+    timing?: string;
+    frequency?: string;
   }> = [];
+
+  // Track cumulative stock consumed per product across all line items in this POS sale (Sales Invoice procedure)
+  const usedStockMap = new Map<string, number>();
 
   for (const item of input.items) {
     const product = await Product.findById(item.productId).lean();
     if (!product || product.companyId.toString() !== input.companyId) {
       throw new AppError(`Product not found: ${item.productId}`, 404);
     }
+
+    // Check available stock before allowing sale (procedure on sales invoice window)
+    const pid = product._id.toString();
+    const stockAgg = await InventoryTransaction.aggregate([
+      {
+        $match: {
+          companyId: new mongoose.Types.ObjectId(input.companyId),
+          productId: product._id,
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          totalIn: { $sum: '$quantityIn' },
+          totalOut: { $sum: '$quantityOut' },
+        },
+      },
+    ]);
+    const totalAvailable = stockAgg.length > 0 ? stockAgg[0].totalIn - stockAgg[0].totalOut : 0;
+    const alreadyUsed = usedStockMap.get(pid) ?? 0;
+    const remainingStock = totalAvailable - alreadyUsed;
+
+    // For multi-unit sales, the actual stock consumed is qty * conversion
+    let requiredStock = item.quantity;
+    if (item.multiUnitId && product.multiUnits) {
+      const mu = product.multiUnits.find((m: any) => m.multiUnitId === item.multiUnitId);
+      if (mu && mu.conversion && mu.conversion > 0) {
+        requiredStock = item.quantity * mu.conversion;
+      }
+    }
+
+    if (remainingStock < requiredStock) {
+      throw new AppError(
+        `Insufficient stock for "${product.name}". Available: ${remainingStock}, Required: ${requiredStock}`,
+        400
+      );
+    }
+
+    usedStockMap.set(pid, alreadyUsed + requiredStock);
+
     const lineDiscount = item.discount ?? 0;
     const netBeforeVat = item.quantity * item.unitPrice - lineDiscount;
     const vatRate = (item.vatRate ?? getVatRate(product.vatCategory, vatRatePct)) / 100;
@@ -194,18 +354,68 @@ export async function createPOSSale(input: CreatePOSSaleInput): Promise<{ invoic
       vatAmount,
       totalAmount,
       costPriceAtSale: product.purchasePrice ?? 0,
+      batchNumber: item.batchNumber,
+      expiryDate: item.expiryDate,
+      duration: item.duration || item.dosageInstructions?.duration,
+      timing: item.timing || item.dosageInstructions?.timing,
+      frequency: item.frequency || item.dosageInstructions?.frequency,
     });
   }
 
   const taxableAmount = grossAmount - discountAmount;
   const vatAmount = lineItems.reduce((s, l) => s + l.vatAmount, 0);
-  const totalAmount = taxableAmount + vatAmount;
+  const roundOff = input.roundOff ?? 0;
+  const totalAmount = taxableAmount + vatAmount + roundOff;
 
   const invoiceNo = await getNextInvoiceNo(
     input.companyId,
     input.financialYearId,
     'POS'
   );
+
+  const isCredit = input.paymentType === 'Credit';
+  // If paymentDetails provided, respect them regardless of paymentType
+  const paymentRows = input.paymentDetails ?? [];
+  let cashPart = paymentRows.filter((p) => /cash/i.test(p.mode)).reduce((s, p) => s + (p.amount || 0), 0);
+  if (cashPart === 0 && input.cashReceived && input.cashReceived > 0) {
+    cashPart = input.cashReceived;
+  }
+  let cardPart = paymentRows.filter((p) => /card/i.test(p.mode)).reduce((s, p) => s + (p.amount || 0), 0);
+  if (cardPart > totalAmount + 0.01) {
+    throw new AppError(
+      `Card amount (${cardPart.toFixed(2)}) cannot exceed invoice total (${totalAmount.toFixed(2)})`,
+      400
+    );
+  }
+  if (!isCredit && cashPart === 0 && cardPart === 0) {
+    cashPart = totalAmount;
+  }
+  const paidTotal = Math.min(cashPart + cardPart, totalAmount);
+  const invoiceBalance = Math.max(0, parseFloat((totalAmount - paidTotal).toFixed(2)));
+
+  let cashLedger = null;
+  if (input.cashAccountId) {
+    cashLedger = await LedgerAccount.findById(input.cashAccountId);
+  }
+  if (!cashLedger) {
+    cashLedger = await LedgerAccount.findOne({
+      companyId: input.companyId,
+      name: /cash\s*in\s*hand/i,
+    });
+  }
+  if (!cashLedger) {
+    cashLedger = await LedgerAccount.findOne({
+      companyId: input.companyId,
+      type: 'Cash',
+    });
+  }
+
+  const effectiveCustomerName = input.customerId
+    ? (input.customerName || 'Customer')
+    : (input.customerName && input.customerName !== 'Walk-in' ? input.customerName : (cashLedger?.name || 'CASH IN HAND'));
+
+  const customerLedger = input.customerId ? await LedgerAccount.findById(input.customerId) : null;
+  const hasCustomerAc = !!customerLedger;
 
   const invoice = await SalesInvoice.create({
     companyId: input.companyId,
@@ -215,14 +425,50 @@ export async function createPOSSale(input: CreatePOSSaleInput): Promise<{ invoic
     time: date.toTimeString().slice(0, 8),
     type: 'POS',
     customerId: input.customerId,
-    customerName: input.customerName ?? 'Walk-in',
+    customerName: effectiveCustomerName,
+    cashAccountId: cashLedger?._id,
     customerTRN: input.customerTRN,
+    salesmanId: input.salesmanId,
+    rateType: 'Retail',
+    paymentType: isCredit ? 'Credit' : 'Cash',
+    vatType: 'Vat',
+    emiratesId: input.emiratesId,
+    patientName: input.patientName,
+    doctorName: input.doctorName,
+    prescriptionNumber: input.prescriptionNumber,
+    prescriptionDate: input.prescriptionDate,
+    isRiayati: input.isRiayati ?? false,
     grossAmount,
     discountAmount,
     taxableAmount,
     vatAmount,
+    roundOff,
     totalAmount,
-    paymentDetails: input.paymentDetails,
+    cashReceived: cashPart,
+    balance: invoiceBalance,
+    oldBalance: 0,
+    netBalance: invoiceBalance,
+    cardAccountId: input.cardAccountId ? new mongoose.Types.ObjectId(input.cardAccountId) : (paymentRows.find((p) => /card/i.test(p.mode) && p.accountId)?.accountId ? new mongoose.Types.ObjectId(paymentRows.find((p) => /card/i.test(p.mode) && p.accountId)!.accountId) : undefined),
+    paymentDetails: (() => {
+      const rows = [...paymentRows];
+      if (cashPart > 0 && !rows.some((p) => /cash/i.test(p.mode))) {
+        rows.unshift({
+          mode: 'Cash',
+          amount: cashPart,
+          accountId: cashLedger?._id ? cashLedger._id.toString() : undefined,
+        });
+      }
+      return rows.map((p) => ({
+        mode: p.mode,
+        amount: p.amount,
+        reference: p.reference,
+        accountId: p.accountId
+          ? new mongoose.Types.ObjectId(p.accountId)
+          : (/card/i.test(p.mode) && input.cardAccountId
+            ? new mongoose.Types.ObjectId(input.cardAccountId)
+            : (/cash/i.test(p.mode) && cashLedger ? cashLedger._id : undefined)),
+      }));
+    })(),
     status: 'Final',
     createdBy: input.createdBy,
   });
@@ -240,24 +486,104 @@ export async function createPOSSale(input: CreatePOSSaleInput): Promise<{ invoic
       vatAmount: line.vatAmount,
       totalAmount: line.totalAmount,
       costPriceAtSale: line.costPriceAtSale,
+      batchNumber: line.batchNumber,
+      expiryDate: line.expiryDate,
+      duration: (line as any).duration,
+      timing: (line as any).timing,
+      frequency: (line as any).frequency,
     });
   }
 
-  const cashLedger = await LedgerAccount.findOne({
-    companyId: input.companyId,
-    type: 'Cash',
-  });
   const salesLedger = await findOrCreateSalesLedger(input.companyId);
   const vatLedger = await findOrCreateVatLedger(input.companyId);
 
   const voucherLines: Array<{ ledgerAccountId: string; debitAmount: number; creditAmount: number; narration?: string }> = [];
-  if (cashLedger) {
+
+  let cardLedger = null;
+  if (cardPart > 0) {
+    const cardAccId = paymentRows.find((p) => /card/i.test(p.mode) && p.accountId)?.accountId || input.cardAccountId;
+    if (cardAccId) {
+      cardLedger = await LedgerAccount.findById(cardAccId);
+    }
+    if (!cardLedger) {
+      cardLedger = await LedgerAccount.findOne({
+        companyId: input.companyId,
+        $or: [
+          { isCardAccount: true },
+          { name: /card\s*clearing/i },
+          { name: /card/i },
+          { type: 'Bank' },
+        ],
+      });
+    }
+    if (!cardLedger) {
+      cardLedger = await findOrCreateSpecialLedger(input.companyId, 'Card Clearing Account', 'Other', 'Asset');
+    }
+  }
+
+  if (hasCustomerAc) {
+    // Debit the customer with the full sale, then settle whatever was tendered (none for a credit sale)
     voucherLines.push({
-      ledgerAccountId: cashLedger._id.toString(),
+      ledgerAccountId: customerLedger!._id.toString(),
       debitAmount: totalAmount,
       creditAmount: 0,
-      narration: `POS ${invoiceNo}`,
+      narration: `POS ${invoiceNo}${isCredit ? ' - Credit Sale' : ' - Sale'}`,
     });
+    if (cashPart > 0 && cashLedger) {
+      voucherLines.push({
+        ledgerAccountId: cashLedger._id.toString(),
+        debitAmount: cashPart,
+        creditAmount: 0,
+        narration: `POS ${invoiceNo} - Cash Payment`,
+      });
+      voucherLines.push({
+        ledgerAccountId: customerLedger!._id.toString(),
+        debitAmount: 0,
+        creditAmount: cashPart,
+        narration: `POS ${invoiceNo} - Cash Payment`,
+      });
+    }
+    if (cardPart > 0) {
+      const cardLedgerId = cardLedger?._id?.toString() || cashLedger?._id?.toString();
+      if (cardLedgerId) {
+        voucherLines.push({
+          ledgerAccountId: cardLedgerId,
+          debitAmount: cardPart,
+          creditAmount: 0,
+          narration: `POS ${invoiceNo} - Card Payment`,
+        });
+        voucherLines.push({
+          ledgerAccountId: customerLedger!._id.toString(),
+          debitAmount: 0,
+          creditAmount: cardPart,
+          narration: `POS ${invoiceNo} - Card Payment`,
+        });
+      }
+    }
+  } else {
+    if (cashLedger && cashPart > 0) {
+      voucherLines.push({
+        ledgerAccountId: cashLedger._id.toString(),
+        debitAmount: cashPart,
+        creditAmount: 0,
+        narration: `POS ${invoiceNo}${cardPart > 0 ? ' - Cash' : ''}`,
+      });
+    }
+    if (cardLedger && cardPart > 0) {
+      voucherLines.push({
+        ledgerAccountId: cardLedger._id.toString(),
+        debitAmount: cardPart,
+        creditAmount: 0,
+        narration: `POS ${invoiceNo}${cashPart > 0 ? ' - Card' : ''}`,
+      });
+    } else if (!cardLedger && cardPart > 0 && cashLedger) {
+      voucherLines.push({
+        ledgerAccountId: cashLedger._id.toString(),
+        debitAmount: cardPart,
+        creditAmount: 0,
+        narration: `POS ${invoiceNo}${cashPart > 0 ? ' - Card' : ''}`,
+      });
+    }
   }
   if (salesLedger) {
     const salesCredit = vatLedger && vatAmount > 0 ? taxableAmount : totalAmount - (vatAmount || 0);
@@ -277,6 +603,7 @@ export async function createPOSSale(input: CreatePOSSaleInput): Promise<{ invoic
     });
   }
 
+  let createdVoucher: any = null;
   if (voucherLines.length >= 2) {
     const totalDebit = voucherLines.reduce((s, l) => s + l.debitAmount, 0);
     const totalCredit = voucherLines.reduce((s, l) => s + l.creditAmount, 0);
@@ -289,7 +616,7 @@ export async function createPOSSale(input: CreatePOSSaleInput): Promise<{ invoic
         narration: 'Round',
       });
     }
-    const v = await voucherService.createAndPost({
+    createdVoucher = await voucherService.createAndPost({
       companyId: input.companyId,
       financialYearId: input.financialYearId,
       voucherType: 'Sales',
@@ -303,8 +630,65 @@ export async function createPOSSale(input: CreatePOSSaleInput): Promise<{ invoic
     });
     await SalesInvoice.updateOne(
       { _id: invoice._id },
-      { $set: { voucherId: v._id } }
+      { $set: { voucherId: createdVoucher._id } }
     );
+  }
+
+  // Bill references — New Ref for the receivable, Agst Ref for whatever was paid against the sales reference
+  const billPartyAccountId = input.customerId || (cashLedger ? cashLedger._id.toString() : undefined);
+  if (billPartyAccountId && totalAmount > 0) {
+    try {
+      await billReferenceService.deleteRefsBySource('SalesInvoice', invoice._id.toString());
+      if (createdVoucher?._id) {
+        await billReferenceService.deleteRefsBySource('Voucher', createdVoucher._id.toString());
+      }
+      await billReferenceService.createNewRef({
+        companyId: input.companyId,
+        financialYearId: input.financialYearId,
+        ledgerAccountId: billPartyAccountId,
+        billNumber: invoiceNo,
+        referenceType: 'SalesInvoice',
+        referenceId: invoice._id.toString(),
+        date,
+        amount: totalAmount,
+        drCr: 'Dr',
+        narration: `POS Sale ${invoiceNo}`,
+      });
+
+      if (cashPart > 0) {
+        await billReferenceService.createAgstRef({
+          companyId: input.companyId,
+          financialYearId: input.financialYearId,
+          ledgerAccountId: billPartyAccountId,
+          billNumber: invoiceNo,
+          referenceType: 'SalesInvoice',
+          referenceId: invoice._id.toString(),
+          date,
+          amount: cashPart,
+          drCr: 'Cr',
+          narration: `POS ${invoiceNo} - Cash Payment`,
+        });
+      }
+
+      if (cardPart > 0) {
+        const cardRow = paymentRows.find((p) => /card/i.test(p.mode));
+        const cardRefNote = cardRow?.reference ? ` (Ref: ${cardRow.reference})` : '';
+        await billReferenceService.createAgstRef({
+          companyId: input.companyId,
+          financialYearId: input.financialYearId,
+          ledgerAccountId: billPartyAccountId,
+          billNumber: invoiceNo,
+          referenceType: 'SalesInvoice',
+          referenceId: invoice._id.toString(),
+          date,
+          amount: cardPart,
+          drCr: 'Cr',
+          narration: `POS ${invoiceNo} - Card Payment${cardRefNote}`,
+        });
+      }
+    } catch (err) {
+      console.error(`[POS ${invoiceNo}] Bill reference creation failed:`, err);
+    }
   }
 
   for (const line of lineItems) {
@@ -319,14 +703,261 @@ export async function createPOSSale(input: CreatePOSSaleInput): Promise<{ invoic
       costPrice: line.costPriceAtSale,
       referenceType: 'SalesInvoice',
       referenceId: invoice._id,
+      batchNumber: line.batchNumber || undefined,
       createdBy: input.createdBy,
+    });
+  }
+
+  let riayatiSubmissionResult: any = null;
+
+  if (input.isRiayati) {
+    riayatiSubmissionResult = await executeRiayatiSubmission({
+      companyId: input.companyId,
+      invoiceId: invoice._id,
+      invoiceNo,
+      visitNumber: input.visitNumber,
+      emiratesId: input.emiratesId,
+      patientName: input.patientName,
+      doctorName: input.doctorName,
+      doctorLicenseNo: input.doctorLicenseNo,
+      customerPhone: input.customerPhone,
+      customerAddress: input.customerAddress,
+      date,
+      items: input.items.map((it) => ({
+        productId: it.productId,
+        quantity: it.quantity,
+        description: it.description || it.productName,
+        batchNumber: it.batchNumber,
+        expiryDate: it.expiryDate,
+        dosageInstructions: it.dosageInstructions,
+        duration: it.duration || it.dosageInstructions?.duration,
+        timing: it.timing || it.dosageInstructions?.timing,
+        frequency: it.frequency || it.dosageInstructions?.frequency,
+      })),
     });
   }
 
   return {
     invoiceId: invoice._id.toString(),
     invoiceNo: invoice.invoiceNo,
+    riayatiSubmission: riayatiSubmissionResult,
   };
+}
+
+export async function executeRiayatiSubmission(params: {
+  companyId: string;
+  invoiceId: mongoose.Types.ObjectId | string;
+  invoiceNo: string;
+  visitNumber?: string;
+  emiratesId?: string;
+  patientName?: string;
+  doctorName?: string;
+  doctorLicenseNo?: string;
+  customerPhone?: string;
+  customerAddress?: string;
+  date: Date;
+  items: Array<{
+    productId: string;
+    quantity: number;
+    description?: string;
+    batchNumber?: string;
+    expiryDate?: string | Date;
+    dosageInstructions?: any;
+    duration?: string;
+    timing?: string;
+    frequency?: string;
+  }>;
+}): Promise<any> {
+  let riayatiSubmissionResult: any = null;
+  const {
+    companyId,
+    invoiceId,
+    invoiceNo,
+    date,
+    items,
+  } = params;
+
+  try {
+    const visitNumber = params.visitNumber || `VN-${invoiceNo}`;
+
+    // Look up doctor details
+    let doctorLic = params.doctorLicenseNo;
+    let doctorName = params.doctorName || 'Dr. General (OTC)';
+    let doctorAuth = 'MOHAP';
+
+    if (!doctorLic && params.doctorName) {
+      const cleanDocName = params.doctorName.replace(/^Dr\.\s*/i, '').trim();
+      const foundDoc = await Doctor.findOne({
+        companyId,
+        name: new RegExp(cleanDocName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'),
+      }).lean();
+      if (foundDoc) {
+        doctorLic = foundDoc.licenseNumber;
+        doctorName = foundDoc.name;
+        doctorAuth = foundDoc.licensingAuthority || 'MOHAP';
+      }
+    }
+    if (!doctorLic) {
+      doctorLic = 'MOH-GEN01'; // safe fallback
+    }
+
+    // Look up patient details
+    let patEid = params.emiratesId;
+    let patName = params.patientName || 'Walk-in Patient';
+    let patFamily = '';
+    let patDob: Date | undefined;
+    let patGender: string | undefined;
+    let patMrn: string | undefined;
+    let patPhone: string | undefined = params.customerPhone;
+    let patLang: string | undefined;
+    let patStreet: string | undefined;
+    let patCity: string | undefined;
+    let patEmirate: string | undefined;
+    let patCountry: string | undefined;
+
+    if (patEid || params.patientName) {
+      const queryCond: any = { companyId };
+      if (patEid) {
+        queryCond.emiratesId = patEid.trim();
+      } else if (params.patientName && params.patientName !== 'Walk-in Patient') {
+        queryCond.fullName = new RegExp(`^${params.patientName.trim()}$`, 'i');
+      }
+
+      if (queryCond.emiratesId || queryCond.fullName) {
+        const foundPat = await Patient.findOne(queryCond).lean();
+        if (foundPat) {
+          patEid = foundPat.emiratesId || patEid;
+          patName = foundPat.firstName || foundPat.fullName || patName;
+          patFamily = foundPat.familyName || '';
+          patGender = foundPat.gender;
+          patMrn = foundPat.mrn;
+          if (foundPat.phone) patPhone = foundPat.phone;
+          if (foundPat.language) patLang = foundPat.language;
+          if (foundPat.street) patStreet = foundPat.street;
+          if (foundPat.city) patCity = foundPat.city;
+          if (foundPat.emirate) patEmirate = foundPat.emirate;
+          if (foundPat.country) patCountry = foundPat.country;
+          if (foundPat.dob) {
+            const parsed = new Date(foundPat.dob);
+            if (!isNaN(parsed.getTime())) patDob = parsed;
+          }
+        }
+      }
+    }
+
+    if (!patStreet && params.customerAddress) {
+      patStreet = params.customerAddress;
+    }
+
+    const visit: RiayatiPatientVisit = {
+      visitNumber,
+      emiratesId: patEid,
+      patientName: patName,
+      patientFamilyName: patFamily,
+      patientMrn: patMrn,
+      patientDob: patDob,
+      patientGender: patGender,
+      patientPhone: patPhone,
+      patientLanguage: patLang,
+      patientAddress: patStreet,
+      patientCity: patCity,
+      patientEmirate: patEmirate,
+      patientCountry: patCountry,
+      doctorLicenseNo: doctorLic,
+      doctorName: doctorName,
+      doctorLicenseProvider: doctorAuth,
+    };
+
+    // Retrieve product information for dispense items
+    const productIds = items.map((i) => i.productId);
+    const products = await Product.find({ _id: { $in: productIds } }).lean();
+    const productMap = new Map(products.map((p) => [p._id.toString(), p]));
+
+    const dispenses: RiayatiDispenseRequest[] = items.map((it) => {
+      const prod = productMap.get(it.productId);
+      const strengthNum = prod?.strength ? parseFloat(prod.strength) : 500;
+      const pkgSizeNum = prod?.packageSize ? parseFloat(prod.packageSize) : 1;
+      const freqCount = parseFloat(it.frequency || it.dosageInstructions?.frequency || '1') || 1;
+      const totalDailyDose = !isNaN(strengthNum) ? strengthNum * freqCount : undefined;
+
+      return {
+        visitNumber,
+        invoiceNo,
+        emiratesId: patEid,
+        patientName: patName,
+        patientFamilyName: patFamily,
+        patientMrn: patMrn,
+        patientDob: patDob,
+        patientGender: patGender,
+        patientPhone: patPhone,
+        patientLanguage: patLang,
+        patientAddress: patStreet,
+        patientCity: patCity,
+        patientEmirate: patEmirate,
+        patientCountry: patCountry,
+        doctorLicenseNo: doctorLic!,
+        doctorName: doctorName,
+        doctorLicenseProvider: doctorAuth,
+        drugCode: prod?.officialCode || prod?.code || 'MED-001',
+        drugDescription: it.description || prod?.name || prod?.genericName || 'MEDICATION',
+        dispensedAt: date,
+        quantity: it.quantity,
+        duration: it.duration || it.dosageInstructions?.duration || '30',
+        timing: it.timing || it.dosageInstructions?.timing || 'Before Food',
+        frequency: it.frequency || it.dosageInstructions?.frequency || '1',
+        totalDailyDose: totalDailyDose,
+        unit: prod?.packageUnit || 'TAB',
+        route: prod?.routeOfAdmin || 'PO,ORAL',
+        dosageForm: prod?.dosageForm || 'TAB,TABLET',
+        strength: isNaN(strengthNum) ? 500 : strengthNum,
+        strengthUnit: prod?.strengthUnit || 'MG',
+        lotNumber: it.batchNumber || 'BATCH01',
+        expiryDate: it.expiryDate ? new Date(it.expiryDate) : undefined,
+        manufacturer: prod?.manufacturer || 'PHARMA',
+        packageSize: isNaN(pkgSizeNum) ? 1 : pkgSizeNum,
+        packageUnit: prod?.packageUnit || 'BOX',
+        gtin: prod?.imei || prod?.internationalBarcode || '',
+        dispenseType: 'N',
+        medicineCodeProvider: prod?.medCodeProvider || 'DDC',
+      };
+    });
+
+    // Submit HL7 flow: ADT^A04 -> RDS^O13 -> ADT^A03
+    riayatiSubmissionResult = await riayatiHl7Service.submitFullDispenseFlow(visit, dispenses);
+
+    // Record result in invoice
+    await SalesInvoice.updateOne(
+      { _id: invoiceId },
+      {
+        $set: {
+          riayatiStatus: riayatiSubmissionResult.status,
+          riayatiVisitNumber: visitNumber,
+          riayatiAckCode: riayatiSubmissionResult.ackCode,
+          riayatiError: riayatiSubmissionResult.error,
+          riayatiSubmittedAt: new Date(),
+        },
+      }
+    );
+  } catch (riayatiErr: any) {
+    console.warn(`[Riayati] Submission handled gracefully for ${invoiceNo}: ${riayatiErr.message}`);
+    riayatiSubmissionResult = {
+      success: false,
+      status: 'Failed',
+      error: riayatiErr.message,
+    };
+    await SalesInvoice.updateOne(
+      { _id: invoiceId },
+      {
+        $set: {
+          riayatiStatus: 'Failed',
+          riayatiError: riayatiErr.message,
+          riayatiSubmittedAt: new Date(),
+        },
+      }
+    );
+  }
+
+  return riayatiSubmissionResult;
 }
 
 export async function getInvoice(invoiceId: string, companyId: string) {
@@ -354,6 +985,12 @@ export interface B2CLineItem {
   discount?: number;
   vatRate?: number;
   batchNumber?: string;
+  expiryDate?: string;
+  isRx?: boolean;
+  dosageInstructions?: any;
+  duration?: string;
+  timing?: string;
+  frequency?: string;
 }
 
 export interface B2CPayment {
@@ -367,7 +1004,7 @@ export interface CreateB2CSaleInput {
   companyId: string;
   financialYearId: string;
   date?: string;
-  type?: 'B2C' | 'B2B' | 'Quotation';
+  type?: 'B2C' | 'B2B' | 'Quotation' | 'POS';
   items: B2CLineItem[];
   customerId?: string;
   customerName?: string;
@@ -379,6 +1016,7 @@ export interface CreateB2CSaleInput {
   vatType?: 'Vat' | 'NonVat';
   taxMode?: 'inclusive' | 'exclusive';
   cashAccountId?: string;
+  cardAccountId?: string;
   otherDiscount?: number;
   otherCharges?: number;
   freightCharge?: number;
@@ -393,10 +1031,18 @@ export interface CreateB2CSaleInput {
   shippingAddress?: string;
   shippingPhone?: string;
   shippingContactPerson?: string;
+  patientName?: string;
+  doctorName?: string;
+  doctorLicenseNo?: string;
+  emiratesId?: string;
+  prescriptionNumber?: string;
+  prescriptionDate?: string;
+  isRiayati?: boolean;
+  visitNumber?: string;
   createdBy?: string;
 }
 
-export async function getNextB2CInvoiceNo(companyId: string, financialYearId: string, type: 'B2C' | 'B2B' | 'Quotation' = 'B2C'): Promise<string> {
+export async function getNextB2CInvoiceNo(companyId: string, financialYearId: string, type: 'B2C' | 'B2B' | 'Quotation' | 'POS' = 'B2C'): Promise<string> {
   const prefix = type === 'Quotation' ? 'QTN' : type;
   const last = await SalesInvoice.findOne({ companyId, financialYearId, type })
     .sort({ invoiceNo: -1 })
@@ -408,7 +1054,7 @@ export async function getNextB2CInvoiceNo(companyId: string, financialYearId: st
   return `${prefix}-${num.toString().padStart(6, '0')}`;
 }
 
-export async function createB2CSale(input: CreateB2CSaleInput): Promise<{ invoiceId: string; invoiceNo: string }> {
+export async function createB2CSale(input: CreateB2CSaleInput): Promise<{ invoiceId: string; invoiceNo: string; riayatiSubmission?: any }> {
   const company = await Company.findById(input.companyId);
   if (!company) throw new AppError('Company not found', 404);
 
@@ -438,6 +1084,10 @@ export async function createB2CSale(input: CreateB2CSaleInput): Promise<{ invoic
     totalAmount: number;
     costPriceAtSale: number;
     batchNumber?: string;
+    expiryDate?: string;
+    duration?: string;
+    timing?: string;
+    frequency?: string;
   }> = [];
 
   // Track cumulative stock consumed per product across all line items in this invoice
@@ -533,6 +1183,10 @@ export async function createB2CSale(input: CreateB2CSaleInput): Promise<{ invoic
       totalAmount: total,
       costPriceAtSale: product.purchasePrice ?? 0,
       batchNumber: item.batchNumber,
+      expiryDate: item.expiryDate,
+      duration: item.duration || item.dosageInstructions?.duration,
+      timing: item.timing || item.dosageInstructions?.timing,
+      frequency: item.frequency || item.dosageInstructions?.frequency,
     });
   }
 
@@ -561,10 +1215,29 @@ export async function createB2CSale(input: CreateB2CSaleInput): Promise<{ invoic
   const subTotal = (input.taxMode === 'inclusive' && isVat) ? taxableAmount : (taxableAmount + itemsVat);
   const grandTotal = subTotal - otherDiscount + otherCharges + freightCharge + lendAddLess + roundOff;
 
-  const cashReceived = input.cashReceived ?? (input.paymentType === 'Cash' ? grandTotal : 0);
-  const balance = grandTotal - cashReceived;
+  const cardTotal = (input.paymentDetails ?? []).filter((pd) => /card/i.test(pd.mode)).reduce((s, pd) => s + (pd.amount || 0), 0);
+  const isCredit = input.paymentType === 'Credit';
+  const cashPaid = input.cashReceived !== undefined && input.cashReceived > 0
+    ? Math.min(input.cashReceived, Math.max(0, grandTotal - cardTotal))
+    : (isCredit ? 0 : Math.max(0, grandTotal - cardTotal));
+  const totalPaid = cardTotal + cashPaid;
+  const cashReceived = input.cashReceived !== undefined
+    ? input.cashReceived
+    : (isCredit ? 0 : Math.max(0, grandTotal - cardTotal));
+  const balance = grandTotal - totalPaid;
   const oldBalance = 0; // Could be fetched from customer account
   const netBalance = balance + oldBalance;
+
+  // Synthesize paymentDetails to guarantee both cash and card details are stored
+  const effectivePaymentDetails = [...(input.paymentDetails ?? [])];
+  const hasCashRow = effectivePaymentDetails.some((pd) => /cash/i.test(pd.mode));
+  if (!hasCashRow && cashPaid > 0) {
+    effectivePaymentDetails.unshift({
+      mode: 'Cash',
+      amount: cashPaid,
+      accountId: input.cashAccountId as any,
+    });
+  }
 
   const type = input.type || 'B2C';
   const invoiceNo = await getNextB2CInvoiceNo(input.companyId, input.financialYearId, type);
@@ -602,13 +1275,19 @@ export async function createB2CSale(input: CreateB2CSaleInput): Promise<{ invoic
       balance,
       oldBalance,
       netBalance,
-      paymentDetails: input.paymentDetails ?? [],
+      paymentDetails: effectivePaymentDetails,
       narration: input.narration,
       // Shipping Address
       shippingName: input.shippingName,
       shippingAddress: input.shippingAddress,
       shippingPhone: input.shippingPhone,
       shippingContactPerson: input.shippingContactPerson,
+      emiratesId: input.emiratesId,
+      patientName: input.patientName,
+      doctorName: input.doctorName,
+      prescriptionNumber: input.prescriptionNumber,
+      prescriptionDate: input.prescriptionDate,
+      isRiayati: input.isRiayati ?? false,
       status: 'Final',
       createdBy: input.createdBy,
     });
@@ -635,6 +1314,10 @@ export async function createB2CSale(input: CreateB2CSaleInput): Promise<{ invoic
         totalAmount: line.totalAmount,
         costPriceAtSale: line.costPriceAtSale,
         batchNumber: line.batchNumber,
+        expiryDate: line.expiryDate,
+        duration: line.duration,
+        timing: line.timing,
+        frequency: line.frequency,
       });
     }
 
@@ -696,7 +1379,16 @@ export async function createB2CSale(input: CreateB2CSaleInput): Promise<{ invoic
   const salesLedger = await findOrCreateSalesLedger(input.companyId);
   const vatLedger = await findOrCreateVatLedger(input.companyId);
   const customerLedger = input.customerId ? await LedgerAccount.findById(input.customerId) : null;
-  const cardTotal = (input.paymentDetails ?? []).reduce((s, pd) => s + (pd.amount || 0), 0);
+  let defaultCardLedger = null;
+  if (cardTotal > 0) {
+    defaultCardLedger = await LedgerAccount.findOne({
+      companyId: input.companyId,
+      $or: [{ isCardAccount: true }, { name: /card\s*clearing/i }, { name: /card/i }],
+    });
+    if (!defaultCardLedger) {
+      defaultCardLedger = await LedgerAccount.findOne({ companyId: input.companyId, type: 'Bank' });
+    }
+  }
 
   // Look up special ledger accounts (only when the amount is non-zero)
   const discountOnSalesLedger = itemsDiscount > 0
@@ -808,46 +1500,42 @@ export async function createB2CSale(input: CreateB2CSaleInput): Promise<{ invoic
     // Discount, Charges & Round-off entries (net amounts when Vat)
     pushSpecialLines();
 
-    if (isCashPayment) {
-      // Step 2: Payment entries — settle customer account
-      // Card payment: Debit Card A/C, Credit Customer A/C
-      if (input.paymentDetails && input.paymentDetails.length > 0) {
-        for (const pd of input.paymentDetails) {
-          if (pd.amount > 0 && pd.accountId) {
-            voucherLines.push({
-              ledgerAccountId: pd.accountId,
-              debitAmount: pd.amount,
-              creditAmount: 0,
-              narration: `B2C ${invoiceNo} - ${pd.mode} Payment`,
-            });
-            voucherLines.push({
-              ledgerAccountId: customerLedger!._id.toString(),
-              debitAmount: 0,
-              creditAmount: pd.amount,
-              narration: `B2C ${invoiceNo} - ${pd.mode} Payment`,
-            });
-          }
+    // Step 2: Payment entries — settle customer account for any amount paid (Card / Cash)
+    if (input.paymentDetails && input.paymentDetails.length > 0) {
+      for (const pd of input.paymentDetails.filter((p) => !/cash/i.test(p.mode))) {
+        const accId = pd.accountId || defaultCardLedger?._id.toString();
+        if (pd.amount > 0 && accId) {
+          const cardRefStr = pd.reference ? ` (Ref: ${pd.reference})` : '';
+          voucherLines.push({
+            ledgerAccountId: accId,
+            debitAmount: pd.amount,
+            creditAmount: 0,
+            narration: `B2C ${invoiceNo} - ${pd.mode} Payment${cardRefStr}`,
+          });
+          voucherLines.push({
+            ledgerAccountId: customerLedger!._id.toString(),
+            debitAmount: 0,
+            creditAmount: pd.amount,
+            narration: `B2C ${invoiceNo} - ${pd.mode} Payment${cardRefStr}`,
+          });
         }
       }
-
-      // Cash payment: Debit Cash A/C, Credit Customer A/C with remaining amount
-      const cashPayment = grandTotal - cardTotal;
-      if (cashLedger && cashPayment > 0) {
-        voucherLines.push({
-          ledgerAccountId: cashLedger._id.toString(),
-          debitAmount: cashPayment,
-          creditAmount: 0,
-          narration: `B2C ${invoiceNo} - Cash Payment`,
-        });
-        voucherLines.push({
-          ledgerAccountId: customerLedger!._id.toString(),
-          debitAmount: 0,
-          creditAmount: cashPayment,
-          narration: `B2C ${invoiceNo} - Cash Payment`,
-        });
-      }
     }
-    // If Credit payment: no payment entries — balance stays in customer A/C
+
+    if (cashLedger && cashPaid > 0) {
+      voucherLines.push({
+        ledgerAccountId: cashLedger._id.toString(),
+        debitAmount: cashPaid,
+        creditAmount: 0,
+        narration: `B2C ${invoiceNo} - Cash Payment`,
+      });
+      voucherLines.push({
+        ledgerAccountId: customerLedger!._id.toString(),
+        debitAmount: 0,
+        creditAmount: cashPaid,
+        narration: `B2C ${invoiceNo} - Cash Payment`,
+      });
+    }
   } else {
     // ── CASH customer (no customer A/C) ──
     // Debit: Cash A/C for cash portion
@@ -863,13 +1551,14 @@ export async function createB2CSale(input: CreateB2CSaleInput): Promise<{ invoic
 
     // Debit: Card A/C for card payment
     if (input.paymentDetails && input.paymentDetails.length > 0) {
-      for (const pd of input.paymentDetails) {
+      for (const pd of input.paymentDetails.filter((p) => !/cash/i.test(p.mode))) {
         if (pd.amount > 0 && pd.accountId) {
+          const cardRefStr = pd.reference ? ` (Ref: ${pd.reference})` : '';
           voucherLines.push({
             ledgerAccountId: pd.accountId,
             debitAmount: pd.amount,
             creditAmount: 0,
-            narration: `B2C ${invoiceNo} - ${pd.mode}`,
+            narration: `B2C ${invoiceNo} - ${pd.mode}${cardRefStr}`,
           });
         }
       }
@@ -940,29 +1629,93 @@ export async function createB2CSale(input: CreateB2CSaleInput): Promise<{ invoic
     console.warn(`[B2C ${invoiceNo}] Insufficient voucher lines (${voucherLines.length}). Cash ledger: ${cashLedger ? 'found' : 'MISSING'}, Sales ledger: ${salesLedger ? 'found' : 'MISSING'}`);
   }
 
-  // 5. Create bill reference ("New Ref" — receivable from customer)
-  if (input.customerId && grandTotal > 0) {
+  // 5. Create bill reference ("New Ref" — receivable from customer and "Agst Ref" for paid amount)
+  const billPartyAccountId = input.customerId || (cashLedger ? cashLedger._id.toString() : undefined);
+  if (billPartyAccountId && grandTotal > 0) {
     try {
+      await billReferenceService.deleteRefsBySource('SalesInvoice', invoice!._id.toString());
       await billReferenceService.createNewRef({
         companyId: input.companyId,
         financialYearId: input.financialYearId,
-        ledgerAccountId: input.customerId,
+        ledgerAccountId: billPartyAccountId,
         billNumber: invoiceNo,
         referenceType: 'SalesInvoice',
         referenceId: invoice!._id.toString(),
         date: saleDate,
         amount: grandTotal,
         drCr: 'Dr',
-        narration: `B2C Sale ${invoiceNo}`,
+        narration: `${type} Sale ${invoiceNo}`,
       });
+
+      if (cashPaid > 0) {
+        await billReferenceService.createAgstRef({
+          companyId: input.companyId,
+          financialYearId: input.financialYearId,
+          ledgerAccountId: billPartyAccountId,
+          billNumber: invoiceNo,
+          referenceType: 'SalesInvoice',
+          referenceId: invoice!._id.toString(),
+          date: saleDate,
+          amount: cashPaid,
+          drCr: 'Cr',
+          narration: `${type} ${invoiceNo} - Cash Payment`,
+        });
+      }
+
+      if (cardTotal > 0) {
+        const cardRow = effectivePaymentDetails.find((p) => /card/i.test(p.mode));
+        const cardRefNote = cardRow?.reference ? ` (Ref: ${cardRow.reference})` : '';
+        await billReferenceService.createAgstRef({
+          companyId: input.companyId,
+          financialYearId: input.financialYearId,
+          ledgerAccountId: billPartyAccountId,
+          billNumber: invoiceNo,
+          referenceType: 'SalesInvoice',
+          referenceId: invoice!._id.toString(),
+          date: saleDate,
+          amount: cardTotal,
+          drCr: 'Cr',
+          narration: `${type} ${invoiceNo} - Card Payment${cardRefNote}`,
+        });
+      }
     } catch (err) {
       console.error(`[B2C ${invoiceNo}] Bill reference creation failed:`, err);
     }
   }
 
+  // 6. Submit to Riayati if enabled
+  let riayatiSubmissionResult: any = null;
+  if (input.isRiayati) {
+    riayatiSubmissionResult = await executeRiayatiSubmission({
+      companyId: input.companyId,
+      invoiceId: invoice!._id,
+      invoiceNo: invoice!.invoiceNo,
+      visitNumber: input.visitNumber,
+      emiratesId: input.emiratesId,
+      patientName: input.patientName,
+      doctorName: input.doctorName,
+      doctorLicenseNo: input.doctorLicenseNo,
+      customerPhone: input.customerPhone,
+      customerAddress: input.customerAddress,
+      date: saleDate,
+      items: input.items.map((it) => ({
+        productId: it.productId,
+        quantity: it.quantity,
+        description: it.description,
+        batchNumber: it.batchNumber,
+        expiryDate: it.expiryDate,
+        dosageInstructions: it.dosageInstructions,
+        duration: it.duration || it.dosageInstructions?.duration,
+        timing: it.timing || it.dosageInstructions?.timing,
+        frequency: it.frequency || it.dosageInstructions?.frequency,
+      })),
+    });
+  }
+
   return {
     invoiceId: invoice!._id.toString(),
     invoiceNo: invoice!.invoiceNo,
+    riayatiSubmission: riayatiSubmissionResult,
   };
 }
 
@@ -971,8 +1724,8 @@ export async function updateB2CSale(
   companyId: string,
   input: Partial<CreateB2CSaleInput>,
   userId: string
-): Promise<{ invoiceId: string; invoiceNo: string } | null> {
-  const existing = await SalesInvoice.findOne({ _id: invoiceId, companyId, type: { $in: ['B2C', 'B2B', 'Quotation'] } });
+): Promise<{ invoiceId: string; invoiceNo: string; riayatiSubmission?: any } | null> {
+  const existing = await SalesInvoice.findOne({ _id: invoiceId, companyId, type: { $in: ['B2C', 'B2B', 'Quotation', 'POS'] } });
   if (!existing) return null;
 
   // Recalculate with new data
@@ -1129,7 +1882,27 @@ export async function updateB2CSale(
   const taxableAmount = itemsGross - itemsDiscount;
   const subTotalUpdate = (input.taxMode === 'inclusive' && isVatUpdate) ? taxableAmount : (taxableAmount + itemsVat);
   const grandTotal = subTotalUpdate - otherDiscount + otherCharges + freightCharge + lendAddLess + roundOff;
-  const cashReceived = input.cashReceived ?? (input.paymentType === 'Cash' ? grandTotal : 0);
+  const cardTotal = (input.paymentDetails ?? []).filter((pd) => /card/i.test(pd.mode)).reduce((s, pd) => s + (pd.amount || 0), 0);
+  const isCredit = input.paymentType === 'Credit';
+  const cashPaid = input.cashReceived !== undefined && input.cashReceived > 0
+    ? Math.min(input.cashReceived, Math.max(0, grandTotal - cardTotal))
+    : (isCredit ? 0 : Math.max(0, grandTotal - cardTotal));
+  const totalPaid = cardTotal + cashPaid;
+  const cashReceived = input.cashReceived !== undefined
+    ? input.cashReceived
+    : (isCredit ? 0 : Math.max(0, grandTotal - cardTotal));
+  const balance = grandTotal - totalPaid;
+
+  // Synthesize paymentDetails to guarantee both cash and card details are stored
+  const effectivePaymentDetails = [...(input.paymentDetails ?? [])];
+  const hasCashRow = effectivePaymentDetails.some((pd) => /cash/i.test(pd.mode));
+  if (!hasCashRow && cashPaid > 0) {
+    effectivePaymentDetails.unshift({
+      mode: 'Cash',
+      amount: cashPaid,
+      accountId: input.cashAccountId as any,
+    });
+  }
 
   // Delete old voucher if exists
   if (existing.voucherId) {
@@ -1168,16 +1941,23 @@ export async function updateB2CSale(
         roundOff,
         totalAmount: grandTotal,
         cashReceived,
-        balance: grandTotal - cashReceived,
+        balance,
         oldBalance: input.oldBalance ?? existing.oldBalance ?? 0,
-        netBalance: grandTotal - cashReceived + (input.oldBalance ?? existing.oldBalance ?? 0),
-        paymentDetails: input.paymentDetails,
+        netBalance: balance + (input.oldBalance ?? existing.oldBalance ?? 0),
+        paymentDetails: effectivePaymentDetails,
         narration: input.narration,
         // Shipping details
         shippingName: input.shippingName,
         shippingAddress: input.shippingAddress,
         shippingPhone: input.shippingPhone,
         shippingContactPerson: input.shippingContactPerson,
+        patientName: input.patientName,
+        doctorName: input.doctorName,
+        doctorLicenseNo: input.doctorLicenseNo,
+        emiratesId: input.emiratesId,
+        prescriptionNumber: input.prescriptionNumber,
+        prescriptionDate: input.prescriptionDate,
+        isRiayati: input.isRiayati !== undefined ? input.isRiayati : existing.isRiayati,
         updatedBy: userId,
       },
     }
@@ -1194,7 +1974,16 @@ export async function updateB2CSale(
   const salesLedger = await findOrCreateSalesLedger(companyId);
   const vatLedger = await findOrCreateVatLedger(companyId);
   const customerLedger = input.customerId ? await LedgerAccount.findById(input.customerId) : null;
-  const cardTotal = (input.paymentDetails ?? []).reduce((s, pd) => s + (pd.amount || 0), 0);
+  let defaultCardLedger = null;
+  if (cardTotal > 0) {
+    defaultCardLedger = await LedgerAccount.findOne({
+      companyId,
+      $or: [{ isCardAccount: true }, { name: /card\s*clearing/i }, { name: /card/i }],
+    });
+    if (!defaultCardLedger) {
+      defaultCardLedger = await LedgerAccount.findOne({ companyId, type: 'Bank' });
+    }
+  }
 
   // Look up special ledger accounts (only when the amount is non-zero)
   const discountOnSalesLedger2 = itemsDiscount > 0
@@ -1295,41 +2084,41 @@ export async function updateB2CSale(
     // Discount, Charges & Round-off entries (net when Vat)
     pushSpecialLines2();
 
-    if (isCashPayment) {
-      if (input.paymentDetails && input.paymentDetails.length > 0) {
-        for (const pd of input.paymentDetails) {
-          if (pd.amount > 0 && pd.accountId) {
-            voucherLines.push({
-              ledgerAccountId: pd.accountId,
-              debitAmount: pd.amount,
-              creditAmount: 0,
-              narration: `B2C ${invNo} - ${pd.mode} Payment`,
-            });
-            voucherLines.push({
-              ledgerAccountId: customerLedger!._id.toString(),
-              debitAmount: 0,
-              creditAmount: pd.amount,
-              narration: `B2C ${invNo} - ${pd.mode} Payment`,
-            });
-          }
+    // Step 2: Payment entries — settle customer account for any amount paid (Card / Cash)
+    if (input.paymentDetails && input.paymentDetails.length > 0) {
+      for (const pd of input.paymentDetails.filter((p) => !/cash/i.test(p.mode))) {
+        const accId = pd.accountId || defaultCardLedger?._id.toString();
+        if (pd.amount > 0 && accId) {
+          const cardRefStr = pd.reference ? ` (Ref: ${pd.reference})` : '';
+          voucherLines.push({
+            ledgerAccountId: accId,
+            debitAmount: pd.amount,
+            creditAmount: 0,
+            narration: `B2C ${invNo} - ${pd.mode} Payment${cardRefStr}`,
+          });
+          voucherLines.push({
+            ledgerAccountId: customerLedger!._id.toString(),
+            debitAmount: 0,
+            creditAmount: pd.amount,
+            narration: `B2C ${invNo} - ${pd.mode} Payment${cardRefStr}`,
+          });
         }
       }
+    }
 
-      const cashPayment = grandTotal - cardTotal;
-      if (cashLedger && cashPayment > 0) {
-        voucherLines.push({
-          ledgerAccountId: cashLedger._id.toString(),
-          debitAmount: cashPayment,
-          creditAmount: 0,
-          narration: `B2C ${invNo} - Cash Payment`,
-        });
-        voucherLines.push({
-          ledgerAccountId: customerLedger!._id.toString(),
-          debitAmount: 0,
-          creditAmount: cashPayment,
-          narration: `B2C ${invNo} - Cash Payment`,
-        });
-      }
+    if (cashLedger && cashPaid > 0) {
+      voucherLines.push({
+        ledgerAccountId: cashLedger._id.toString(),
+        debitAmount: cashPaid,
+        creditAmount: 0,
+        narration: `B2C ${invNo} - Cash Payment`,
+      });
+      voucherLines.push({
+        ledgerAccountId: customerLedger!._id.toString(),
+        debitAmount: 0,
+        creditAmount: cashPaid,
+        narration: `B2C ${invNo} - Cash Payment`,
+      });
     }
   } else {
     // ── CASH customer (no customer A/C) ──
@@ -1344,13 +2133,14 @@ export async function updateB2CSale(
     }
 
     if (input.paymentDetails && input.paymentDetails.length > 0) {
-      for (const pd of input.paymentDetails) {
+      for (const pd of input.paymentDetails.filter((p) => !/cash/i.test(p.mode))) {
         if (pd.amount > 0 && pd.accountId) {
+          const cardRefStr = pd.reference ? ` (Ref: ${pd.reference})` : '';
           voucherLines.push({
             ledgerAccountId: pd.accountId,
             debitAmount: pd.amount,
             creditAmount: 0,
-            narration: `B2C ${invNo} - ${pd.mode}`,
+            narration: `B2C ${invNo} - ${pd.mode}${cardRefStr}`,
           });
         }
       }
@@ -1412,31 +2202,94 @@ export async function updateB2CSale(
     console.warn(`[B2C ${invNo} update] Insufficient voucher lines (${voucherLines.length}). Cash: ${cashLedger ? 'found' : 'MISSING'}, Sales: ${salesLedger ? 'found' : 'MISSING'}`);
   }
 
-  // Update bill reference ("New Ref" — receivable from customer)
-  if (input.customerId && grandTotal > 0) {
+  // Update bill reference ("New Ref" — receivable from customer and "Agst Ref" for paid amount)
+  const billPartyAccountId = input.customerId || (cashLedger ? cashLedger._id.toString() : undefined);
+  if (billPartyAccountId && grandTotal > 0) {
     try {
+      await billReferenceService.deleteRefsBySource('SalesInvoice', invoiceId);
       await billReferenceService.createNewRef({
         companyId,
         financialYearId: input.financialYearId ?? existing.financialYearId.toString(),
-        ledgerAccountId: input.customerId,
+        ledgerAccountId: billPartyAccountId,
         billNumber: existing.invoiceNo,
         referenceType: 'SalesInvoice',
         referenceId: invoiceId,
         date: saleDate,
         amount: grandTotal,
         drCr: 'Dr',
-        narration: `B2C Sale ${existing.invoiceNo} (updated)`,
+        narration: `${existing.type || 'B2C'} Sale ${existing.invoiceNo} (updated)`,
       });
+
+      if (cashPaid > 0) {
+        await billReferenceService.createAgstRef({
+          companyId,
+          financialYearId: input.financialYearId ?? existing.financialYearId.toString(),
+          ledgerAccountId: billPartyAccountId,
+          billNumber: existing.invoiceNo,
+          referenceType: 'SalesInvoice',
+          referenceId: invoiceId,
+          date: saleDate,
+          amount: cashPaid,
+          drCr: 'Cr',
+          narration: `${existing.type || 'B2C'} ${existing.invoiceNo} - Cash Payment`,
+        });
+      }
+
+      if (cardTotal > 0) {
+        const cardRow = effectivePaymentDetails.find((p) => /card/i.test(p.mode));
+        const cardRefNote = cardRow?.reference ? ` (Ref: ${cardRow.reference})` : '';
+        await billReferenceService.createAgstRef({
+          companyId,
+          financialYearId: input.financialYearId ?? existing.financialYearId.toString(),
+          ledgerAccountId: billPartyAccountId,
+          billNumber: existing.invoiceNo,
+          referenceType: 'SalesInvoice',
+          referenceId: invoiceId,
+          date: saleDate,
+          amount: cardTotal,
+          drCr: 'Cr',
+          narration: `${existing.type || 'B2C'} ${existing.invoiceNo} - Card Payment${cardRefNote}`,
+        });
+      }
     } catch (err) {
       console.error(`[B2C ${invNo} update] Bill reference update failed:`, err);
     }
   }
 
-  return { invoiceId, invoiceNo: existing.invoiceNo };
+  // Re-submit to Riayati if enabled
+  let riayatiSubmissionResult: any = null;
+  if (input.isRiayati) {
+    riayatiSubmissionResult = await executeRiayatiSubmission({
+      companyId,
+      invoiceId,
+      invoiceNo: existing.invoiceNo,
+      visitNumber: input.visitNumber,
+      emiratesId: input.emiratesId,
+      patientName: input.patientName,
+      doctorName: input.doctorName,
+      doctorLicenseNo: input.doctorLicenseNo,
+      customerPhone: input.customerPhone,
+      customerAddress: input.customerAddress,
+      date: saleDate,
+      items: items.map((it) => ({
+        productId: it.productId,
+        quantity: it.quantity,
+        description: it.description,
+        batchNumber: it.batchNumber,
+        expiryDate: it.expiryDate,
+        dosageInstructions: it.dosageInstructions,
+        duration: it.duration || it.dosageInstructions?.duration,
+        timing: it.timing || it.dosageInstructions?.timing,
+        frequency: it.frequency || it.dosageInstructions?.frequency,
+      })),
+    });
+  }
+
+  return { invoiceId, invoiceNo: existing.invoiceNo, riayatiSubmission: riayatiSubmissionResult };
 }
 
 export async function deleteB2CSale(invoiceId: string, companyId: string): Promise<boolean> {
-  const invoice = await SalesInvoice.findOne({ _id: invoiceId, companyId, type: { $in: ['B2C', 'B2B', 'Quotation'] } });
+  const invoice = await SalesInvoice.findOne({ _id: invoiceId, companyId, type: { $in: ['B2C', 'B2B', 'Quotation', 'POS'] } });
   if (!invoice) return false;
 
   // Delete line items
@@ -1467,7 +2320,7 @@ export async function deleteB2CSale(invoiceId: string, companyId: string): Promi
 export async function listB2CInvoices(
   companyId: string,
   financialYearId: string,
-  opts: { search?: string; fromDate?: string; toDate?: string; page?: number; limit?: number; type?: 'B2C' | 'B2B' | 'Quotation' } = {}
+  opts: { search?: string; fromDate?: string; toDate?: string; page?: number; limit?: number; type?: 'B2C' | 'B2B' | 'Quotation' | 'POS'; idsOnly?: boolean } = {}
 ) {
   const type = opts.type || 'B2C';
   const filter: Record<string, unknown> = { companyId, financialYearId, type };
@@ -1484,10 +2337,21 @@ export async function listB2CInvoices(
     if (opts.toDate) (filter.date as Record<string, Date>).$lte = new Date(opts.toDate);
   }
 
-  const total = await SalesInvoice.countDocuments(filter);
   const page = opts.page ?? 1;
-  const limit = Math.min(opts.limit ?? 20, 100);
+  const limit = Math.min(opts.limit ?? 20, 10000);
 
+  // Invoice navigation only needs the ordered ids — skip the count and document payload
+  if (opts.idsOnly) {
+    const invoices = await SalesInvoice.find(filter)
+      .select('_id')
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean();
+    return { invoices, total: invoices.length };
+  }
+
+  const total = await SalesInvoice.countDocuments(filter);
   const invoices = await SalesInvoice.find(filter)
     .populate('customerId', 'name code')
     .sort({ createdAt: -1 })
@@ -1501,21 +2365,47 @@ export async function listB2CInvoices(
 export async function getB2CInvoice(
   invoiceId: string,
   companyId: string,
-  type?: 'B2C' | 'B2B' | 'Quotation',
+  type?: 'B2C' | 'B2B' | 'Quotation' | 'POS',
   excludeReturnId?: string
 ) {
-  const filter: Record<string, any> = { _id: invoiceId, companyId };
-  if (type) filter.type = type;
-  else filter.type = { $in: ['B2C', 'B2B', 'Quotation'] };
+  let invoice: any = null;
+  const isObjectId = mongoose.Types.ObjectId.isValid(invoiceId);
 
-  const invoice = await SalesInvoice.findOne(filter)
-    .populate('customerId', 'name code address')
-    .populate('salesmanId', 'username displayName')
-    .populate('cashAccountId', 'name code')
-    .lean();
+  if (isObjectId) {
+    if (type) {
+      invoice = await SalesInvoice.findOne({ _id: invoiceId, companyId, type })
+        .populate('customerId', 'name code address')
+        .populate('salesmanId', 'username displayName')
+        .populate('cashAccountId', 'name code')
+        .lean();
+    }
+    if (!invoice) {
+      invoice = await SalesInvoice.findOne({ _id: invoiceId, companyId })
+        .populate('customerId', 'name code address')
+        .populate('salesmanId', 'username displayName')
+        .populate('cashAccountId', 'name code')
+        .lean();
+    }
+    if (!invoice) {
+      invoice = await SalesInvoice.findOne({ voucherId: new mongoose.Types.ObjectId(invoiceId), companyId })
+        .populate('customerId', 'name code address')
+        .populate('salesmanId', 'username displayName')
+        .populate('cashAccountId', 'name code')
+        .lean();
+    }
+  }
+
+  if (!invoice) {
+    invoice = await SalesInvoice.findOne({ invoiceNo: invoiceId, companyId })
+      .populate('customerId', 'name code address')
+      .populate('salesmanId', 'username displayName')
+      .populate('cashAccountId', 'name code')
+      .lean();
+  }
+
   if (!invoice) return null;
 
-  const items = await SalesInvoiceItem.find({ invoiceId })
+  const items = await SalesInvoiceItem.find({ invoiceId: invoice._id })
     .populate({
       path: 'productId',
       select: 'name code imei sku retailPrice wholesalePrice purchasePrice unitOfMeasureId multiUnits',
@@ -1572,19 +2462,26 @@ export async function getB2CInvoice(
 export async function searchB2CByInvoiceNo(
   companyId: string,
   invoiceNo: string,
-  type?: 'B2C' | 'B2B' | 'Quotation',
+  type?: 'B2C' | 'B2B' | 'Quotation' | 'POS',
   excludeReturnId?: string
 ) {
   const filter: Record<string, any> = {
     companyId,
-    invoiceNo: new RegExp(invoiceNo, 'i'),
+    invoiceNo: new RegExp(`^${invoiceNo}$`, 'i'),
   };
   if (type) filter.type = type;
-  else filter.type = { $in: ['B2C', 'B2B', 'Quotation'] };
+  else filter.type = { $in: ['B2C', 'B2B', 'Quotation', 'POS'] };
 
-  const invoice = await SalesInvoice.findOne(filter).lean();
+  let invoice = await SalesInvoice.findOne(filter).lean();
+  if (!invoice && type) {
+    invoice = await SalesInvoice.findOne({ companyId, invoiceNo: new RegExp(`^${invoiceNo}$`, 'i') }).lean();
+  }
+  if (!invoice) {
+    // Substring fallback
+    invoice = await SalesInvoice.findOne({ companyId, invoiceNo: new RegExp(invoiceNo, 'i') }).lean();
+  }
   if (!invoice) return null;
-  return getB2CInvoice(invoice._id.toString(), companyId, invoice.type as 'B2C' | 'B2B' | 'Quotation', excludeReturnId);
+  return getB2CInvoice(invoice._id.toString(), companyId, invoice.type as 'B2C' | 'B2B' | 'Quotation' | 'POS', excludeReturnId);
 }
 
 
@@ -2059,7 +2956,7 @@ export async function createSalesReturn(input: CreateSalesReturnInput): Promise<
   }
 
   // Ledger: Debit Sales Return, adjustment ledgers (reversed from sales), Debit VAT; Credit Customer/Cash
-  const salesReturnLedger = await findOrCreateSpecialLedger(input.companyId, 'Sales Returns', 'Expense', 'Expense');
+  const salesReturnLedger = await findOrCreateSalesReturnLedger(input.companyId);
   const vatLedger = isVat ? await findOrCreateVatLedger(input.companyId) : null;
   const customerLedger = input.customerId ? await LedgerAccount.findById(input.customerId) : null;
   const cashLedger = input.cashAccountId ? await LedgerAccount.findById(input.cashAccountId) : null;
@@ -2480,7 +3377,7 @@ export async function updateSalesReturn(
     }
   );
 
-  const salesReturnLedger = await findOrCreateSpecialLedger(input.companyId, 'Sales Returns', 'Expense', 'Expense');
+  const salesReturnLedger = await findOrCreateSalesReturnLedger(input.companyId);
   const vatLedger = isVat ? await findOrCreateVatLedger(input.companyId) : null;
   const customerLedger = input.customerId ? await LedgerAccount.findById(input.customerId) : null;
   const cashLedger = input.cashAccountId ? await LedgerAccount.findById(input.cashAccountId) : null;
@@ -2594,11 +3491,28 @@ export async function searchSalesReturnByInvoiceNo(companyId: string, invoiceNo:
 }
 
 export async function getSalesReturn(invoiceId: string, companyId: string) {
-  const invoice = await SalesInvoice.findOne({ _id: invoiceId, companyId, type: 'Return' })
-    .populate('originalInvoiceId', 'invoiceNo')
-    .lean();
+  let invoice: any = null;
+  const isObjectId = mongoose.Types.ObjectId.isValid(invoiceId);
+
+  if (isObjectId) {
+    invoice = await SalesInvoice.findOne({ _id: invoiceId, companyId, type: 'Return' })
+      .populate('originalInvoiceId', 'invoiceNo')
+      .lean();
+    if (!invoice) {
+      invoice = await SalesInvoice.findOne({ voucherId: new mongoose.Types.ObjectId(invoiceId), companyId, type: 'Return' })
+        .populate('originalInvoiceId', 'invoiceNo')
+        .lean();
+    }
+  }
+
+  if (!invoice) {
+    invoice = await SalesInvoice.findOne({ invoiceNo: invoiceId, companyId, type: 'Return' })
+      .populate('originalInvoiceId', 'invoiceNo')
+      .lean();
+  }
+
   if (!invoice) return null;
-  const items = await SalesInvoiceItem.find({ invoiceId }).lean();
+  const items = await SalesInvoiceItem.find({ invoiceId: invoice._id }).lean();
   return {
     _id: invoice._id,
     invoiceNo: invoice.invoiceNo,
@@ -2657,3 +3571,1039 @@ export async function deleteSalesReturn(invoiceId: string, companyId: string): P
   await SalesInvoice.deleteOne({ _id: invoiceId });
   return true;
 }
+
+// ==================== Doctor Management ====================
+
+export async function getDoctors(companyId: string) {
+  return Doctor.find({ companyId, isActive: true }).sort({ name: 1 }).lean();
+}
+
+export async function createDoctor(input: {
+  companyId: string;
+  name: string;
+  licenseNumber: string;
+  licensingAuthority?: string;
+  phone?: string;
+  specialty?: string;
+}) {
+  if (!input.name || !input.licenseNumber) {
+    throw new AppError('Doctor name and license number are required', 400);
+  }
+  const existing = await Doctor.findOne({
+    companyId: input.companyId,
+    $or: [{ name: input.name.trim() }, { licenseNumber: input.licenseNumber.trim() }],
+  });
+  if (existing) {
+    existing.name = input.name.trim();
+    existing.licenseNumber = input.licenseNumber.trim();
+    if (input.licensingAuthority) existing.licensingAuthority = input.licensingAuthority;
+    if (input.phone) existing.phone = input.phone;
+    if (input.specialty) existing.specialty = input.specialty;
+    await existing.save();
+    return existing;
+  }
+  return Doctor.create({
+    companyId: input.companyId,
+    name: input.name.trim(),
+    licenseNumber: input.licenseNumber.trim(),
+    licensingAuthority: input.licensingAuthority || 'MOHAP',
+    phone: input.phone,
+    specialty: input.specialty,
+    isActive: true,
+  });
+}
+
+// ==================== Patient Management ====================
+
+export async function getPatients(companyId: string, search?: string) {
+  const filter: any = { companyId };
+  if (search && search.trim()) {
+    const q = search.trim();
+    filter.$or = [
+      { fullName: new RegExp(q, 'i') },
+      { emiratesId: new RegExp(q, 'i') },
+      { phone: new RegExp(q, 'i') },
+      { mrn: new RegExp(q, 'i') },
+    ];
+  }
+  return Patient.find(filter).sort({ fullName: 1 }).limit(100).lean();
+}
+
+export async function findPatientByEmiratesId(companyId: string, emiratesId: string) {
+  const cleanId = emiratesId.replace(/\D/g, '');
+  return Patient.findOne({
+    companyId,
+    emiratesId: { $regex: new RegExp(cleanId.length >= 10 ? cleanId.slice(-9) : cleanId, 'i') },
+  }).lean();
+}
+
+export async function createPatient(input: {
+  companyId: string;
+  emiratesId?: string;
+  firstName: string;
+  familyName?: string;
+  dob?: string;
+  gender?: 'Female' | 'Male' | 'Unknown';
+  mrn?: string;
+  phone?: string;
+  language?: string;
+  emirate?: string;
+  city?: string;
+  street?: string;
+  country?: string;
+  prescriptionNumber?: string;
+  prescriptionDate?: string;
+}) {
+  if (!input.firstName || !input.firstName.trim()) {
+    throw new AppError('First name is required', 400);
+  }
+  const fName = input.firstName.trim();
+  const famName = (input.familyName || '').trim();
+  const fullName = famName ? `${fName} ${famName}` : fName;
+  let existing = null;
+  if (input.emiratesId && input.emiratesId.trim()) {
+    existing = await Patient.findOne({ companyId: input.companyId, emiratesId: input.emiratesId.trim() });
+  }
+  if (!existing) {
+    existing = await Patient.findOne({ companyId: input.companyId, fullName });
+  }
+
+  if (existing) {
+    Object.assign(existing, {
+      ...input,
+      fullName,
+      firstName: fName,
+      familyName: famName,
+    });
+    await existing.save();
+    return existing;
+  }
+
+  return Patient.create({
+    ...input,
+    fullName,
+    firstName: fName,
+    familyName: famName,
+    country: input.country || 'United Arab Emirates',
+    language: input.language || 'English',
+  });
+}
+
+function productVatPercent(prod: { vatCategory?: string; vatPercent?: number } | null | undefined): number {
+  if (!prod) return 0;
+  if (prod.vatCategory === 'zero' || prod.vatCategory === 'exempt') return 0;
+  return Number(prod.vatPercent || 0) || 0;
+}
+
+/** Stored purchase rate is inclusive unless the last purchase was exclusive. Gross = ex-VAT. */
+function toGrossPurchaseRate(
+  storedRate: number,
+  vatPercent: number,
+  taxMode: 'inclusive' | 'exclusive' = 'inclusive'
+): number {
+  const rate = Number(storedRate) || 0;
+  if (!(vatPercent > 0) || taxMode === 'exclusive') return rate;
+  return parseFloat((rate / (1 + vatPercent / 100)).toFixed(4));
+}
+
+function salesItemProductId(item: { productId?: unknown }): string {
+  const p = item.productId as { _id?: unknown } | string | undefined;
+  if (!p) return '';
+  if (typeof p === 'object' && p._id) return String(p._id);
+  return String(p);
+}
+
+async function loadPurchaseTaxModeMap(
+  companyId: string,
+  productIds: string[]
+): Promise<Map<string, 'inclusive' | 'exclusive'>> {
+  const map = new Map<string, 'inclusive' | 'exclusive'>();
+  const unique = [...new Set(productIds.filter((id) => id && mongoose.Types.ObjectId.isValid(id)))];
+  if (unique.length === 0) return map;
+
+  const rows = await InventoryTransaction.aggregate([
+    {
+      $match: {
+        companyId: new mongoose.Types.ObjectId(companyId),
+        productId: { $in: unique.map((id) => new mongoose.Types.ObjectId(id)) },
+        type: { $in: ['Purchase', 'Opening', 'Adjustment'] },
+        quantityIn: { $gt: 0 },
+      },
+    },
+    { $sort: { date: -1, createdAt: -1 } },
+    {
+      $group: {
+        _id: '$productId',
+        taxMode: { $first: '$taxMode' },
+      },
+    },
+  ]);
+
+  for (const row of rows) {
+    map.set(row._id.toString(), row.taxMode === 'exclusive' ? 'exclusive' : 'inclusive');
+  }
+  return map;
+}
+
+function grossPurchaseAmountForItem(
+  item: { quantity?: number; costPriceAtSale?: number; productId?: unknown },
+  prod: { _id?: unknown; purchasePrice?: number; vatPercent?: number; vatCategory?: string } | null | undefined,
+  taxModeMap: Map<string, 'inclusive' | 'exclusive'>
+): number {
+  const qty = Number(item.quantity || 0);
+  const stored =
+    Number(item.costPriceAtSale) > 0 ? Number(item.costPriceAtSale) : Number(prod?.purchasePrice || 0);
+  const pid = (prod?._id ? String(prod._id) : '') || salesItemProductId(item);
+  const taxMode = taxModeMap.get(pid) || 'inclusive';
+  return Number((qty * toGrossPurchaseRate(stored, productVatPercent(prod), taxMode)).toFixed(2));
+}
+
+export interface SalesReportFilterOpts {
+  filterType?: 'default' | 'product' | 'product_total' | 'month' | 'daily' | 'monthly';
+  productId?: string;
+  fromDate?: string;
+  toDate?: string;
+  search?: string;
+  salesType?: string;
+}
+
+export async function getSalesReport(
+  companyId: string,
+  financialYearId?: string,
+  opts: SalesReportFilterOpts = {}
+) {
+  const filterType = opts.filterType || 'default';
+  const filter: Record<string, unknown> = {
+    companyId: new mongoose.Types.ObjectId(companyId),
+    status: { $ne: 'Cancelled' },
+  };
+
+  if (opts.salesType && opts.salesType !== 'ALL') {
+    if (opts.salesType === 'B2C') {
+      filter.type = 'B2C';
+    } else if (opts.salesType === 'B2B') {
+      filter.type = 'B2B';
+    } else if (opts.salesType === 'POS') {
+      filter.type = 'POS';
+    } else if (opts.salesType === 'Return') {
+      filter.type = 'Return';
+    } else if (opts.salesType === 'Quotation') {
+      filter.type = 'Quotation';
+    } else {
+      filter.type = opts.salesType;
+    }
+  } else {
+    filter.type = { $in: ['POS', 'B2C', 'B2B'] };
+  }
+
+  if (financialYearId && mongoose.Types.ObjectId.isValid(financialYearId)) {
+    filter.financialYearId = new mongoose.Types.ObjectId(financialYearId);
+  }
+
+  if (opts.fromDate || opts.toDate) {
+    const dateFilter: Record<string, Date> = {};
+    if (opts.fromDate) {
+      const from = new Date(opts.fromDate);
+      from.setHours(0, 0, 0, 0);
+      dateFilter.$gte = from;
+    }
+    if (opts.toDate) {
+      const to = new Date(opts.toDate);
+      to.setHours(23, 59, 59, 999);
+      dateFilter.$lte = to;
+    }
+    filter.date = dateFilter;
+  }
+
+  // 1. DEFAULT VIEW: INVOICE WISE
+  if (filterType === 'default') {
+    const invoices = await SalesInvoice.find(filter)
+      .populate('customerId', 'name code')
+      .populate('createdBy', 'fullName username')
+      .populate('salesmanId', 'fullName username')
+      .populate('locationId', 'name')
+      .sort({ date: -1, createdAt: -1 })
+      .lean();
+
+    const invoiceIds = invoices.map((i) => i._id);
+
+    // Fetch items to compute gross (ex-VAT) purchase amount
+    const items = await SalesInvoiceItem.find({ invoiceId: { $in: invoiceIds } })
+      .populate('productId', 'purchasePrice code name vatPercent vatCategory')
+      .lean();
+
+    const taxModeMap = await loadPurchaseTaxModeMap(
+      companyId,
+      items.map((item) => salesItemProductId(item))
+    );
+    const invoicePurchaseMap: Record<string, number> = {};
+    for (const item of items) {
+      const invIdStr = item.invoiceId.toString();
+      const prod = item.productId as any;
+      invoicePurchaseMap[invIdStr] =
+        (invoicePurchaseMap[invIdStr] || 0) + grossPurchaseAmountForItem(item, prod, taxModeMap);
+    }
+
+    let rows = invoices.map((inv) => {
+      const invIdStr = inv._id.toString();
+      const customer = inv.customerId as any;
+      const customerName = inv.customerName || customer?.name || 'Walk-in / Cash Customer';
+      const grossAmount = Number(inv.grossAmount || 0);
+      const otherDiscount = Number(inv.otherDiscount || 0);
+      const freightCharge = Number(inv.freightCharge || 0);
+      const otherCharge = Number(inv.otherCharges || 0);
+      const travelcharge = Number(inv.lendAddLess || 0);
+      const vatAmount = Number(inv.vatAmount || 0);
+      const roundoff = Number(inv.roundOff || 0);
+      const grandTotal = Number(inv.totalAmount || 0);
+      const totalPurchaseAmount = Number((invoicePurchaseMap[invIdStr] || 0).toFixed(2));
+      const totalProfit = Number(((grandTotal - vatAmount) - totalPurchaseAmount).toFixed(2));
+
+      const createdUser = inv.createdBy as any;
+      const salesman = inv.salesmanId as any;
+      const user =
+        createdUser?.fullName ||
+        createdUser?.username ||
+        salesman?.fullName ||
+        salesman?.username ||
+        'Admin';
+      const location = (inv.locationId as any)?.name || 'Main Location';
+
+      let cashReceived = Number(inv.cashReceived || 0);
+      let cardReceived = 0;
+      if (Array.isArray(inv.paymentDetails) && inv.paymentDetails.length > 0) {
+        for (const pd of inv.paymentDetails) {
+          if (/card/i.test(pd.mode)) {
+            cardReceived += Number(pd.amount || 0);
+          } else if (/cash/i.test(pd.mode) && !inv.cashReceived) {
+            cashReceived += Number(pd.amount || 0);
+          }
+        }
+      }
+      if (inv.paymentType === 'Cash' && cashReceived === 0 && cardReceived === 0) {
+        cashReceived = grandTotal;
+      }
+
+      let cashPaid = 0;
+      if (inv.type === 'Return') {
+        if (inv.paymentType === 'Cash' || inv.cashAccountId || (!inv.customerId && (!inv.paymentDetails || inv.paymentDetails.length === 0))) {
+          cashPaid = grandTotal;
+        } else if (inv.cashReceived) {
+          cashPaid = Number(inv.cashReceived);
+        }
+      }
+
+      return {
+        _id: invIdStr,
+        invoiceId: invIdStr,
+        type: inv.type,
+        entryNumber: inv.invoiceNo,
+        date: inv.date,
+        customerName,
+        grossAmount: Number(grossAmount.toFixed(2)),
+        otherDiscount: Number(otherDiscount.toFixed(2)),
+        freightCharge: Number(freightCharge.toFixed(2)),
+        otherCharge: Number(otherCharge.toFixed(2)),
+        travelcharge: Number(travelcharge.toFixed(2)),
+        vatAmount: Number(vatAmount.toFixed(2)),
+        roundoff: Number(roundoff.toFixed(2)),
+        grandTotal: Number(grandTotal.toFixed(2)),
+        totalPurchaseAmount,
+        totalProfit,
+        user,
+        location,
+        cashReceived: Number(cashReceived.toFixed(2)),
+        cardReceived: Number(cardReceived.toFixed(2)),
+        cashPaid: Number(cashPaid.toFixed(2)),
+      };
+    });
+
+    if (opts.search && opts.search.trim()) {
+      const q = opts.search.trim().toLowerCase();
+      rows = rows.filter(
+        (r) =>
+          r.entryNumber.toLowerCase().includes(q) ||
+          r.customerName.toLowerCase().includes(q) ||
+          r.user.toLowerCase().includes(q)
+      );
+    }
+
+    return { filterType: 'default', rows };
+  }
+
+  // 2. PRODUCT WISE: DETAILED TRANSACTIONS (FOR ALL PRODUCTS OR SPECIFIC PRODUCT)
+  if (filterType === 'product') {
+    const invoices = await SalesInvoice.find(filter)
+      .populate('customerId', 'name code')
+      .select('_id invoiceNo date customerName customerId type')
+      .lean();
+
+    const invoiceIds = invoices.map((i) => i._id);
+
+    const isSpecific = Boolean(
+      opts.productId && opts.productId !== 'ALL' && mongoose.Types.ObjectId.isValid(opts.productId)
+    );
+
+    const itemFilter: Record<string, any> = {
+      invoiceId: { $in: invoiceIds },
+    };
+    if (isSpecific) {
+      itemFilter.productId = new mongoose.Types.ObjectId(opts.productId);
+    }
+
+    const items = await SalesInvoiceItem.find(itemFilter)
+      .populate({
+        path: 'invoiceId',
+        select: 'invoiceNo date customerName customerId type',
+        populate: { path: 'customerId', select: 'name code' },
+      })
+      .populate({
+        path: 'productId',
+        select:
+          'code name sku systemBarcode internationalBarcode genericName officialCode packageUnit purchasePrice vatPercent vatCategory unitOfMeasureId categoryId brand',
+        populate: [
+          { path: 'unitOfMeasureId', select: 'name shortCode' },
+          { path: 'categoryId', select: 'name code' },
+        ],
+      })
+      .sort({ _id: -1 })
+      .lean();
+
+    const taxModeMap = await loadPurchaseTaxModeMap(
+      companyId,
+      items.map((item) => salesItemProductId(item))
+    );
+
+    let rows = items.map((item) => {
+      const inv = item.invoiceId as any;
+      const prod = item.productId as any;
+      const uom = prod?.unitOfMeasureId;
+      const unit = item.unitName || prod?.packageUnit || uom?.shortCode || uom?.name || 'Pcs';
+      const customer = inv?.customerId;
+      const customerName = inv?.customerName || customer?.name || 'Walk-in / Cash Customer';
+      const category = prod?.categoryId as any;
+      const categoryName = category?.name || '';
+      const brand = prod?.brand || '';
+      const qty = Number(item.quantity || 0);
+      const totalAmount = Number(item.totalAmount || 0);
+      const vat = Number(item.vatAmount || 0);
+      const purchaseAmount = grossPurchaseAmountForItem(item, prod, taxModeMap);
+      const profit = Number(((totalAmount - vat) - purchaseAmount).toFixed(2));
+
+      return {
+        _id: item._id.toString(),
+        invoiceId: inv?._id?.toString(),
+        productId: prod?._id?.toString(),
+        type: inv?.type,
+        date: inv?.date,
+        invNumber: inv?.invoiceNo || '',
+        customerName,
+        productCode: item.productCode || prod?.code || prod?.sku || '',
+        productName: prod?.name || '',
+        productBarcode: prod?.systemBarcode || prod?.internationalBarcode || prod?.sku || '',
+        productOfficialName: prod?.genericName || prod?.officialCode || '',
+        category: categoryName,
+        brand,
+        unit,
+        qty: Number(qty.toFixed(2)),
+        totalAmount: Number(totalAmount.toFixed(2)),
+        purchaseAmount,
+        vat: Number(vat.toFixed(2)),
+        profit,
+      };
+    });
+
+    // Sort by date descending
+    rows.sort((a, b) => {
+      const timeA = a.date ? new Date(a.date).getTime() : 0;
+      const timeB = b.date ? new Date(b.date).getTime() : 0;
+      return timeB - timeA;
+    });
+
+    if (opts.search && opts.search.trim()) {
+      const q = opts.search.trim().toLowerCase();
+      rows = rows.filter(
+        (r) =>
+          r.invNumber.toLowerCase().includes(q) ||
+          r.customerName.toLowerCase().includes(q) ||
+          r.productName.toLowerCase().includes(q) ||
+          r.productCode.toLowerCase().includes(q) ||
+          r.productBarcode.toLowerCase().includes(q) ||
+          r.productOfficialName.toLowerCase().includes(q) ||
+          (r.category && r.category.toLowerCase().includes(q)) ||
+          (r.brand && r.brand.toLowerCase().includes(q))
+      );
+    }
+
+    return { filterType: 'product', isSpecificProduct: isSpecific, rows };
+  }
+
+  // 3. PRODUCT WISE TOTAL: AGGREGATED PRODUCT TOTALS FOR PERIOD
+  if (filterType === 'product_total') {
+    const invoices = await SalesInvoice.find(filter)
+      .select('_id')
+      .lean();
+
+    const invoiceIds = invoices.map((i) => i._id);
+
+    const itemFilter: Record<string, any> = { invoiceId: { $in: invoiceIds } };
+    if (opts.productId && opts.productId !== 'ALL' && mongoose.Types.ObjectId.isValid(opts.productId)) {
+      itemFilter.productId = new mongoose.Types.ObjectId(opts.productId);
+    }
+
+    const items = await SalesInvoiceItem.find(itemFilter)
+      .populate({
+        path: 'invoiceId',
+        select: 'customerName customerId',
+        populate: { path: 'customerId', select: 'name code' },
+      })
+      .populate({
+        path: 'productId',
+        select:
+          'code name sku systemBarcode internationalBarcode genericName officialCode packageUnit purchasePrice vatPercent vatCategory unitOfMeasureId categoryId brand',
+        populate: [
+          { path: 'unitOfMeasureId', select: 'name shortCode' },
+          { path: 'categoryId', select: 'name code' },
+        ],
+      })
+      .lean();
+
+    const taxModeMap = await loadPurchaseTaxModeMap(
+      companyId,
+      items.map((item) => salesItemProductId(item))
+    );
+
+    const prodMap: Record<string, any> = {};
+    for (const item of items) {
+      const prod = item.productId as any;
+      if (!prod) continue;
+      const prodIdStr = prod._id.toString();
+      const inv = item.invoiceId as any;
+      const cust = inv?.customerId as any;
+      const custName = inv?.customerName || cust?.name || 'Walk-in / Cash Customer';
+      const category = prod.categoryId as any;
+      const categoryName = category?.name || '';
+      const brand = prod.brand || '';
+
+      if (!prodMap[prodIdStr]) {
+        const uom = prod.unitOfMeasureId;
+        const unit = item.unitName || prod.packageUnit || uom?.shortCode || uom?.name || 'Pcs';
+        prodMap[prodIdStr] = {
+          productId: prodIdStr,
+          productCode: item.productCode || prod.code || prod.sku || '',
+          productName: prod.name || '',
+          productBarcode: prod.systemBarcode || prod.internationalBarcode || prod.sku || '',
+          productOfficialName: prod.genericName || prod.officialCode || '',
+          category: categoryName,
+          brand,
+          customerNames: new Set<string>(),
+          unit,
+          qty: 0,
+          totalAmount: 0,
+          purchaseAmount: 0,
+          vat: 0,
+          profit: 0,
+        };
+      }
+
+      if (custName) {
+        prodMap[prodIdStr].customerNames.add(custName);
+      }
+
+      const qty = Number(item.quantity || 0);
+      const totalAmount = Number(item.totalAmount || 0);
+      const vat = Number(item.vatAmount || 0);
+      const purchaseAmount = grossPurchaseAmountForItem(item, prod, taxModeMap);
+      const profit = Number(((totalAmount - vat) - purchaseAmount).toFixed(2));
+
+      prodMap[prodIdStr].qty += qty;
+      prodMap[prodIdStr].totalAmount += totalAmount;
+      prodMap[prodIdStr].purchaseAmount += purchaseAmount;
+      prodMap[prodIdStr].vat += vat;
+      prodMap[prodIdStr].profit += profit;
+    }
+
+    let rows = Object.values(prodMap).map((r) => {
+      const cNames = Array.from(r.customerNames as Set<string>);
+      return {
+        ...r,
+        customerNames: cNames,
+        customerName: cNames.join(', '),
+        qty: Number(r.qty.toFixed(2)),
+        totalAmount: Number(r.totalAmount.toFixed(2)),
+        purchaseAmount: Number(r.purchaseAmount.toFixed(2)),
+        vat: Number(r.vat.toFixed(2)),
+        profit: Number(r.profit.toFixed(2)),
+      };
+    });
+
+    // Sort by total amount descending
+    rows.sort((a, b) => b.totalAmount - a.totalAmount);
+
+    if (opts.search && opts.search.trim()) {
+      const q = opts.search.trim().toLowerCase();
+      rows = rows.filter(
+        (r) =>
+          r.productCode.toLowerCase().includes(q) ||
+          r.productName.toLowerCase().includes(q) ||
+          r.productBarcode.toLowerCase().includes(q) ||
+          r.productOfficialName.toLowerCase().includes(q) ||
+          (r.category && r.category.toLowerCase().includes(q)) ||
+          (r.brand && r.brand.toLowerCase().includes(q)) ||
+          (r.customerName && r.customerName.toLowerCase().includes(q))
+      );
+    }
+
+    return { filterType: 'product_total', isSpecificProduct: false, rows };
+  }
+
+  // 3. MONTH WISE ITEMS
+  if (filterType === 'month') {
+    const invoices = await SalesInvoice.find(filter)
+      .select('_id date customerName customerId')
+      .populate({ path: 'customerId', select: 'name code' })
+      .lean();
+
+    const invoiceIds = invoices.map((i) => i._id);
+    const invMetaMap: Record<string, { date: Date; customerName: string }> = {};
+    invoices.forEach((i: any) => {
+      const cust = i.customerId;
+      const custName = i.customerName || cust?.name || 'Walk-in / Cash Customer';
+      invMetaMap[i._id.toString()] = {
+        date: i.date,
+        customerName: custName,
+      };
+    });
+
+    const itemFilter: Record<string, any> = { invoiceId: { $in: invoiceIds } };
+    if (opts.productId && opts.productId !== 'ALL' && mongoose.Types.ObjectId.isValid(opts.productId)) {
+      itemFilter.productId = new mongoose.Types.ObjectId(opts.productId);
+    }
+
+    const items = await SalesInvoiceItem.find(itemFilter)
+      .populate({
+        path: 'productId',
+        select:
+          'code name sku systemBarcode internationalBarcode genericName officialCode purchasePrice vatPercent vatCategory categoryId brand',
+        populate: [
+          { path: 'categoryId', select: 'name code' },
+        ],
+      })
+      .lean();
+
+    const taxModeMap = await loadPurchaseTaxModeMap(
+      companyId,
+      items.map((item) => salesItemProductId(item))
+    );
+
+    const monthKeySet = new Set<string>();
+    const prodMap: Record<string, any> = {};
+
+    for (const item of items) {
+      const prod = item.productId as any;
+      if (!prod) continue;
+      const invMeta = invMetaMap[item.invoiceId.toString()];
+      if (!invMeta || !invMeta.date) continue;
+
+      const d = new Date(invMeta.date);
+      const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      monthKeySet.add(monthKey);
+
+      const prodIdStr = prod._id.toString();
+      const category = prod.categoryId as any;
+      const categoryName = category?.name || '';
+      const brand = prod.brand || '';
+
+      if (!prodMap[prodIdStr]) {
+        prodMap[prodIdStr] = {
+          productId: prodIdStr,
+          productCode: item.productCode || prod.code || prod.sku || '',
+          productName: prod.name || '',
+          itemName: prod.name || '',
+          barcode: prod.systemBarcode || prod.internationalBarcode || prod.sku || '',
+          productBarcode: prod.systemBarcode || prod.internationalBarcode || prod.sku || '',
+          officialName: prod.genericName || prod.officialCode || '',
+          productOfficialName: prod.genericName || prod.officialCode || '',
+          category: categoryName,
+          brand,
+          customerNames: new Set<string>(),
+          monthlyData: {},
+          totalQty: 0,
+          totalProfit: 0,
+        };
+      }
+
+      if (invMeta.customerName) {
+        prodMap[prodIdStr].customerNames.add(invMeta.customerName);
+      }
+
+      if (!prodMap[prodIdStr].monthlyData[monthKey]) {
+        prodMap[prodIdStr].monthlyData[monthKey] = { qty: 0, profit: 0 };
+      }
+
+      const qty = Number(item.quantity || 0);
+      const totalAmount = Number(item.totalAmount || 0);
+      const vat = Number(item.vatAmount || 0);
+      const purchaseAmount = grossPurchaseAmountForItem(item, prod, taxModeMap);
+      const profit = (totalAmount - vat) - purchaseAmount;
+
+      prodMap[prodIdStr].monthlyData[monthKey].qty += qty;
+      prodMap[prodIdStr].monthlyData[monthKey].profit += profit;
+      prodMap[prodIdStr].totalQty += qty;
+      prodMap[prodIdStr].totalProfit += profit;
+    }
+
+    // Sort months chronologically
+    const sortedMonthKeys = Array.from(monthKeySet).sort();
+    const months = sortedMonthKeys.map((key) => {
+      const [year, month] = key.split('-').map(Number);
+      const dateObj = new Date(year, month - 1, 1);
+      const label = dateObj.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+      return { key, label };
+    });
+
+    let rows = Object.values(prodMap).map((p) => {
+      const cNames = Array.from(p.customerNames as Set<string>);
+      // Round all monthly data
+      const roundedMonthly: Record<string, { qty: number; profit: number }> = {};
+      for (const m of sortedMonthKeys) {
+        const val = p.monthlyData[m] || { qty: 0, profit: 0 };
+        roundedMonthly[m] = {
+          qty: Number(val.qty.toFixed(2)),
+          profit: Number(val.profit.toFixed(2)),
+        };
+      }
+      return {
+        productId: p.productId,
+        productCode: p.productCode,
+        productName: p.productName,
+        itemName: p.itemName,
+        barcode: p.barcode,
+        productBarcode: p.productBarcode,
+        officialName: p.officialName,
+        productOfficialName: p.productOfficialName,
+        category: p.category,
+        brand: p.brand,
+        customerNames: cNames,
+        customerName: cNames.join(', '),
+        monthlyData: roundedMonthly,
+        totalQty: Number(p.totalQty.toFixed(2)),
+        totalProfit: Number(p.totalProfit.toFixed(2)),
+      };
+    });
+
+    if (opts.search && opts.search.trim()) {
+      const q = opts.search.trim().toLowerCase();
+      rows = rows.filter(
+        (r) =>
+          r.itemName.toLowerCase().includes(q) ||
+          r.barcode.toLowerCase().includes(q) ||
+          r.officialName.toLowerCase().includes(q) ||
+          (r.category && r.category.toLowerCase().includes(q)) ||
+          (r.brand && r.brand.toLowerCase().includes(q)) ||
+          (r.customerName && r.customerName.toLowerCase().includes(q))
+      );
+    }
+
+    return { filterType: 'month', months, rows };
+  }
+
+  // 5. DAILY WISE: AGGREGATED DAILY TOTALS FOR SPECIFIC PERIOD
+  if (filterType === 'daily') {
+    const invoices = await SalesInvoice.find(filter)
+      .sort({ date: -1, createdAt: -1 })
+      .lean();
+
+    const invoiceIds = invoices.map((i) => i._id);
+
+    // Fetch items to compute gross (ex-VAT) purchase amount
+    const items = await SalesInvoiceItem.find({ invoiceId: { $in: invoiceIds } })
+      .populate('productId', 'purchasePrice code name vatPercent vatCategory')
+      .lean();
+
+    const taxModeMap = await loadPurchaseTaxModeMap(
+      companyId,
+      items.map((item) => salesItemProductId(item))
+    );
+    const invoicePurchaseMap: Record<string, number> = {};
+    for (const item of items) {
+      const invIdStr = item.invoiceId.toString();
+      const prod = item.productId as any;
+      invoicePurchaseMap[invIdStr] =
+        (invoicePurchaseMap[invIdStr] || 0) + grossPurchaseAmountForItem(item, prod, taxModeMap);
+    }
+
+    const dayMap: Record<string, any> = {};
+
+    for (const inv of invoices) {
+      const invIdStr = inv._id.toString();
+      let dayKey = '';
+      if (inv.date) {
+        const d = new Date(inv.date);
+        if (!isNaN(d.getTime())) {
+          const y = d.getFullYear();
+          const m = String(d.getMonth() + 1).padStart(2, '0');
+          const day = String(d.getDate()).padStart(2, '0');
+          dayKey = `${y}-${m}-${day}`;
+        }
+      }
+      if (!dayKey) dayKey = 'Unknown';
+
+      if (!dayMap[dayKey]) {
+        dayMap[dayKey] = {
+          _id: dayKey,
+          date: dayKey,
+          grossAmount: 0,
+          otherDiscount: 0,
+          freightCharge: 0,
+          otherCharge: 0,
+          travelcharge: 0,
+          vatAmount: 0,
+          roundoff: 0,
+          grandTotal: 0,
+          totalPurchaseAmount: 0,
+          totalProfit: 0,
+          cashReceived: 0,
+          cardReceived: 0,
+          cashPaid: 0,
+          invoiceCount: 0,
+        };
+      }
+
+      const grossAmount = Number(inv.grossAmount || 0);
+      const otherDiscount = Number(inv.otherDiscount || 0);
+      const freightCharge = Number(inv.freightCharge || 0);
+      const otherCharge = Number(inv.otherCharges || 0);
+      const travelcharge = Number(inv.lendAddLess || 0);
+      const vatAmount = Number(inv.vatAmount || 0);
+      const roundoff = Number(inv.roundOff || 0);
+      const grandTotal = Number(inv.totalAmount || 0);
+      const totalPurchaseAmount = Number((invoicePurchaseMap[invIdStr] || 0).toFixed(2));
+      const totalProfit = Number(((grandTotal - vatAmount) - totalPurchaseAmount).toFixed(2));
+
+      let cashReceived = Number(inv.cashReceived || 0);
+      let cardReceived = 0;
+      if (Array.isArray(inv.paymentDetails) && inv.paymentDetails.length > 0) {
+        for (const pd of inv.paymentDetails) {
+          if (/card/i.test(pd.mode)) {
+            cardReceived += Number(pd.amount || 0);
+          } else if (/cash/i.test(pd.mode) && !inv.cashReceived) {
+            cashReceived += Number(pd.amount || 0);
+          }
+        }
+      }
+      if (inv.paymentType === 'Cash' && cashReceived === 0 && cardReceived === 0) {
+        cashReceived = grandTotal;
+      }
+
+      let cashPaid = 0;
+      if (inv.type === 'Return') {
+        if (inv.paymentType === 'Cash' || inv.cashAccountId || (!inv.customerId && (!inv.paymentDetails || inv.paymentDetails.length === 0))) {
+          cashPaid = grandTotal;
+        } else if (inv.cashReceived) {
+          cashPaid = Number(inv.cashReceived);
+        }
+      }
+
+      const dRecord = dayMap[dayKey];
+      dRecord.grossAmount += grossAmount;
+      dRecord.otherDiscount += otherDiscount;
+      dRecord.freightCharge += freightCharge;
+      dRecord.otherCharge += otherCharge;
+      dRecord.travelcharge += travelcharge;
+      dRecord.vatAmount += vatAmount;
+      dRecord.roundoff += roundoff;
+      dRecord.grandTotal += grandTotal;
+      dRecord.totalPurchaseAmount += totalPurchaseAmount;
+      dRecord.totalProfit += totalProfit;
+      dRecord.cashReceived += cashReceived;
+      dRecord.cardReceived += cardReceived;
+      dRecord.cashPaid += cashPaid;
+      dRecord.invoiceCount += 1;
+    }
+
+    let rows = Object.values(dayMap).map((r: any) => ({
+      _id: r._id,
+      date: r.date,
+      grossAmount: Number(r.grossAmount.toFixed(2)),
+      otherDiscount: Number(r.otherDiscount.toFixed(2)),
+      freightCharge: Number(r.freightCharge.toFixed(2)),
+      otherCharge: Number(r.otherCharge.toFixed(2)),
+      travelcharge: Number(r.travelcharge.toFixed(2)),
+      vatAmount: Number(r.vatAmount.toFixed(2)),
+      roundoff: Number(r.roundoff.toFixed(2)),
+      grandTotal: Number(r.grandTotal.toFixed(2)),
+      totalPurchaseAmount: Number(r.totalPurchaseAmount.toFixed(2)),
+      totalProfit: Number(r.totalProfit.toFixed(2)),
+      cashReceived: Number(r.cashReceived.toFixed(2)),
+      cardReceived: Number(r.cardReceived.toFixed(2)),
+      cashPaid: Number(r.cashPaid.toFixed(2)),
+      invoiceCount: r.invoiceCount,
+    }));
+
+    // Sort by date descending (most recent first)
+    rows.sort((a, b) => b.date.localeCompare(a.date));
+
+    if (opts.search && opts.search.trim()) {
+      const q = opts.search.trim().toLowerCase();
+      rows = rows.filter((r) => r.date.toLowerCase().includes(q));
+    }
+
+    return { filterType: 'daily', rows };
+  }
+
+  // 6. MONTH WISE: AGGREGATED MONTHLY TOTALS FOR SPECIFIC PERIOD
+  if (filterType === 'monthly') {
+    const invoices = await SalesInvoice.find(filter)
+      .sort({ date: -1, createdAt: -1 })
+      .lean();
+
+    const invoiceIds = invoices.map((i) => i._id);
+
+    // Fetch items to compute gross (ex-VAT) purchase amount
+    const items = await SalesInvoiceItem.find({ invoiceId: { $in: invoiceIds } })
+      .populate('productId', 'purchasePrice code name vatPercent vatCategory')
+      .lean();
+
+    const taxModeMap = await loadPurchaseTaxModeMap(
+      companyId,
+      items.map((item) => salesItemProductId(item))
+    );
+    const invoicePurchaseMap: Record<string, number> = {};
+    for (const item of items) {
+      const invIdStr = item.invoiceId.toString();
+      const prod = item.productId as any;
+      invoicePurchaseMap[invIdStr] =
+        (invoicePurchaseMap[invIdStr] || 0) + grossPurchaseAmountForItem(item, prod, taxModeMap);
+    }
+
+    const monthMap: Record<string, any> = {};
+
+    for (const inv of invoices) {
+      const invIdStr = inv._id.toString();
+      let monthKey = '';
+      let monthLabel = '';
+      if (inv.date) {
+        const d = new Date(inv.date);
+        if (!isNaN(d.getTime())) {
+          const y = d.getFullYear();
+          const m = String(d.getMonth() + 1).padStart(2, '0');
+          monthKey = `${y}-${m}`;
+          const dateObj = new Date(y, d.getMonth(), 1);
+          monthLabel = dateObj.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+        }
+      }
+      if (!monthKey) {
+        monthKey = 'Unknown';
+        monthLabel = 'Unknown';
+      }
+
+      if (!monthMap[monthKey]) {
+        monthMap[monthKey] = {
+          _id: monthKey,
+          monthKey,
+          month: monthLabel,
+          grossAmount: 0,
+          otherDiscount: 0,
+          freightCharge: 0,
+          otherCharge: 0,
+          travelcharge: 0,
+          vatAmount: 0,
+          roundoff: 0,
+          grandTotal: 0,
+          totalPurchaseAmount: 0,
+          totalProfit: 0,
+          cashReceived: 0,
+          cardReceived: 0,
+          cashPaid: 0,
+          invoiceCount: 0,
+        };
+      }
+
+      const grossAmount = Number(inv.grossAmount || 0);
+      const otherDiscount = Number(inv.otherDiscount || 0);
+      const freightCharge = Number(inv.freightCharge || 0);
+      const otherCharge = Number(inv.otherCharges || 0);
+      const travelcharge = Number(inv.lendAddLess || 0);
+      const vatAmount = Number(inv.vatAmount || 0);
+      const roundoff = Number(inv.roundOff || 0);
+      const grandTotal = Number(inv.totalAmount || 0);
+      const totalPurchaseAmount = Number((invoicePurchaseMap[invIdStr] || 0).toFixed(2));
+      const totalProfit = Number(((grandTotal - vatAmount) - totalPurchaseAmount).toFixed(2));
+
+      let cashReceived = Number(inv.cashReceived || 0);
+      let cardReceived = 0;
+      if (Array.isArray(inv.paymentDetails) && inv.paymentDetails.length > 0) {
+        for (const pd of inv.paymentDetails) {
+          if (/card/i.test(pd.mode)) {
+            cardReceived += Number(pd.amount || 0);
+          } else if (/cash/i.test(pd.mode) && !inv.cashReceived) {
+            cashReceived += Number(pd.amount || 0);
+          }
+        }
+      }
+      if (inv.paymentType === 'Cash' && cashReceived === 0 && cardReceived === 0) {
+        cashReceived = grandTotal;
+      }
+
+      let cashPaid = 0;
+      if (inv.type === 'Return') {
+        if (inv.paymentType === 'Cash' || inv.cashAccountId || (!inv.customerId && (!inv.paymentDetails || inv.paymentDetails.length === 0))) {
+          cashPaid = grandTotal;
+        } else if (inv.cashReceived) {
+          cashPaid = Number(inv.cashReceived);
+        }
+      }
+
+      const mRecord = monthMap[monthKey];
+      mRecord.grossAmount += grossAmount;
+      mRecord.otherDiscount += otherDiscount;
+      mRecord.freightCharge += freightCharge;
+      mRecord.otherCharge += otherCharge;
+      mRecord.travelcharge += travelcharge;
+      mRecord.vatAmount += vatAmount;
+      mRecord.roundoff += roundoff;
+      mRecord.grandTotal += grandTotal;
+      mRecord.totalPurchaseAmount += totalPurchaseAmount;
+      mRecord.totalProfit += totalProfit;
+      mRecord.cashReceived += cashReceived;
+      mRecord.cardReceived += cardReceived;
+      mRecord.cashPaid += cashPaid;
+      mRecord.invoiceCount += 1;
+    }
+
+    let rows = Object.values(monthMap).map((r: any) => ({
+      _id: r._id,
+      monthKey: r.monthKey,
+      month: r.month,
+      grossAmount: Number(r.grossAmount.toFixed(2)),
+      otherDiscount: Number(r.otherDiscount.toFixed(2)),
+      freightCharge: Number(r.freightCharge.toFixed(2)),
+      otherCharge: Number(r.otherCharge.toFixed(2)),
+      travelcharge: Number(r.travelcharge.toFixed(2)),
+      vatAmount: Number(r.vatAmount.toFixed(2)),
+      roundoff: Number(r.roundoff.toFixed(2)),
+      grandTotal: Number(r.grandTotal.toFixed(2)),
+      totalPurchaseAmount: Number(r.totalPurchaseAmount.toFixed(2)),
+      totalProfit: Number(r.totalProfit.toFixed(2)),
+      cashReceived: Number(r.cashReceived.toFixed(2)),
+      cardReceived: Number(r.cardReceived.toFixed(2)),
+      cashPaid: Number(r.cashPaid.toFixed(2)),
+      invoiceCount: r.invoiceCount,
+    }));
+
+    // Sort by monthKey descending (most recent first)
+    rows.sort((a, b) => b.monthKey.localeCompare(a.monthKey));
+
+    if (opts.search && opts.search.trim()) {
+      const q = opts.search.trim().toLowerCase();
+      rows = rows.filter((r) => r.month.toLowerCase().includes(q));
+    }
+
+    return { filterType: 'monthly', rows };
+  }
+
+  return { filterType, rows: [] };
+}
+
+

@@ -20,6 +20,10 @@ export interface ISalesInvoiceItem extends Document {
   totalAmount: number;
   costPriceAtSale: number;
   batchNumber?: string;
+  expiryDate?: string;
+  duration?: string;
+  timing?: string;
+  frequency?: string;
 }
 
 const SalesInvoiceItemSchema = new Schema<ISalesInvoiceItem>(
@@ -43,6 +47,10 @@ const SalesInvoiceItemSchema = new Schema<ISalesInvoiceItem>(
     totalAmount: { type: Number, required: true },
     costPriceAtSale: { type: Number, default: 0 },
     batchNumber: { type: String },
+    expiryDate: { type: String },
+    duration: { type: String },
+    timing: { type: String },
+    frequency: { type: String },
   },
   { _id: true }
 );

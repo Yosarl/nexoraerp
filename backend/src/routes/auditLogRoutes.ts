@@ -6,7 +6,7 @@ import { requireRole } from '../middlewares/rbac';
 const router = Router();
 
 router.use(authenticate);
-router.use(requireRole('Admin'));
+router.use(requireRole('Admin', 'Manager'));
 
 router.get('/', auditLogController.list);
 

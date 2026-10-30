@@ -141,6 +141,7 @@ interface HeldSalesReturn {
   otherDiscount: number;
   otherCharges: number;
   roundOff: number;
+  autoRoundOff?: boolean;
   narration: string;
   originalInvoiceIdForReturn: string | null;
   refInvoiceNoInput: string;
@@ -202,7 +203,7 @@ export default function SalesReturn() {
   const [paymentType, setPaymentType] = useState<'Cash' | 'Credit'>('Cash');
   const [returnType, setReturnType] = useState<'OnAccount' | 'ByRef'>('OnAccount');
   const [customerId, setCustomerId] = useState<string | null>(null);
-  const [customerName, setCustomerName] = useState('CASH');
+  const [customerName, setCustomerName] = useState('CASH IN HAND');
   const [customerAddress, setCustomerAddress] = useState('');
   // Billing Address
   const [billingAddress, setBillingAddress] = useState('');
@@ -222,6 +223,7 @@ export default function SalesReturn() {
   const [otherDiscount, setOtherDiscount] = useState(0);
   const [otherCharges, setOtherCharges] = useState(0);
   const [roundOff, setRoundOff] = useState(0);
+  const [autoRoundOff, setAutoRoundOff] = useState(false);
   const [narration, setNarration] = useState('');
   const [loading, setLoading] = useState(false);
   const [returnId, setReturnId] = useState<string | null>(null);
@@ -241,10 +243,75 @@ export default function SalesReturn() {
   const [errorDialogMessage, setErrorDialogMessage] = useState('');
   const [editingNumericCell, setEditingNumericCell] = useState<{ lineId?: string; field: string; value: string } | null>(null);
   const saveButtonRef = useRef<HTMLButtonElement>(null);
+  const printButtonRef = useRef<HTMLButtonElement>(null);
+  const actionButtonsContainerRef = useRef<HTMLDivElement>(null);
+
+  const focusPrintButton = useCallback(() => {
+    setTimeout(() => {
+      printButtonRef.current?.focus();
+    }, 50);
+    setTimeout(() => {
+      printButtonRef.current?.focus();
+    }, 150);
+  }, []);
+
+  const handleActionButtonKeyDown = (e: React.KeyboardEvent<HTMLElement>) => {
+    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
+      return;
+    }
+    const container = actionButtonsContainerRef.current;
+    if (!container) return;
+
+    const buttons = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')
+    ).filter((btn) => btn.offsetParent !== null);
+
+    if (buttons.length === 0) return;
+
+    const activeEl = document.activeElement as HTMLButtonElement | null;
+    const currentIndex = activeEl ? buttons.indexOf(activeEl) : -1;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (currentIndex === -1) {
+      buttons[0]?.focus();
+      return;
+    }
+
+    let nextIndex = currentIndex;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+      nextIndex = (currentIndex + 1) % buttons.length;
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      nextIndex = (currentIndex - 1 + buttons.length) % buttons.length;
+    }
+
+    buttons[nextIndex]?.focus();
+  };
+
   const customerAcRef = useRef<HTMLInputElement>(null);
   const customerNameRef = useRef<HTMLInputElement>(null);
+  const customerInitializedRef = useRef(false);
+  const shouldFocusCustomerAcRef = useRef(false);
   const taxModeRef = useRef<HTMLInputElement>(null);
   const narrationRef = useRef<HTMLInputElement>(null);
+
+  const focusCustomerAc = useCallback(() => {
+    const el = customerAcRef.current || (document.getElementById('sales-return-customer-ac-input') as HTMLInputElement | null);
+    if (el) {
+      el.focus({ preventScroll: true });
+      el.select?.();
+    }
+  }, []);
+
+  useEffect(() => {
+    if (shouldFocusCustomerAcRef.current) {
+      shouldFocusCustomerAcRef.current = false;
+      focusCustomerAc();
+      const t = setTimeout(focusCustomerAc, 60);
+      return () => clearTimeout(t);
+    }
+  });
   const [selectedProductInfo, setSelectedProductInfo] = useState<{
     profit?: number;
     purchaseRate: number;
@@ -311,6 +378,7 @@ export default function SalesReturn() {
     setOtherDiscount(data.otherDiscount ?? 0);
     setOtherCharges(data.otherCharges ?? 0);
     setRoundOff(data.roundOff ?? 0);
+    setAutoRoundOff(false);
     setNarration(data.narration ?? '');
     if (data.cashAccountId) setCashAccountId(data.cashAccountId);
 
@@ -429,6 +497,17 @@ export default function SalesReturn() {
     }
   };
 
+  // Auto-load sales return if navigated with returnId or invoiceId in location state
+  useEffect(() => {
+    const state = routeLocation.state as { returnId?: string; invoiceId?: string; id?: string } | null;
+    const urlParams = new URLSearchParams(window.location.search);
+    const targetId = state?.returnId || state?.invoiceId || state?.id || urlParams.get('id');
+    if (targetId && companyId) {
+      navigateToReturn(targetId);
+      navigate(routeLocation.pathname, { replace: true, state: {} });
+    }
+  }, [companyId, routeLocation.pathname, routeLocation.state, navigate]);
+
   const handleFirstReturn = () => {
     if (returnIds.length > 0) navigateToReturn(returnIds[0]);
   };
@@ -516,6 +595,7 @@ export default function SalesReturn() {
       otherDiscount,
       otherCharges,
       roundOff,
+      autoRoundOff,
       narration,
       originalInvoiceIdForReturn,
       refInvoiceNoInput,
@@ -549,6 +629,7 @@ export default function SalesReturn() {
     setOtherDiscount(held.otherDiscount);
     setOtherCharges(held.otherCharges);
     setRoundOff(held.roundOff);
+    setAutoRoundOff(held.autoRoundOff ?? false);
     setNarration(held.narration);
     setOriginalInvoiceIdForReturn(held.originalInvoiceIdForReturn);
     setRefInvoiceNoInput(held.refInvoiceNoInput);
@@ -733,6 +814,41 @@ export default function SalesReturn() {
   const batchRowRefs = useRef<(HTMLTableRowElement | null)[]>([]);
   const [focusedBatchIndex, setFocusedBatchIndex] = useState(0);
 
+  // Focus and scroll focused batch into view
+  useEffect(() => {
+    if (batchDialogOpen) {
+      setFocusedBatchIndex(0);
+      const focusFirst = () => {
+        const row = batchRowRefs.current[0];
+        if (row) {
+          row.focus();
+          row.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+      };
+      focusFirst();
+      const id1 = requestAnimationFrame(focusFirst);
+      const t1 = setTimeout(focusFirst, 50);
+      const t2 = setTimeout(focusFirst, 150);
+      const t3 = setTimeout(focusFirst, 300);
+      return () => {
+        cancelAnimationFrame(id1);
+        clearTimeout(t1);
+        clearTimeout(t2);
+        clearTimeout(t3);
+      };
+    }
+  }, [batchDialogOpen]);
+
+  useEffect(() => {
+    if (batchDialogOpen && batchRowRefs.current[focusedBatchIndex]) {
+      batchRowRefs.current[focusedBatchIndex]?.focus();
+      batchRowRefs.current[focusedBatchIndex]?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'nearest'
+      });
+    }
+  }, [batchDialogOpen, focusedBatchIndex]);
+
   const loadNextInvoiceNo = useCallback(async () => {
     if (!companyId || !financialYearId) return;
     try {
@@ -749,15 +865,20 @@ export default function SalesReturn() {
 
   const loadCustomers = useCallback(() => {
     if (!companyId) return;
-    const cashOption = { _id: 'cash', code: 'CASH', name: 'CASH', address: '', type: 'Cash' };
+    const cashOption = { _id: 'cash', code: 'CASH', name: 'CASH IN HAND', address: '', type: 'Cash' };
     Promise.all([
       ledgerAccountApi.list(companyId, 'Customer'),
       ledgerAccountApi.list(companyId, 'Cash')
     ]).then(([custRes, cashRes]) => {
       const custList = (custRes.data.data ?? []) as Customer[];
       const cashList = (cashRes.data.data ?? []) as Customer[];
+      let primaryCash = cashList.find((c) => /cash\s*in\s*hand/i.test(c.name || ''));
+      if (!primaryCash) {
+        primaryCash = cashList.find((c) => c.type === 'Cash') || cashList[0];
+      }
       if (cashList.length === 0) {
         cashList.push(cashOption);
+        primaryCash = cashOption;
       }
       const all = [...custList, ...cashList];
       const sorted = all.sort((a, b) =>
@@ -765,8 +886,9 @@ export default function SalesReturn() {
       );
       setCustomers(sorted);
 
-      if (!returnId) {
-        const defaultCash = cashList.find((c) => c.type === 'Cash') || cashList[0];
+      if (!customerInitializedRef.current && !returnId) {
+        customerInitializedRef.current = true;
+        const defaultCash = primaryCash || cashList[0];
         if (defaultCash) {
           setCustomerId(null);
           setCustomerName(defaultCash.name);
@@ -787,13 +909,20 @@ export default function SalesReturn() {
   }, [loadCustomers]);
 
   // Detect return from Customer Create page — read created ledger from state, set pending and reload customers
+  const handledReturnFromCreateRef = useRef(false);
   useEffect(() => {
     const state = routeLocation.state as { createdLedgerName?: string } | null;
-    if (routeLocation.pathname === '/entry/sales-return' && state?.createdLedgerName) {
-      setPendingCustomerName(state.createdLedgerName);
-      loadCustomers();
-      navigate(routeLocation.pathname, { replace: true, state: {} });
+    if (routeLocation.pathname !== '/entry/sales-return' || !state?.createdLedgerName) {
+      handledReturnFromCreateRef.current = false;
+      return;
     }
+    if (handledReturnFromCreateRef.current) return;
+    handledReturnFromCreateRef.current = true;
+    setPendingCustomerName(state.createdLedgerName);
+    loadCustomers();
+    window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+    const path = routeLocation.pathname;
+    setTimeout(() => navigate(path, { replace: true, state: {} }), 0);
   }, [routeLocation.pathname, routeLocation.state, loadCustomers, navigate]);
 
   // Once customers list is reloaded after creating a new customer, auto-select it by name
@@ -803,7 +932,7 @@ export default function SalesReturn() {
     if (found) {
       handleCustomerSelect(found);
       setPendingCustomerName(null);
-      setTimeout(() => customerAcRef.current?.focus(), 200);
+      setTimeout(() => customerAcRef.current?.focus({ preventScroll: true }), 200);
     }
   }, [customers, pendingCustomerName, handleCustomerSelect]);
 
@@ -832,7 +961,7 @@ export default function SalesReturn() {
     })();
   }, [companyId, financialYearId, returnType]);
 
-  useEffect(() => {
+  const loadProducts = useCallback(() => {
     if (!companyId) return;
     productApi.list(companyId, { limit: 10000 }).then((res) => {
       const d = res.data?.data as { products?: ProductOption[] };
@@ -840,6 +969,34 @@ export default function SalesReturn() {
       setProducts(Array.isArray(list) ? list : []);
     }).catch(() => setProducts([]));
   }, [companyId]);
+
+  useEffect(() => {
+    loadProducts();
+  }, [loadProducts]);
+
+  useEffect(() => {
+    const onProductsUpdated = () => {
+      loadProducts();
+    };
+    const onLedgersUpdated = () => {
+      loadCustomers();
+    };
+    const onWindowActivated = (e: any) => {
+      const p = e.detail?.path;
+      if (p === '/entry/sales-return') {
+        loadProducts();
+        loadCustomers();
+      }
+    };
+    window.addEventListener('app:products-updated', onProductsUpdated);
+    window.addEventListener('app:ledgers-updated', onLedgersUpdated);
+    window.addEventListener('app:window-activated', onWindowActivated);
+    return () => {
+      window.removeEventListener('app:products-updated', onProductsUpdated);
+      window.removeEventListener('app:ledgers-updated', onLedgersUpdated);
+      window.removeEventListener('app:window-activated', onWindowActivated);
+    };
+  }, [loadProducts, loadCustomers]);
 
   const fetchRefInvoice = useCallback(async () => {
     if (!companyId || !refInvoiceNoInput.trim()) {
@@ -1245,10 +1402,18 @@ export default function SalesReturn() {
     if (!batchDialogOpen || availableBatches.length === 0) return;
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      setFocusedBatchIndex((prev) => (prev < availableBatches.length - 1 ? prev + 1 : prev));
+      setFocusedBatchIndex((prev) => {
+        const next = prev < availableBatches.length - 1 ? prev + 1 : prev;
+        setTimeout(() => batchRowRefs.current[next]?.focus(), 10);
+        return next;
+      });
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      setFocusedBatchIndex((prev) => (prev > 0 ? prev - 1 : 0));
+      setFocusedBatchIndex((prev) => {
+        const next = prev > 0 ? prev - 1 : 0;
+        setTimeout(() => batchRowRefs.current[next]?.focus(), 10);
+        return next;
+      });
     } else if (e.key === 'Enter') {
       e.preventDefault();
       if (availableBatches[focusedBatchIndex]) handleBatchSelect(availableBatches[focusedBatchIndex]);
@@ -1458,6 +1623,30 @@ export default function SalesReturn() {
   };
   calculations.grandTotal = calculations.subTotal - calculations.otherDiscount + calculations.otherCharges + calculations.roundOff;
 
+  // Auto round-off toggle handler
+  const handleAutoRoundOffToggle = useCallback((checked: boolean) => {
+    setAutoRoundOff(checked);
+    if (checked) {
+      const baseTotal = calculations.subTotal - (Number(otherDiscount) || 0) + (Number(otherCharges) || 0);
+      const rounded = Math.round(baseTotal);
+      const diff = parseFloat((rounded - baseTotal).toFixed(2));
+      setRoundOff(diff);
+    } else {
+      setRoundOff(0);
+    }
+  }, [calculations.subTotal, otherDiscount, otherCharges]);
+
+  // Keep roundOff in sync when autoRoundOff is active and totals change
+  useEffect(() => {
+    if (!autoRoundOff) return;
+    const baseTotal = calculations.subTotal - (Number(otherDiscount) || 0) + (Number(otherCharges) || 0);
+    const rounded = Math.round(baseTotal);
+    const diff = parseFloat((rounded - baseTotal).toFixed(2));
+    if (diff !== roundOff) {
+      setRoundOff(diff);
+    }
+  }, [autoRoundOff, calculations.subTotal, otherDiscount, otherCharges, roundOff]);
+
   const handlePreSaveCheck = useCallback(async () => {
     const validLines = lines.filter((l) => l.productId && l.quantity > 0 && l.price >= 0);
     if (validLines.length === 0) {
@@ -1660,6 +1849,7 @@ export default function SalesReturn() {
       setOtherDiscount(0);
       setOtherCharges(0);
       setRoundOff(0);
+      setAutoRoundOff(false);
       setOriginalInvoiceIdForReturn(null);
       setOriginalInvoiceNo(null);
       loadNextInvoiceNo();
@@ -1674,7 +1864,8 @@ export default function SalesReturn() {
   const handleClear = useCallback(() => {
     setLines([emptyLine()]);
     setCustomerId(null);
-    setCustomerName('CASH');
+    customerInitializedRef.current = true;
+    setCustomerName('CASH IN HAND');
     setCustomerAddress('');
     setBillingAddress('');
     setBillingPhone('');
@@ -1684,11 +1875,17 @@ export default function SalesReturn() {
     setOtherDiscount(0);
     setOtherCharges(0);
     setRoundOff(0);
+    setAutoRoundOff(false);
     setRefInvoiceData(null);
     setOriginalInvoiceIdForReturn(null);
     setOriginalInvoiceNo(null);
     loadNextInvoiceNo();
-  }, [loadNextInvoiceNo]);
+    shouldFocusCustomerAcRef.current = true;
+    focusCustomerAc();
+    setTimeout(focusCustomerAc, 50);
+    setTimeout(focusCustomerAc, 150);
+    setTimeout(focusCustomerAc, 300);
+  }, [loadNextInvoiceNo, focusCustomerAc]);
 
   const handleSearch = useCallback(async () => {
     if (!companyId || !searchInvoiceNo.trim()) {
@@ -1808,8 +2005,13 @@ export default function SalesReturn() {
                 const containsOnly = options.filter((c) => name(c).includes(q) && !name(c).startsWith(q));
                 return [...sortByName(startsWith), ...sortByName(containsOnly)];
               }}
-              value={customers.find((c) => c.name === customerName) || null}
+              value={customers.find((c) => (c.name || '').trim().toLowerCase() === (customerName || '').trim().toLowerCase()) || null}
               onChange={(_, v) => handleCustomerSelect(v)}
+              onInputChange={(_, newInputValue, reason) => {
+                if (reason === 'clear' || (reason === 'input' && newInputValue.trim() === '')) {
+                  handleCustomerSelect(null);
+                }
+              }}
               onOpen={() => setCustomerAcListboxOpen(true)}
               onClose={() => setCustomerAcListboxOpen(false)}
               autoHighlight
@@ -1822,6 +2024,7 @@ export default function SalesReturn() {
               renderInput={(params) => (
                 <TextField
                   {...params}
+                  id="sales-return-customer-ac-input"
                   label="Cash / Customer A/C"
                   InputLabelProps={{ shrink: true }}
                   inputRef={customerAcRef}
@@ -2623,7 +2826,37 @@ export default function SalesReturn() {
                   <TextField size="small" label="Other Charges" type="number" value={editingNumericCell?.field === 'otherCharges' && !editingNumericCell?.lineId ? editingNumericCell.value : (otherCharges === 0 ? '' : String(otherCharges))} onFocus={() => setEditingNumericCell({ field: 'otherCharges', value: otherCharges === 0 ? '' : String(otherCharges) })} onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherCharges' ? { ...prev, value: e.target.value } : prev)} onBlur={() => { const raw = editingNumericCell?.field === 'otherCharges' ? editingNumericCell.value : ''; setOtherCharges(parseNumericInput(raw)); setEditingNumericCell(null); }} inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.2, height: 32, minHeight: 32 }, '& .MuiInputBase-input': { fontSize: '0.84rem', py: '4px !important' }, '& .MuiInputLabel-root': { fontSize: '0.78rem' } }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField size="small" label="Round Off" type="number" value={editingNumericCell?.field === 'roundOff' && !editingNumericCell?.lineId ? editingNumericCell.value : (roundOff === 0 ? '' : String(roundOff))} onFocus={() => setEditingNumericCell({ field: 'roundOff', value: roundOff === 0 ? '' : String(roundOff) })} onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'roundOff' ? { ...prev, value: e.target.value } : prev)} onBlur={() => { const raw = editingNumericCell?.field === 'roundOff' ? editingNumericCell.value : ''; setRoundOff(parseNumericInput(raw)); setEditingNumericCell(null); }} inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.2, height: 32, minHeight: 32 }, '& .MuiInputBase-input': { fontSize: '0.84rem', py: '4px !important' }, '& .MuiInputLabel-root': { fontSize: '0.78rem' } }} />
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                    <TextField
+                      size="small"
+                      label="Round Off"
+                      type="number"
+                      value={editingNumericCell?.field === 'roundOff' && !editingNumericCell?.lineId ? editingNumericCell.value : (roundOff === 0 ? '' : String(roundOff))}
+                      onFocus={() => setEditingNumericCell({ field: 'roundOff', value: roundOff === 0 ? '' : String(roundOff) })}
+                      onChange={(e) => {
+                        setAutoRoundOff(false);
+                        setEditingNumericCell((prev) => prev?.field === 'roundOff' ? { ...prev, value: e.target.value } : prev);
+                      }}
+                      onBlur={() => { const raw = editingNumericCell?.field === 'roundOff' ? editingNumericCell.value : ''; setRoundOff(parseNumericInput(raw)); setEditingNumericCell(null); }}
+                      inputProps={{ inputMode: 'decimal' }}
+                      InputLabelProps={{ shrink: true }}
+                      fullWidth
+                      sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.2, height: 32, minHeight: 32 }, '& .MuiInputBase-input': { fontSize: '0.84rem', py: '4px !important' }, '& .MuiInputLabel-root': { fontSize: '0.78rem' } }}
+                    />
+                    <Tooltip title="Round Off Total (Auto Round)" arrow placement="top">
+                      <Checkbox
+                        size="small"
+                        checked={autoRoundOff}
+                        onChange={(e) => handleAutoRoundOffToggle(e.target.checked)}
+                        sx={{
+                          p: 0.25,
+                          color: '#94a3b8',
+                          '&.Mui-checked': { color: '#0f766e' },
+                          '& .MuiSvgIcon-root': { fontSize: '1.25rem' },
+                        }}
+                      />
+                    </Tooltip>
+                  </Box>
                 </Grid>
                 <Grid item xs={12}>
                   <TextField size="small" label="Narration" value={narration} onChange={(e) => setNarration(e.target.value)} inputRef={narrationRef} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); setTimeout(() => saveButtonRef.current?.focus(), 50); } }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.2, height: 32, minHeight: 32 }, '& .MuiInputBase-input': { fontSize: '0.84rem', py: '4px !important' }, '& .MuiInputLabel-root': { fontSize: '0.78rem' } }} />
@@ -2664,31 +2897,48 @@ export default function SalesReturn() {
 
       {/* Action buttons - B2C style */}
       <Paper elevation={0} sx={{ p: 0.8, width: '100%', borderRadius: 1.5, bgcolor: 'white', border: '1px solid #e0e7ef' }}>
-        <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap', alignItems: 'center' }}>
+        <Box
+          ref={actionButtonsContainerRef}
+          onKeyDown={handleActionButtonKeyDown}
+          sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap', alignItems: 'center' }}
+        >
           <Button
             ref={saveButtonRef}
             variant="contained"
             startIcon={<SaveIcon />}
             onClick={handlePreSaveCheck}
             disabled={loading || !!returnId || (returnType === 'ByRef' && !originalInvoiceIdForReturn)}
-            sx={{ minWidth: 70, py: 0.35, height: 28, fontSize: '0.75rem', fontWeight: 600, textTransform: 'none', borderRadius: 1.2, boxShadow: 'none', bgcolor: '#16a34a', color: '#fff', '& .MuiSvgIcon-root': { fontSize: 16 }, '&:hover': { bgcolor: '#15803d' }, '&.Mui-disabled': { bgcolor: '#d1d5db', color: '#9ca3af' } }}
+            sx={{
+              minWidth: 70, py: 0.35, height: 28, fontSize: '0.75rem', fontWeight: 600, textTransform: 'none', borderRadius: 1.2, boxShadow: 'none', bgcolor: '#16a34a', color: '#fff', '& .MuiSvgIcon-root': { fontSize: 16 }, '&:hover': { bgcolor: '#15803d' }, '&.Mui-disabled': { bgcolor: '#d1d5db', color: '#9ca3af' },
+              '&:focus, &:focus-visible': { outline: '2px solid #000000', outlineOffset: 1 },
+            }}
           >
             Save
           </Button>
           <Button
+            ref={printButtonRef}
             variant="contained"
             startIcon={<PrintIcon />}
             onClick={() => window.print()}
             disabled={lines.filter((l) => l.productId && l.quantity > 0).length === 0}
-            sx={{ minWidth: 70, py: 0.35, height: 28, fontSize: '0.75rem', fontWeight: 600, textTransform: 'none', borderRadius: 1.2, boxShadow: 'none', bgcolor: '#16a34a', color: '#fff', '& .MuiSvgIcon-root': { fontSize: 16 }, '&:hover': { bgcolor: '#15803d' }, '&.Mui-disabled': { bgcolor: '#d1d5db', color: '#9ca3af' } }}
+            sx={{
+              minWidth: 70, py: 0.35, height: 28, fontSize: '0.75rem', fontWeight: 600, textTransform: 'none', borderRadius: 1.2, boxShadow: 'none', bgcolor: '#16a34a', color: '#fff', '& .MuiSvgIcon-root': { fontSize: 16 }, '&:hover': { bgcolor: '#15803d' }, '&.Mui-disabled': { bgcolor: '#d1d5db', color: '#9ca3af' },
+              '&:focus, &:focus-visible': { outline: '2px solid #000000', outlineOffset: 1 },
+            }}
           >
             Print
           </Button>
           <Button
             variant="contained"
             startIcon={<ClearIcon />}
-            onClick={handleClear}
-            sx={{ minWidth: 70, py: 0.35, height: 28, fontSize: '0.75rem', fontWeight: 600, textTransform: 'none', borderRadius: 1.2, boxShadow: 'none', bgcolor: '#16a34a', color: '#fff', '& .MuiSvgIcon-root': { fontSize: 16 }, '&:hover': { bgcolor: '#15803d' } }}
+            onClick={(e) => {
+              (e.currentTarget as HTMLElement)?.blur();
+              handleClear();
+            }}
+            sx={{
+              minWidth: 70, py: 0.35, height: 28, fontSize: '0.75rem', fontWeight: 600, textTransform: 'none', borderRadius: 1.2, boxShadow: 'none', bgcolor: '#16a34a', color: '#fff', '& .MuiSvgIcon-root': { fontSize: 16 }, '&:hover': { bgcolor: '#15803d' },
+              '&:focus, &:focus-visible': { outline: '2px solid #000000', outlineOffset: 1 },
+            }}
           >
             Clear
           </Button>
@@ -2698,7 +2948,10 @@ export default function SalesReturn() {
             startIcon={<EditIcon />}
             onClick={handlePreSaveCheck}
             disabled={!returnId || loading}
-            sx={{ minWidth: 65, py: 0.35, height: 28, fontSize: '0.75rem', fontWeight: 600, textTransform: 'none', borderRadius: 1.2, boxShadow: 'none', bgcolor: '#16a34a', color: '#fff', '& .MuiSvgIcon-root': { fontSize: 16 }, '&:hover': { bgcolor: '#15803d' }, '&.Mui-disabled': { bgcolor: '#d1d5db', color: '#9ca3af' } }}
+            sx={{
+              minWidth: 65, py: 0.35, height: 28, fontSize: '0.75rem', fontWeight: 600, textTransform: 'none', borderRadius: 1.2, boxShadow: 'none', bgcolor: '#16a34a', color: '#fff', '& .MuiSvgIcon-root': { fontSize: 16 }, '&:hover': { bgcolor: '#15803d' }, '&.Mui-disabled': { bgcolor: '#d1d5db', color: '#9ca3af' },
+              '&:focus, &:focus-visible': { outline: '2px solid #000000', outlineOffset: 1 },
+            }}
           >
             Edit
           </Button>
@@ -2707,7 +2960,10 @@ export default function SalesReturn() {
             startIcon={<DeleteIcon />}
             onClick={() => setDeleteDialogOpen(true)}
             disabled={!returnId}
-            sx={{ minWidth: 70, py: 0.35, height: 28, fontSize: '0.75rem', fontWeight: 600, textTransform: 'none', borderRadius: 1.2, boxShadow: 'none', bgcolor: '#16a34a', color: '#fff', '& .MuiSvgIcon-root': { fontSize: 16 }, '&:hover': { bgcolor: '#15803d' }, '&.Mui-disabled': { bgcolor: '#d1d5db', color: '#9ca3af' } }}
+            sx={{
+              minWidth: 70, py: 0.35, height: 28, fontSize: '0.75rem', fontWeight: 600, textTransform: 'none', borderRadius: 1.2, boxShadow: 'none', bgcolor: '#16a34a', color: '#fff', '& .MuiSvgIcon-root': { fontSize: 16 }, '&:hover': { bgcolor: '#15803d' }, '&.Mui-disabled': { bgcolor: '#d1d5db', color: '#9ca3af' },
+              '&:focus, &:focus-visible': { outline: '2px solid #000000', outlineOffset: 1 },
+            }}
           >
             Delete
           </Button>
@@ -2716,7 +2972,10 @@ export default function SalesReturn() {
             variant="contained"
             startIcon={<SearchIcon />}
             onClick={() => setSearchDialogOpen(true)}
-            sx={{ minWidth: 100, py: 0.35, height: 28, fontSize: '0.75rem', fontWeight: 600, textTransform: 'none', borderRadius: 1.2, boxShadow: 'none', bgcolor: '#16a34a', color: '#fff', '& .MuiSvgIcon-root': { fontSize: 16 }, '&:hover': { bgcolor: '#15803d' } }}
+            sx={{
+              minWidth: 100, py: 0.35, height: 28, fontSize: '0.75rem', fontWeight: 600, textTransform: 'none', borderRadius: 1.2, boxShadow: 'none', bgcolor: '#16a34a', color: '#fff', '& .MuiSvgIcon-root': { fontSize: 16 }, '&:hover': { bgcolor: '#15803d' },
+              '&:focus, &:focus-visible': { outline: '2px solid #000000', outlineOffset: 1 },
+            }}
           >
             Search Return
           </Button>
@@ -2803,13 +3062,32 @@ export default function SalesReturn() {
       </Dialog>
 
       {/* Saved Success Dialog */}
-      <Dialog open={savedDialogOpen} onClose={() => setSavedDialogOpen(false)} PaperProps={{ sx: { borderRadius: 2 } }}>
+      <Dialog
+        open={savedDialogOpen}
+        onClose={() => {
+          setSavedDialogOpen(false);
+          focusPrintButton();
+        }}
+        PaperProps={{ sx: { borderRadius: 2 } }}
+        TransitionProps={{
+          onExited: () => {
+            focusPrintButton();
+          },
+        }}
+      >
         <DialogTitle sx={{ fontWeight: 700, fontSize: '1rem', color: '#15803d' }}>Success</DialogTitle>
         <DialogContent>
           <Typography sx={{ fontSize: '0.9rem', color: '#475569' }}>{savedDialogMessage}</Typography>
         </DialogContent>
         <DialogActions sx={{ px: 2, pb: 2 }}>
-          <Button variant="contained" onClick={() => setSavedDialogOpen(false)} sx={{ textTransform: 'none', borderRadius: 1.5, bgcolor: '#0f766e', '&:hover': { bgcolor: '#115e59' }, boxShadow: 'none' }}>
+          <Button
+            variant="contained"
+            onClick={() => {
+              setSavedDialogOpen(false);
+              focusPrintButton();
+            }}
+            sx={{ textTransform: 'none', borderRadius: 1.5, bgcolor: '#0f766e', '&:hover': { bgcolor: '#115e59' }, boxShadow: 'none' }}
+          >
             OK
           </Button>
         </DialogActions>
@@ -3018,7 +3296,19 @@ export default function SalesReturn() {
         onKeyDown={handleBatchDialogKeyDown}
         maxWidth="sm"
         fullWidth
+        autoFocus={false}
+        disableAutoFocus={true}
+        disableRestoreFocus
         PaperProps={{ sx: { borderRadius: 2 } }}
+        TransitionProps={{
+          onEntered: () => {
+            const firstRow = batchRowRefs.current[focusedBatchIndex] || batchRowRefs.current[0];
+            if (firstRow) {
+              firstRow.focus();
+              firstRow.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+          },
+        }}
       >
         <DialogTitle sx={{ bgcolor: '#f8fafc', borderBottom: '1px solid #e2e8f0', py: 1.5 }}>
           <Typography sx={{ fontWeight: 700, fontSize: '0.95rem', color: '#1e293b' }}>Select Batch</Typography>
@@ -3044,15 +3334,32 @@ export default function SalesReturn() {
                   <TableRow
                     key={batch.batchNumber}
                     ref={(el) => { batchRowRefs.current[index] = el; }}
+                    tabIndex={index === focusedBatchIndex ? 0 : -1}
                     hover
                     sx={{
                       cursor: 'pointer',
                       '&:hover': { bgcolor: '#f0fdfa' },
                       bgcolor: index === focusedBatchIndex ? '#ccfbf1 !important' : (index % 2 === 0 ? '#ffffff' : '#fafafa'),
-                      outline: index === focusedBatchIndex ? '2px solid #0f766e' : 'none',
+                      outline: index === focusedBatchIndex ? '2px solid #0f766e !important' : 'none',
+                      outlineOffset: -2,
                       transition: 'all 0.1s',
+                      '&:focus': {
+                        outline: '2px solid #0f766e !important',
+                        bgcolor: '#ccfbf1 !important',
+                      },
                     }}
-                    onClick={() => handleBatchSelect(batch)}
+                    onClick={() => {
+                      setFocusedBatchIndex(index);
+                      handleBatchSelect(batch);
+                    }}
+                    onFocus={() => setFocusedBatchIndex(index)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        handleBatchSelect(batch);
+                      }
+                    }}
                   >
                     <TableCell sx={{ fontSize: '0.8rem', color: '#334155', py: 0.75 }}>
                       {batch.batchNumber.length > 15 ? batch.batchNumber.substring(0, 15) + '...' : batch.batchNumber}
@@ -3062,7 +3369,7 @@ export default function SalesReturn() {
                     <TableCell align="right" sx={{ fontSize: '0.8rem', color: '#64748b', py: 0.75 }}>{batch.purchasePrice.toFixed(2)}</TableCell>
                     <TableCell align="right" sx={{ fontSize: '0.8rem', color: '#1e293b', py: 0.75, fontWeight: 600 }}>{(rateType === 'WSale' ? batch.wholesale : batch.retail).toFixed(2)}</TableCell>
                     <TableCell align="center" sx={{ py: 0.75 }}>
-                      <Button size="small" variant="contained"
+                      <Button size="small" variant="contained" tabIndex={-1}
                         onClick={(e) => { e.stopPropagation(); handleBatchSelect(batch); }}
                         sx={{ minWidth: 'auto', px: 1.5, py: 0.25, fontSize: '0.7rem', borderRadius: 1, boxShadow: 'none', bgcolor: '#0f766e', '&:hover': { bgcolor: '#115e59' } }}>
                         Select
@@ -3075,7 +3382,7 @@ export default function SalesReturn() {
           </TableContainer>
         </DialogContent>
         <DialogActions sx={{ bgcolor: '#f8fafc', borderTop: '1px solid #e2e8f0', px: 2, py: 1 }}>
-          <Button onClick={() => setBatchDialogOpen(false)} sx={{ textTransform: 'none', borderRadius: 1.5, color: '#64748b' }}>Cancel</Button>
+          <Button tabIndex={-1} onClick={() => setBatchDialogOpen(false)} sx={{ textTransform: 'none', borderRadius: 1.5, color: '#64748b' }}>Cancel</Button>
         </DialogActions>
       </Dialog>
 

@@ -1,7 +1,7 @@
 import { Response, NextFunction } from 'express';
 import { body } from 'express-validator';
 import { AuthRequest } from '../middlewares/auth';
-import * as openingStockService from '../services/openingStockService';
+import * as openingStockService from '../services/openingPurchaseService';
 import { validate } from '../middlewares/validate';
 
 export const postOpeningStockValidators = [
@@ -138,7 +138,7 @@ export async function getOpeningStockEntryById(
     }
     const data = await openingStockService.getOpeningStockEntryById(id, companyId);
     if (!data) {
-      res.status(404).json({ success: false, message: 'Opening stock entry not found' });
+      res.status(404).json({ success: false, message: 'Opening purchase entry not found' });
       return;
     }
     res.json({ success: true, data });
@@ -184,11 +184,25 @@ export async function deleteOpeningStockEntry(
     }
     const deleted = await openingStockService.deleteOpeningStockEntry(id, companyId);
     if (!deleted) {
-      res.status(404).json({ success: false, message: 'Opening stock entry not found' });
+      res.status(404).json({ success: false, message: 'Opening purchase entry not found' });
       return;
     }
-    res.json({ success: true, message: 'Opening stock entry deleted' });
+    res.json({ success: true, message: 'Opening purchase entry deleted' });
   } catch (err) {
     next(err);
   }
 }
+
+// Aliases for Opening Purchase naming convention
+export const postOpeningPurchaseValidators = postOpeningStockValidators;
+export const postOpeningPurchase = postOpeningStock;
+export const importOpeningPurchaseValidators = importOpeningStockValidators;
+export const importOpeningPurchase = importOpeningStock;
+export const createOpeningPurchaseEntryValidators = createOpeningStockEntryValidators;
+export const createOpeningPurchaseEntry = createOpeningStockEntry;
+export const listOpeningPurchaseEntries = listOpeningStockEntries;
+export const getNextOpeningPurchaseEntryNo = getNextOpeningStockEntryNo;
+export const getOpeningPurchaseEntryById = getOpeningStockEntryById;
+export const updateOpeningPurchaseEntry = updateOpeningStockEntry;
+export const deleteOpeningPurchaseEntry = deleteOpeningStockEntry;
+

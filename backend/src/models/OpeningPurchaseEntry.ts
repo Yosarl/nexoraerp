@@ -1,6 +1,6 @@
 import mongoose, { Document, Schema } from 'mongoose';
 
-export interface IOpeningStockBatch {
+export interface IOpeningPurchaseBatch {
   productId: mongoose.Types.ObjectId;
   productCode: string;
   productName: string;
@@ -16,7 +16,9 @@ export interface IOpeningStockBatch {
   multiUnitId?: string;
 }
 
-export interface IOpeningStockEntry extends Document {
+export type IOpeningStockBatch = IOpeningPurchaseBatch;
+
+export interface IOpeningPurchaseEntry extends Document {
   companyId: mongoose.Types.ObjectId;
   financialYearId: mongoose.Types.ObjectId;
   entryNo: string;
@@ -24,7 +26,7 @@ export interface IOpeningStockEntry extends Document {
   vatType: 'Vat' | 'NonVat';
   taxMode?: 'inclusive' | 'exclusive';
   narration?: string;
-  batches: IOpeningStockBatch[];
+  batches: IOpeningPurchaseBatch[];
   totalAmount: number;
   voucherId?: mongoose.Types.ObjectId;
   createdBy?: mongoose.Types.ObjectId;
@@ -32,7 +34,9 @@ export interface IOpeningStockEntry extends Document {
   updatedAt: Date;
 }
 
-const OpeningStockBatchSchema = new Schema<IOpeningStockBatch>(
+export type IOpeningStockEntry = IOpeningPurchaseEntry;
+
+const OpeningPurchaseBatchSchema = new Schema<IOpeningPurchaseBatch>(
   {
     productId: { type: Schema.Types.ObjectId, ref: 'Product', required: true },
     productCode: { type: String, default: '' },
@@ -51,7 +55,7 @@ const OpeningStockBatchSchema = new Schema<IOpeningStockBatch>(
   { _id: false }
 );
 
-const OpeningStockEntrySchema = new Schema<IOpeningStockEntry>(
+const OpeningPurchaseEntrySchema = new Schema<IOpeningPurchaseEntry>(
   {
     companyId: { type: Schema.Types.ObjectId, ref: 'Company', required: true },
     financialYearId: { type: Schema.Types.ObjectId, ref: 'FinancialYear', required: true },
@@ -60,7 +64,7 @@ const OpeningStockEntrySchema = new Schema<IOpeningStockEntry>(
     vatType: { type: String, enum: ['Vat', 'NonVat'], default: 'Vat' },
     taxMode: { type: String, enum: ['inclusive', 'exclusive'], default: 'inclusive' },
     narration: { type: String },
-    batches: { type: [OpeningStockBatchSchema], default: [] },
+    batches: { type: [OpeningPurchaseBatchSchema], default: [] },
     totalAmount: { type: Number, default: 0 },
     voucherId: { type: Schema.Types.ObjectId, ref: 'Voucher' },
     createdBy: { type: Schema.Types.ObjectId, ref: 'User' },
@@ -68,10 +72,15 @@ const OpeningStockEntrySchema = new Schema<IOpeningStockEntry>(
   { timestamps: true }
 );
 
-OpeningStockEntrySchema.index({ companyId: 1, entryNo: 1 }, { unique: true });
-OpeningStockEntrySchema.index({ companyId: 1, financialYearId: 1, date: -1 });
+OpeningPurchaseEntrySchema.index({ companyId: 1, entryNo: 1 }, { unique: true });
+OpeningPurchaseEntrySchema.index({ companyId: 1, financialYearId: 1, date: -1 });
 
-export const OpeningStockEntry = mongoose.model<IOpeningStockEntry>(
-  'OpeningStockEntry',
-  OpeningStockEntrySchema
-);
+export const OpeningPurchaseEntry = (mongoose.models.OpeningPurchaseEntry ||
+  mongoose.models.OpeningStockEntry ||
+  mongoose.model<IOpeningPurchaseEntry>(
+    'OpeningStockEntry',
+    OpeningPurchaseEntrySchema,
+    'openingstockentries'
+  )) as mongoose.Model<IOpeningPurchaseEntry>;
+
+export const OpeningStockEntry = OpeningPurchaseEntry;

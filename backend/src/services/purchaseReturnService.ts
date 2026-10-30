@@ -645,10 +645,27 @@ export async function updatePurchaseReturn(
 // ─── Get by ID ────────────────────────────────────────────
 
 export async function getPurchaseReturnById(returnId: string, companyId: string) {
-  const doc = await PurchaseReturn.findById(returnId)
-    .populate('supplierId', 'name code')
-    .populate('cashAccountId', 'name code')
-    .lean();
+  let doc = mongoose.Types.ObjectId.isValid(returnId)
+    ? await PurchaseReturn.findById(returnId)
+        .populate('supplierId', 'name code')
+        .populate('cashAccountId', 'name code')
+        .lean()
+    : null;
+
+  if ((!doc || doc.companyId.toString() !== companyId) && mongoose.Types.ObjectId.isValid(returnId)) {
+    doc = await PurchaseReturn.findOne({ voucherId: new mongoose.Types.ObjectId(returnId), companyId })
+      .populate('supplierId', 'name code')
+      .populate('cashAccountId', 'name code')
+      .lean();
+  }
+
+  if (!doc || doc.companyId.toString() !== companyId) {
+    doc = await PurchaseReturn.findOne({ invoiceNo: returnId, companyId })
+      .populate('supplierId', 'name code')
+      .populate('cashAccountId', 'name code')
+      .lean();
+  }
+
   if (!doc || doc.companyId.toString() !== companyId) return null;
   const supplier = doc.supplierId as unknown as { _id: string; name?: string; code?: string } | null;
   const cashAccount = doc.cashAccountId as unknown as { _id: string; name?: string } | null;

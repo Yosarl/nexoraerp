@@ -147,11 +147,20 @@ async function seedDefaultLedgerStructure(
     createdBy,
   });
 
-  await LedgerGroup.create({
+  const capitalGroup = await LedgerGroup.create({
     companyId: cid,
     code: 'CAPITAL',
     name: 'CAPITAL',
     type: 'EQUITY',
+    createdBy,
+  });
+
+  const capitalAccGroup = await LedgerGroup.create({
+    companyId: cid,
+    code: 'GRP0005',
+    name: 'CAPITAL ACCOUNT',
+    type: 'EQUITY',
+    parentGroupId: capitalGroup._id,
     createdBy,
   });
 
@@ -273,6 +282,33 @@ async function seedDefaultLedgerStructure(
     createdBy,
   });
 
+  const currentAssetsGroup = await LedgerGroup.create({
+    companyId: cid,
+    code: 'CURR_ASSETS',
+    name: 'CURRENT ASSETS',
+    type: 'ASSET',
+    parentGroupId: currentAssetGroup._id,
+    createdBy,
+  });
+
+  const directIncomeAccGroup = await LedgerGroup.create({
+    companyId: cid,
+    code: 'DIR_INCOME_AC',
+    name: 'DIRECT INCOME A/C',
+    type: 'INCOME',
+    parentGroupId: directIncomeGroup._id,
+    createdBy,
+  });
+
+  const directExpensesAccGroup = await LedgerGroup.create({
+    companyId: cid,
+    code: 'DIR_EXP_AC',
+    name: 'DIRECT EXPENSES A/C',
+    type: 'EXPENSE',
+    parentGroupId: directExpenseGroup._id,
+    createdBy,
+  });
+
   const dutiesRecvAccGroup = await LedgerGroup.create({
     companyId: cid,
     code: 'DUTY_RECV_AC',
@@ -297,7 +333,11 @@ async function seedDefaultLedgerStructure(
     { companyId: cid, name: 'MAIN BANK', code: 'BANK001', groupId: bankGroup._id, type: 'Bank', openingBalances: [{ financialYearId, amount: 0, isDebit: true }], createdBy },
     { companyId: cid, name: 'SALES ACCOUNT', code: 'SALES001', groupId: salesGroup._id, type: 'Revenue', openingBalances: [], createdBy },
     { companyId: cid, name: 'PURCHASE ACCOUNT', code: 'PURCH001', groupId: purchasesGroup._id, type: 'Expense', openingBalances: [], createdBy },
+    { companyId: cid, name: 'Opening Purchase A/c', code: 'OPPUR001', groupId: purchasesGroup._id, type: 'Expense', openingBalances: [], createdBy },
     { companyId: cid, name: 'SALARY', code: 'SAL0001', groupId: salaryGroup._id, type: 'Expense', openingBalances: [], createdBy },
+    { companyId: cid, name: 'DAMAGE ACCOUNT', code: 'DMG001', groupId: directExpensesAccGroup._id, type: 'Expense', openingBalances: [], createdBy },
+    { companyId: cid, name: 'STOCK ADJUSTMENT A/C', code: 'STKADJ001', groupId: capitalAccGroup._id, type: 'Other', openingBalances: [], createdBy },
+    { companyId: cid, name: 'SALES RETURNS', code: 'SALRET001', groupId: directExpensesAccGroup._id, type: 'Expense', openingBalances: [], createdBy },
     { companyId: cid, name: 'VAT RECEIVABLE', code: 'VATR001', groupId: dutiesRecvAccGroup._id, type: 'Other', openingBalances: [], createdBy },
     { companyId: cid, name: 'VAT PAYABLE', code: 'VATP001', groupId: dutiesPayAccGroup._id, type: 'Other', openingBalances: [], createdBy },
   ]);

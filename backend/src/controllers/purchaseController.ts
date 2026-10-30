@@ -160,3 +160,48 @@ export async function getProductBatches(
     next(err);
   }
 }
+
+// GET /purchases/report
+export async function getPurchaseReport(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const companyId = (req.query.companyId as string) || req.companyId;
+    if (!companyId) {
+      res.status(400).json({ success: false, message: 'Company ID is required' });
+      return;
+    }
+    const financialYearId = (req.query.financialYearId as string) || req.financialYearId;
+    const {
+      filterType = 'default',
+      purchaseType = 'Purchase',
+      productId,
+      fromDate,
+      toDate,
+      search,
+    } = req.query as {
+      filterType?: any;
+      purchaseType?: string;
+      productId?: string;
+      fromDate?: string;
+      toDate?: string;
+      search?: string;
+    };
+
+    const data = await purchaseService.getPurchaseReport(companyId, financialYearId, {
+      filterType,
+      purchaseType,
+      productId,
+      fromDate,
+      toDate,
+      search,
+    });
+
+    res.json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+}
+

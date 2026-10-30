@@ -2,10 +2,17 @@ import mongoose from 'mongoose';
 import { Product } from '../models/Product';
 import { InventoryTransaction } from '../models/InventoryTransaction';
 import { PurchaseInvoice } from '../models/PurchaseInvoice';
+import { PurchaseOrder } from '../models/PurchaseOrder';
+import { PurchaseReturn } from '../models/PurchaseReturn';
+import { OpeningPurchaseEntry } from '../models/OpeningPurchaseEntry';
+import { Company } from '../models/Company';
 import { BatchSequence } from '../models/BatchSequence';
 import { LedgerAccount } from '../models/LedgerAccount';
 import { LedgerGroup } from '../models/LedgerGroup';
-import { AppError } from '../middlewares/errorHandler';
+import { User } from '../models/User';
+import { ProductCategory } from '../models/ProductCategory';
+import { UnitOfMeasure } from '../models/UnitOfMeasure';
+import { AppError, isDuplicateKeyError } from '../middlewares/errorHandler';
 import * as voucherService from './voucherService';
 import * as billReferenceService from './billReferenceService';
 
@@ -174,9 +181,10 @@ export async function createPurchase(input: CreatePurchaseInput): Promise<{
     const gross = b.quantity * b.purchasePrice;
     const disc = b.discAmount ?? 0;
     totalAmount += gross - disc;
-    const batchNumber = (b.batchNumber?.trim())
-      ? b.batchNumber.trim()
-      : await getNextBatchNumber(input.companyId);
+    const hasBatchOrExpiry = !!(b.batchNumber?.trim() || b.expiryDate);
+    const batchNumber = hasBatchOrExpiry
+      ? (b.batchNumber?.trim() || await getNextBatchNumber(input.companyId))
+      : '';
     batchDocs.push({
       productId: new mongoose.Types.ObjectId(b.productId),
       productCode: b.productCode || '',
@@ -194,11 +202,16 @@ export async function createPurchase(input: CreatePurchaseInput): Promise<{
     });
   }
 
-  await PurchaseInvoice.create({
+  // Ensure unique invoiceNo to avoid duplicate key conflicts
+  let invoiceNo = input.invoiceNo?.trim();
+  if (!invoiceNo || await PurchaseInvoice.exists({ companyId: input.companyId, invoiceNo })) {
+    invoiceNo = await getNextInvoiceNo(input.companyId);
+  }
+
+  const invoicePayload = {
     _id: purchaseId,
     companyId: input.companyId,
     financialYearId: input.financialYearId,
-    invoiceNo: input.invoiceNo,
     supplierInvoiceNo: input.supplierInvoiceNo,
     date: purchaseDate,
     supplierId: input.supplierId ? new mongoose.Types.ObjectId(input.supplierId) : undefined,
@@ -216,7 +229,17 @@ export async function createPurchase(input: CreatePurchaseInput): Promise<{
     freightCharge,
     roundOff,
     createdBy: input.createdBy ? new mongoose.Types.ObjectId(input.createdBy) : undefined,
-  });
+  };
+
+  for (let attempt = 0; attempt < 8; attempt++) {
+    try {
+      await PurchaseInvoice.create({ ...invoicePayload, invoiceNo });
+      break;
+    } catch (err) {
+      if (!isDuplicateKeyError(err) || attempt === 7) throw err;
+      invoiceNo = await getNextInvoiceNo(input.companyId);
+    }
+  }
 
   // 2. Create InventoryTransaction per batch + update product prices
   for (let i = 0; i < input.batches.length; i++) {
@@ -255,6 +278,8 @@ export async function createPurchase(input: CreatePurchaseInput): Promise<{
       quantityIn: stockQtyIn,
       quantityOut: 0,
       costPrice: perPieceCost,
+      taxMode: input.taxMode ?? 'inclusive',
+      batchNumber: batchDoc.batchNumber || undefined,
       referenceType: 'Purchase',
       referenceId: purchaseId,
       narration: `Purchase ${input.invoiceNo}${batchDoc.batchNumber ? ` Batch: ${batchDoc.batchNumber}` : ''}`,
@@ -320,11 +345,11 @@ export async function createPurchase(input: CreatePurchaseInput): Promise<{
 
   // 3. Create voucher/ledger entries — mandatory; rollback purchase if this fails
   try {
-    await createPurchaseVoucher(input.companyId, input.financialYearId, purchaseId.toString(), input.invoiceNo, purchaseDate, input, totalAmount, itemsDiscount, otherDiscount, otherCharges, freightCharge, roundOff);
+    await createPurchaseVoucher(input.companyId, input.financialYearId, purchaseId.toString(), invoiceNo, purchaseDate, input, totalAmount, itemsDiscount, otherDiscount, otherCharges, freightCharge, roundOff);
   } catch (err) {
     await PurchaseInvoice.deleteOne({ _id: purchaseId });
     await InventoryTransaction.deleteMany({ referenceType: 'Purchase', referenceId: purchaseId });
-    console.error(`[Purchase ${input.invoiceNo}] Voucher creation failed — purchase rolled back:`, err);
+    console.error(`[Purchase ${invoiceNo}] Voucher creation failed — purchase rolled back:`, err);
     throw err;
   }
 
@@ -335,22 +360,22 @@ export async function createPurchase(input: CreatePurchaseInput): Promise<{
         companyId: input.companyId,
         financialYearId: input.financialYearId,
         ledgerAccountId: input.supplierId,
-        billNumber: input.invoiceNo,
+        billNumber: invoiceNo,
         referenceType: 'PurchaseInvoice',
         referenceId: purchaseId.toString(),
         date: purchaseDate,
         amount: totalAmount - itemsDiscount + otherCharges + freightCharge + roundOff - otherDiscount,
         drCr: 'Cr',
-        narration: `Purchase ${input.invoiceNo}`,
+        narration: `Purchase ${invoiceNo}`,
       });
     } catch (err) {
-      console.error(`[Purchase ${input.invoiceNo}] Bill reference creation failed:`, err);
+      console.error(`[Purchase ${invoiceNo}] Bill reference creation failed:`, err);
     }
   }
 
   return {
     purchaseId: purchaseId.toString(),
-    invoiceNo: input.invoiceNo,
+    invoiceNo,
     batchCount: input.batches.length,
   };
 }
@@ -404,9 +429,10 @@ export async function updatePurchase(
     const gross = b.quantity * b.purchasePrice;
     const disc = b.discAmount ?? 0;
     totalAmount += gross - disc;
-    const batchNumber = (b.batchNumber?.trim())
-      ? b.batchNumber.trim()
-      : await getNextBatchNumber(input.companyId);
+    const hasBatchOrExpiry = !!(b.batchNumber?.trim() || b.expiryDate);
+    const batchNumber = hasBatchOrExpiry
+      ? (b.batchNumber?.trim() || await getNextBatchNumber(input.companyId))
+      : '';
     batchDocs.push({
       productId: new mongoose.Types.ObjectId(b.productId),
       productCode: b.productCode || '',
@@ -484,6 +510,8 @@ export async function updatePurchase(
       quantityIn: stockQtyIn,
       quantityOut: 0,
       costPrice: perPieceCost,
+      taxMode: input.taxMode ?? 'inclusive',
+      batchNumber: batchDoc.batchNumber || undefined,
       referenceType: 'Purchase',
       referenceId: purchaseId,
       narration: `Purchase ${input.invoiceNo}${batchDoc.batchNumber ? ` Batch: ${batchDoc.batchNumber}` : ''}`,
@@ -809,11 +837,30 @@ export async function listPurchases(
 
 // ─── Get single purchase invoice by ID ────────────────────
 export async function getPurchaseById(id: string) {
-  const doc = await PurchaseInvoice.findById(id)
-    .populate('supplierId', 'name code')
-    .populate('cashAccountId', 'name code')
-    .populate('voucherId', 'voucherNo')
-    .lean();
+  let doc = mongoose.Types.ObjectId.isValid(id)
+    ? await PurchaseInvoice.findById(id)
+        .populate('supplierId', 'name code')
+        .populate('cashAccountId', 'name code')
+        .populate('voucherId', 'voucherNo')
+        .lean()
+    : null;
+
+  if (!doc && mongoose.Types.ObjectId.isValid(id)) {
+    doc = await PurchaseInvoice.findOne({ voucherId: new mongoose.Types.ObjectId(id) })
+      .populate('supplierId', 'name code')
+      .populate('cashAccountId', 'name code')
+      .populate('voucherId', 'voucherNo')
+      .lean();
+  }
+
+  if (!doc) {
+    doc = await PurchaseInvoice.findOne({ invoiceNo: id })
+      .populate('supplierId', 'name code')
+      .populate('cashAccountId', 'name code')
+      .populate('voucherId', 'voucherNo')
+      .lean();
+  }
+
   if (!doc) throw new AppError('Purchase invoice not found', 404);
   return formatPurchaseDoc(doc);
 }
@@ -831,19 +878,25 @@ export async function getPurchaseByInvoiceNo(companyId: string, invoiceNo: strin
 
 // ─── Get next invoice number ──────────────────────────────
 export async function getNextInvoiceNo(companyId: string): Promise<string> {
-  const last = await PurchaseInvoice.findOne({ companyId })
-    .sort({ createdAt: -1 })
+  const docs = await PurchaseInvoice.find({ companyId })
     .select('invoiceNo')
     .lean();
 
-  if (!last) return 'PUR-0001';
-
-  const match = last.invoiceNo.match(/PUR-(\d+)/);
-  if (match) {
-    const next = parseInt(match[1], 10) + 1;
-    return `PUR-${String(next).padStart(4, '0')}`;
+  let maxNum = 0;
+  for (const doc of docs) {
+    if (doc.invoiceNo) {
+      const match = doc.invoiceNo.match(/PUR-(\d+)/i);
+      if (match) {
+        const num = parseInt(match[1], 10);
+        if (num > maxNum) {
+          maxNum = num;
+        }
+      }
+    }
   }
-  return `PUR-${Date.now().toString(36).toUpperCase()}`;
+
+  const nextNum = maxNum + 1;
+  return `PUR-${String(nextNum).padStart(4, '0')}`;
 }
 
 // ─── Helper: format Mongo doc for API response ────────────
@@ -891,9 +944,8 @@ function formatPurchaseDoc(doc: any) {
   };
 }
 
-// ─── Get batches for a specific product across all purchases ─
-// Returns only batches with actual available stock > 0,
-// using FIFO to distribute sold quantities across batches.
+// ─── Get batches for a specific product across all purchases & adjustments ─
+// Accurately tracks per-batch stock from InventoryTransaction records
 export async function getBatchesByProduct(
   companyId: string,
   productId: string
@@ -910,7 +962,7 @@ export async function getBatchesByProduct(
   const companyOid = new mongoose.Types.ObjectId(companyId);
   const productOid = new mongoose.Types.ObjectId(productId);
 
-  // 1. Get raw purchase batches sorted oldest first
+  // 1. Get raw purchase batches for metadata (retail, wholesale, purchasePrice, expiryDate)
   const docs = await PurchaseInvoice.find({
     companyId,
     'batches.productId': productId,
@@ -919,28 +971,26 @@ export async function getBatchesByProduct(
     .sort({ date: 1, createdAt: 1 })
     .lean();
 
-  const rawBatches: {
-    batchNumber: string;
-    productId: string;
-    productName: string;
-    purchasePrice: number;
-    expiryDate: string;
-    purchasedQty: number;
-    retail: number;
-    wholesale: number;
-    date: Date;
-  }[] = [];
+  const batchMetaMap = new Map<
+    string,
+    {
+      productName: string;
+      purchasePrice: number;
+      expiryDate: string;
+      retail: number;
+      wholesale: number;
+      date: Date;
+    }
+  >();
 
   for (const doc of docs) {
     for (const b of doc.batches) {
-      if (b.productId.toString() === productId) {
-        rawBatches.push({
-          batchNumber: b.batchNumber || '',
-          productId: b.productId.toString(),
+      if (b.productId.toString() === productId && b.batchNumber && b.batchNumber.trim()) {
+        const bn = b.batchNumber.trim();
+        batchMetaMap.set(bn, {
           productName: b.productName || '',
           purchasePrice: b.purchasePrice ?? 0,
           expiryDate: b.expiryDate ? new Date(b.expiryDate).toISOString().split('T')[0] : '',
-          purchasedQty: b.quantity ?? 0,
           retail: b.retail ?? 0,
           wholesale: b.wholesale ?? 0,
           date: doc.date,
@@ -949,25 +999,55 @@ export async function getBatchesByProduct(
     }
   }
 
-  if (rawBatches.length === 0) return [];
+  // Also fetch product defaults in case a batch was created in Adjustment/Opening
+  const prodDoc = await Product.findById(productId).select('name retailPrice wholesalePrice purchasePrice').lean();
+  const defaultName = prodDoc?.name || '';
+  const defaultRetail = prodDoc?.retailPrice ?? 0;
+  const defaultWholesale = prodDoc?.wholesalePrice ?? 0;
+  const defaultCost = prodDoc?.purchasePrice ?? 0;
 
-  // 2. Get net stock from InventoryTransaction (totalIn - totalOut)
-  const stockAgg = await InventoryTransaction.aggregate([
+  // 2. Aggregate all InventoryTransaction for this product grouped by batchNumber
+  const txAgg = await InventoryTransaction.aggregate([
     { $match: { companyId: companyOid, productId: productOid } },
     {
       $group: {
-        _id: null,
+        _id: '$batchNumber',
         totalIn: { $sum: '$quantityIn' },
         totalOut: { $sum: '$quantityOut' },
+        lastCost: { $last: '$costPrice' },
       },
     },
   ]);
-  const netStock = stockAgg.length > 0 ? stockAgg[0].totalIn - stockAgg[0].totalOut : 0;
-  const totalPurchased = rawBatches.reduce((sum, b) => sum + b.purchasedQty, 0);
-  const totalSold = totalPurchased - netStock;
 
-  // 3. Distribute sold qty across batches using FIFO (oldest first)
-  let soldRemaining = Math.max(totalSold, 0);
+  // Find all batches that have explicit batchNumber
+  const batchStocks = new Map<string, { totalIn: number; totalOut: number; lastCost: number }>();
+  let unassignedOut = 0;
+  let unassignedIn = 0;
+
+  for (const item of txAgg) {
+    const bn = item._id ? String(item._id).trim() : '';
+    if (bn) {
+      batchStocks.set(bn, {
+        totalIn: item.totalIn || 0,
+        totalOut: item.totalOut || 0,
+        lastCost: item.lastCost || 0,
+      });
+    } else {
+      unassignedOut += item.totalOut || 0;
+      unassignedIn += item.totalIn || 0;
+    }
+  }
+
+  // Also ensure any batch from PurchaseInvoice is in batchStocks even if 0 transactions
+  for (const [bn] of batchMetaMap) {
+    if (!batchStocks.has(bn)) {
+      batchStocks.set(bn, { totalIn: 0, totalOut: 0, lastCost: 0 });
+    }
+  }
+
+  if (batchStocks.size === 0) return [];
+
+  // Build result list
   const result: {
     batchNumber: string;
     productId: string;
@@ -979,99 +1059,1014 @@ export async function getBatchesByProduct(
     wholesale: number;
   }[] = [];
 
-  for (const b of rawBatches) {
-    const soldFromBatch = Math.min(b.purchasedQty, soldRemaining);
-    const availableQty = b.purchasedQty - soldFromBatch;
-    soldRemaining -= soldFromBatch;
+  for (const [bn, stock] of batchStocks) {
+    const meta = batchMetaMap.get(bn);
+    const netQty = stock.totalIn - stock.totalOut;
 
-    // Only include batches that still have stock
-    if (availableQty > 0) {
-      result.push({
-        batchNumber: b.batchNumber,
-        productId: b.productId,
-        productName: b.productName,
-        purchasePrice: b.purchasePrice,
-        expiryDate: b.expiryDate,
-        quantity: availableQty,
-        retail: b.retail,
-        wholesale: b.wholesale,
-      });
+    result.push({
+      batchNumber: bn,
+      productId,
+      productName: meta?.productName || defaultName,
+      purchasePrice: meta?.purchasePrice || stock.lastCost || defaultCost,
+      expiryDate: meta?.expiryDate || '',
+      quantity: netQty,
+      retail: meta?.retail || defaultRetail,
+      wholesale: meta?.wholesale || defaultWholesale,
+    });
+  }
+
+  // If there are unassigned transactions without batchNumber, deduct unassigned net out FIFO
+  let netUnassignedOut = unassignedOut - unassignedIn;
+  if (netUnassignedOut > 0) {
+    for (const b of result) {
+      if (netUnassignedOut <= 0) break;
+      const deduct = Math.min(b.quantity, netUnassignedOut);
+      b.quantity -= deduct;
+      netUnassignedOut -= deduct;
     }
   }
 
-  // 4. Handle excess stock from sales returns:
-  //    When returns push netStock above totalPurchased, find which batch each
-  //    return belongs to and add the excess to that specific batch.
-  if (totalSold < 0) {
-    const excessStock = Math.abs(totalSold);
+  // Return batches that have available stock > 0
+  return result.filter((b) => b.quantity > 0);
+}
 
-    // Query SalesReturn transactions for this product to find per-batch return quantities
-    const returnAgg = await InventoryTransaction.aggregate([
-      {
-        $match: {
-          companyId: companyOid,
-          productId: productOid,
-          type: 'SalesReturn',
-          quantityIn: { $gt: 0 },
-        },
-      },
-      {
-        $group: {
-          _id: '$batchNumber',
-          totalReturned: { $sum: '$quantityIn' },
-        },
-      },
-    ]);
+// ─── Purchase Report Service ───────────────────────────────
+export interface PurchaseReportFilterOpts {
+  filterType?: 'default' | 'product' | 'product_total' | 'month' | 'daily' | 'monthly';
+  purchaseType?: 'Purchase' | 'PurchaseOrder' | 'PurchaseReturn' | 'OpeningStock' | 'OpeningPurchase' | string;
+  productId?: string;
+  fromDate?: string;
+  toDate?: string;
+  search?: string;
+}
 
-    let excessRemaining = excessStock;
-    for (const ret of returnAgg) {
-      if (excessRemaining <= 0) break;
-      const retBatch = ret._id || ''; // batchNumber from the return
-      const retQty = Math.min(ret.totalReturned, excessRemaining);
+interface NormalizedDoc {
+  _id: string;
+  invoiceNo: string;
+  supplierInvoiceNo: string;
+  date: Date;
+  supplierName: string;
+  paymentType: string;
+  cashAccount: string;
+  vatType: 'Vat' | 'NonVat';
+  taxMode: 'inclusive' | 'exclusive';
+  totalAmount: number;
+  itemsDiscount: number;
+  otherDiscount: number;
+  freightCharge: number;
+  otherCharges: number;
+  roundOff: number;
+  user: string;
+  location: string;
+  purchaseType: string;
+  batches: Array<{
+    productId?: any;
+    productCode?: string;
+    productName?: string;
+    batchNumber?: string;
+    purchasePrice?: number;
+    quantity?: number;
+    discAmount?: number;
+    expiryDate?: Date;
+    retail?: number;
+    wholesale?: number;
+  }>;
+}
 
-      // Find the matching batch in the result
-      const matchIdx = result.findIndex((r) => r.batchNumber === retBatch);
-      if (matchIdx >= 0) {
-        result[matchIdx].quantity += retQty;
-        excessRemaining -= retQty;
-      } else {
-        // Batch was fully sold out but returns brought stock back — find it in rawBatches
-        const rawMatch = rawBatches.find((b) => b.batchNumber === retBatch);
-        if (rawMatch) {
-          result.push({
-            batchNumber: rawMatch.batchNumber,
-            productId: rawMatch.productId,
-            productName: rawMatch.productName,
-            purchasePrice: rawMatch.purchasePrice,
-            expiryDate: rawMatch.expiryDate,
-            quantity: retQty,
-            retail: rawMatch.retail,
-            wholesale: rawMatch.wholesale,
-          });
-          excessRemaining -= retQty;
+export async function getPurchaseReport(
+  companyId: string,
+  financialYearId?: string,
+  opts: PurchaseReportFilterOpts = {}
+) {
+  const filterType = opts.filterType || 'default';
+  const pType = opts.purchaseType || 'Purchase';
+  const filter: Record<string, unknown> = {
+    companyId: new mongoose.Types.ObjectId(companyId),
+  };
+
+  if (financialYearId && mongoose.Types.ObjectId.isValid(financialYearId)) {
+    filter.financialYearId = new mongoose.Types.ObjectId(financialYearId);
+  }
+
+  if (opts.fromDate || opts.toDate) {
+    const dateFilter: Record<string, Date> = {};
+    if (opts.fromDate) {
+      const from = new Date(opts.fromDate);
+      from.setHours(0, 0, 0, 0);
+      dateFilter.$gte = from;
+    }
+    if (opts.toDate) {
+      const to = new Date(opts.toDate);
+      to.setHours(23, 59, 59, 999);
+      dateFilter.$lte = to;
+    }
+    filter.date = dateFilter;
+  }
+
+  // Fetch company default location
+  let defaultLocation = 'Main Location';
+  try {
+    const comp = await Company.findById(companyId).select('name location').lean();
+    if (comp?.location) defaultLocation = comp.location;
+  } catch {}
+
+  // Load and normalize source documents based on purchaseType
+  let docs: NormalizedDoc[] = [];
+
+  if (pType === 'PurchaseOrder') {
+    const rawList = await PurchaseOrder.find(filter)
+      .populate('supplierId', 'name code')
+      .populate('createdBy', 'fullName username')
+      .sort({ date: -1, createdAt: -1 })
+      .lean();
+
+    docs = rawList.map((po: any) => {
+      const supplier = po.supplierId as any;
+      const supplierName = po.supplierName || supplier?.name || 'Supplier';
+      const userObj = po.createdBy as any;
+      const user = userObj?.fullName || userObj?.username || 'Admin';
+
+      return {
+        _id: po._id.toString(),
+        invoiceNo: po.invoiceNo || '',
+        supplierInvoiceNo: po.supplierInvoiceNo || '',
+        date: po.date,
+        supplierName,
+        paymentType: '',
+        cashAccount: '',
+        vatType: (po.vatType || 'Vat') as any,
+        taxMode: (po.taxMode || 'inclusive') as any,
+        totalAmount: Number(po.totalAmount || 0),
+        itemsDiscount: Number(po.itemsDiscount || 0),
+        otherDiscount: Number(po.otherDiscount || 0),
+        freightCharge: Number(po.freightCharge || 0),
+        otherCharges: Number(po.otherCharges || 0),
+        roundOff: Number(po.roundOff || 0),
+        user,
+        location: defaultLocation,
+        purchaseType: 'PurchaseOrder',
+        batches: (po.batches || []).map((b: any) => ({
+          productId: b.productId,
+          productCode: b.productCode,
+          productName: b.productName,
+          batchNumber: b.batchNumber,
+          purchasePrice: b.purchasePrice,
+          quantity: b.quantity,
+          discAmount: b.discAmount,
+          expiryDate: b.expiryDate,
+          retail: b.retail,
+          wholesale: b.wholesale,
+        })),
+      };
+    });
+  } else if (pType === 'PurchaseReturn') {
+    const rawList = await PurchaseReturn.find(filter)
+      .populate('supplierId', 'name code')
+      .populate('cashAccountId', 'name code')
+      .populate('createdBy', 'fullName username')
+      .sort({ date: -1, createdAt: -1 })
+      .lean();
+
+    docs = rawList.map((pr: any) => {
+      const supplier = pr.supplierId as any;
+      const supplierName = pr.supplierName || supplier?.name || 'Supplier';
+      const userObj = pr.createdBy as any;
+      const user = userObj?.fullName || userObj?.username || 'Admin';
+      const cashAccount = (pr.cashAccountId as any)?.name || '';
+
+      return {
+        _id: pr._id.toString(),
+        invoiceNo: pr.invoiceNo || '',
+        supplierInvoiceNo: pr.supplierInvoiceNo || '',
+        date: pr.date,
+        supplierName,
+        paymentType: pr.returnType || 'Return',
+        cashAccount,
+        vatType: (pr.vatType || 'Vat') as any,
+        taxMode: (pr.taxMode || 'inclusive') as any,
+        totalAmount: Number(pr.totalAmount || 0),
+        itemsDiscount: Number(pr.itemsDiscount || 0),
+        otherDiscount: Number(pr.otherDiscount || 0),
+        freightCharge: Number(pr.freightCharge || 0),
+        otherCharges: Number(pr.otherCharges || 0),
+        roundOff: Number(pr.roundOff || 0),
+        user,
+        location: defaultLocation,
+        purchaseType: 'PurchaseReturn',
+        batches: (pr.items || []).map((it: any) => ({
+          productId: it.productId,
+          productCode: it.productCode,
+          productName: it.productName,
+          batchNumber: it.batchNumber,
+          purchasePrice: it.purchasePrice,
+          quantity: it.quantity,
+          discAmount: it.discAmount,
+          expiryDate: undefined,
+          retail: 0,
+          wholesale: 0,
+        })),
+      };
+    });
+  } else if (pType === 'OpeningStock' || pType === 'OpeningPurchase') {
+    const rawList = await OpeningPurchaseEntry.find(filter)
+      .populate('createdBy', 'fullName username')
+      .sort({ date: -1, createdAt: -1 })
+      .lean();
+
+    docs = rawList.map((os: any) => {
+      const userObj = os.createdBy as any;
+      const user = userObj?.fullName || userObj?.username || 'Admin';
+
+      return {
+        _id: os._id.toString(),
+        invoiceNo: os.entryNo || '',
+        supplierInvoiceNo: '',
+        date: os.date,
+        supplierName: '',
+        paymentType: '',
+        cashAccount: '',
+        vatType: (os.vatType || 'NonVat') as any,
+        taxMode: (os.taxMode || 'inclusive') as any,
+        totalAmount: Number(os.totalAmount || 0),
+        itemsDiscount: 0,
+        otherDiscount: 0,
+        freightCharge: 0,
+        otherCharges: 0,
+        roundOff: 0,
+        user,
+        location: defaultLocation,
+        purchaseType: 'OpeningPurchase',
+        batches: (os.batches || []).map((b: any) => ({
+          productId: b.productId,
+          productCode: b.productCode,
+          productName: b.productName,
+          batchNumber: b.batchNumber,
+          purchasePrice: b.purchasePrice,
+          quantity: b.quantity,
+          discAmount: b.discAmount,
+          expiryDate: b.expiryDate,
+          retail: b.retail,
+          wholesale: b.wholesale,
+        })),
+      };
+    });
+  } else {
+    // Default: Purchase Entry (PurchaseInvoice)
+    const rawList = await PurchaseInvoice.find(filter)
+      .populate('supplierId', 'name code')
+      .populate('cashAccountId', 'name code')
+      .populate('createdBy', 'fullName username')
+      .sort({ date: -1, createdAt: -1 })
+      .lean();
+
+    docs = rawList.map((inv: any) => {
+      const supplier = inv.supplierId as any;
+      const supplierName = inv.supplierName || supplier?.name || 'Cash Supplier';
+      const userObj = inv.createdBy as any;
+      const user = userObj?.fullName || userObj?.username || 'Admin';
+      const cashAccount = (inv.cashAccountId as any)?.name || '';
+
+      return {
+        _id: inv._id.toString(),
+        invoiceNo: inv.invoiceNo || '',
+        supplierInvoiceNo: inv.supplierInvoiceNo || '',
+        date: inv.date,
+        supplierName,
+        paymentType: inv.paymentType || 'Credit',
+        cashAccount,
+        vatType: (inv.vatType || 'Vat') as any,
+        taxMode: (inv.taxMode || 'inclusive') as any,
+        totalAmount: Number(inv.totalAmount || 0),
+        itemsDiscount: Number(inv.itemsDiscount || 0),
+        otherDiscount: Number(inv.otherDiscount || 0),
+        freightCharge: Number(inv.freightCharge || 0),
+        otherCharges: Number(inv.otherCharges || 0),
+        roundOff: Number(inv.roundOff || 0),
+        user,
+        location: defaultLocation,
+        purchaseType: 'Purchase',
+        batches: (inv.batches || []).map((b: any) => ({
+          productId: b.productId,
+          productCode: b.productCode,
+          productName: b.productName,
+          batchNumber: b.batchNumber,
+          purchasePrice: b.purchasePrice,
+          quantity: b.quantity,
+          discAmount: b.discAmount,
+          expiryDate: b.expiryDate,
+          retail: b.retail,
+          wholesale: b.wholesale,
+        })),
+      };
+    });
+  }
+
+  // 1. DEFAULT VIEW: PURCHASE INVOICE WISE
+  if (filterType === 'default') {
+    let rows = docs.map((inv) => {
+      const invIdStr = inv._id;
+      const supplierName = inv.supplierName;
+      const user = inv.user;
+      const cashAccount = inv.cashAccount;
+
+      const isVat = (inv.vatType || 'Vat') === 'Vat';
+      const taxMode = inv.taxMode ?? 'inclusive';
+      const grandTotal = Number(inv.totalAmount || 0);
+      const itemsDiscount = Number(inv.itemsDiscount || 0);
+      const otherDiscount = Number(inv.otherDiscount || 0);
+      const totalDiscount = itemsDiscount + otherDiscount;
+      const freightCharge = Number(inv.freightCharge || 0);
+      const otherCharge = Number(inv.otherCharges || 0);
+      const roundoff = Number(inv.roundOff || 0);
+
+      // Compute sum of batches
+      let batchGrossSum = 0;
+      let totalQty = 0;
+      for (const b of (inv.batches || [])) {
+        const q = Number(b.quantity || 0);
+        const p = Number(b.purchasePrice || 0);
+        totalQty += q;
+        batchGrossSum += q * p;
+      }
+
+      // Calculate VAT
+      let itemsVat = 0;
+      if (isVat) {
+        if (taxMode === 'inclusive') {
+          itemsVat = parseFloat(((grandTotal * 5) / 105).toFixed(2));
+        } else {
+          itemsVat = parseFloat(((grandTotal * 5) / 100).toFixed(2));
         }
       }
+      const netAdjustments = otherCharge + freightCharge + roundoff - otherDiscount;
+      const vatFromAdjustments = isVat && netAdjustments !== 0
+        ? parseFloat(((netAdjustments * 5) / 105).toFixed(2))
+        : 0;
+      const vatAmount = parseFloat((itemsVat + vatFromAdjustments).toFixed(2));
+
+      const grossAmount = (taxMode === 'inclusive' && isVat)
+        ? grandTotal - vatAmount + totalDiscount - otherCharge - freightCharge - roundoff
+        : grandTotal + totalDiscount - otherCharge - freightCharge - roundoff;
+
+      return {
+        _id: invIdStr,
+        invoiceId: invIdStr,
+        entryNumber: inv.invoiceNo,
+        supplierInvoiceNo: inv.supplierInvoiceNo || '',
+        date: inv.date,
+        supplierName,
+        paymentType: inv.paymentType,
+        grossAmount: Number((batchGrossSum > 0 ? batchGrossSum : grossAmount).toFixed(2)),
+        itemsDiscount: Number(itemsDiscount.toFixed(2)),
+        otherDiscount: Number(otherDiscount.toFixed(2)),
+        totalDiscount: Number(totalDiscount.toFixed(2)),
+        freightCharge: Number(freightCharge.toFixed(2)),
+        otherCharge: Number(otherCharge.toFixed(2)),
+        vatAmount: Number(vatAmount.toFixed(2)),
+        roundoff: Number(roundoff.toFixed(2)),
+        grandTotal: Number(grandTotal.toFixed(2)),
+        itemCount: inv.batches?.length || 0,
+        totalQuantity: Number(totalQty.toFixed(2)),
+        user,
+        location: inv.location,
+        cashAccount,
+        vatType: inv.vatType || 'Vat',
+        taxMode,
+        purchaseType: inv.purchaseType,
+      };
+    });
+
+    if (opts.search && opts.search.trim()) {
+      const q = opts.search.trim().toLowerCase();
+      rows = rows.filter(
+        (r) =>
+          r.entryNumber.toLowerCase().includes(q) ||
+          r.supplierInvoiceNo.toLowerCase().includes(q) ||
+          r.supplierName.toLowerCase().includes(q) ||
+          r.user.toLowerCase().includes(q) ||
+          (r.location && r.location.toLowerCase().includes(q)) ||
+          (r.cashAccount && r.cashAccount.toLowerCase().includes(q))
+      );
     }
 
-    // If any excess still remains (e.g. old returns without batchNumber), add to newest batch
-    if (excessRemaining > 0) {
-      if (result.length > 0) {
-        result[result.length - 1].quantity += excessRemaining;
-      } else if (rawBatches.length > 0) {
-        const newest = rawBatches[rawBatches.length - 1];
-        result.push({
-          batchNumber: newest.batchNumber,
-          productId: newest.productId,
-          productName: newest.productName,
-          purchasePrice: newest.purchasePrice,
-          expiryDate: newest.expiryDate,
-          quantity: excessRemaining,
-          retail: newest.retail,
-          wholesale: newest.wholesale,
-        });
-      }
-    }
+    return { filterType: 'default', purchaseType: pType, rows };
   }
 
-  return result;
+  // 2. PRODUCT WISE: DETAILED TRANSACTIONS
+  if (filterType === 'product') {
+    const isSpecific = Boolean(
+      opts.productId && opts.productId !== 'ALL' && mongoose.Types.ObjectId.isValid(opts.productId)
+    );
+
+    // Collect all unique product IDs from normalized docs
+    const productIdSet = new Set<string>();
+    for (const inv of docs) {
+      for (const b of (inv.batches || [])) {
+        if (b.productId) productIdSet.add(b.productId.toString());
+      }
+    }
+
+    const products = await Product.find({ _id: { $in: Array.from(productIdSet) } })
+      .populate('unitOfMeasureId', 'name shortCode')
+      .populate('categoryId', 'name code')
+      .lean();
+    const prodMap = new Map(products.map((p) => [p._id.toString(), p]));
+
+    let rows: any[] = [];
+    for (const inv of docs) {
+      const supplierName = inv.supplierName;
+      const isVat = (inv.vatType || 'Vat') === 'Vat';
+      const taxMode = inv.taxMode ?? 'inclusive';
+
+      (inv.batches || []).forEach((b: any, idx: number) => {
+        const prodIdStr = b.productId?.toString() || '';
+        if (isSpecific && prodIdStr !== opts.productId) return;
+
+        const prod = prodMap.get(prodIdStr) as any;
+        const uom = prod?.unitOfMeasureId;
+        const unit = prod?.packageUnit || uom?.shortCode || uom?.name || 'Pcs';
+        const category = prod?.categoryId as any;
+        const categoryName = category?.name || '';
+        const brand = prod?.brand || '';
+
+        const qty = Number(b.quantity || 0);
+        const rate = Number(b.purchasePrice || 0);
+        const disc = Number(b.discAmount || 0);
+        const gross = qty * rate;
+        const net = Math.max(gross - disc, 0);
+
+        let lineVat = 0;
+        if (isVat) {
+          lineVat = taxMode === 'exclusive' ? (net * 0.05) : ((net * 5) / 105);
+        }
+        const lineTotal = taxMode === 'exclusive' && isVat ? net + lineVat : net;
+
+        rows.push({
+          _id: `${inv._id}_${idx}`,
+          invoiceId: inv._id,
+          productId: prodIdStr,
+          date: inv.date,
+          invNumber: inv.invoiceNo,
+          supplierInvoiceNo: inv.supplierInvoiceNo || '',
+          supplierName,
+          paymentType: inv.paymentType,
+          productCode: b.productCode || prod?.code || prod?.sku || '',
+          productName: b.productName || prod?.name || '',
+          productBarcode: prod?.systemBarcode || prod?.internationalBarcode || prod?.sku || '',
+          productOfficialName: prod?.genericName || prod?.officialCode || '',
+          batchNumber: b.batchNumber || '',
+          expiryDate: b.expiryDate ? new Date(b.expiryDate).toISOString().split('T')[0] : '',
+          category: categoryName,
+          brand,
+          unit,
+          qty: Number(qty.toFixed(2)),
+          purchasePrice: Number(rate.toFixed(2)),
+          discount: Number(disc.toFixed(2)),
+          grossAmount: Number(gross.toFixed(2)),
+          netAmount: Number(net.toFixed(2)),
+          vat: Number(lineVat.toFixed(2)),
+          totalAmount: Number(lineTotal.toFixed(2)),
+          retail: Number((b.retail || prod?.retailPrice || 0).toFixed(2)),
+          wholesale: Number((b.wholesale || prod?.wholesalePrice || 0).toFixed(2)),
+          location: inv.location,
+          purchaseType: inv.purchaseType,
+        });
+      });
+    }
+
+    // Sort by date descending
+    rows.sort((a, b) => {
+      const timeA = a.date ? new Date(a.date).getTime() : 0;
+      const timeB = b.date ? new Date(b.date).getTime() : 0;
+      return timeB - timeA;
+    });
+
+    if (opts.search && opts.search.trim()) {
+      const q = opts.search.trim().toLowerCase();
+      rows = rows.filter(
+        (r) =>
+          r.invNumber.toLowerCase().includes(q) ||
+          r.supplierInvoiceNo.toLowerCase().includes(q) ||
+          r.supplierName.toLowerCase().includes(q) ||
+          r.productName.toLowerCase().includes(q) ||
+          r.productCode.toLowerCase().includes(q) ||
+          r.productBarcode.toLowerCase().includes(q) ||
+          r.productOfficialName.toLowerCase().includes(q) ||
+          r.batchNumber.toLowerCase().includes(q) ||
+          (r.category && r.category.toLowerCase().includes(q)) ||
+          (r.brand && r.brand.toLowerCase().includes(q))
+      );
+    }
+
+    return { filterType: 'product', purchaseType: pType, isSpecificProduct: isSpecific, rows };
+  }
+
+  // 3. PRODUCT WISE TOTAL: AGGREGATED PRODUCT TOTALS FOR PERIOD
+  if (filterType === 'product_total') {
+    const isSpecific = Boolean(
+      opts.productId && opts.productId !== 'ALL' && mongoose.Types.ObjectId.isValid(opts.productId)
+    );
+
+    const productIdSet = new Set<string>();
+    for (const inv of docs) {
+      for (const b of (inv.batches || [])) {
+        if (b.productId) productIdSet.add(b.productId.toString());
+      }
+    }
+
+    const products = await Product.find({ _id: { $in: Array.from(productIdSet) } })
+      .populate('unitOfMeasureId', 'name shortCode')
+      .populate('categoryId', 'name code')
+      .lean();
+    const prodMetaMap = new Map(products.map((p) => [p._id.toString(), p]));
+
+    const prodSummaryMap: Record<string, any> = {};
+
+    for (const inv of docs) {
+      const supplierName = inv.supplierName;
+      const isVat = (inv.vatType || 'Vat') === 'Vat';
+      const taxMode = inv.taxMode ?? 'inclusive';
+
+      for (const b of (inv.batches || [])) {
+        const prodIdStr = b.productId?.toString() || '';
+        if (!prodIdStr) continue;
+        if (isSpecific && prodIdStr !== opts.productId) continue;
+
+        const prod = prodMetaMap.get(prodIdStr) as any;
+        const uom = prod?.unitOfMeasureId;
+        const unit = prod?.packageUnit || uom?.shortCode || uom?.name || 'Pcs';
+        const category = prod?.categoryId as any;
+        const categoryName = category?.name || '';
+        const brand = prod?.brand || '';
+
+        if (!prodSummaryMap[prodIdStr]) {
+          prodSummaryMap[prodIdStr] = {
+            productId: prodIdStr,
+            productCode: b.productCode || prod?.code || prod?.sku || '',
+            productName: b.productName || prod?.name || '',
+            productBarcode: prod?.systemBarcode || prod?.internationalBarcode || prod?.sku || '',
+            productOfficialName: prod?.genericName || prod?.officialCode || '',
+            category: categoryName,
+            brand,
+            supplierNames: new Set<string>(),
+            unit,
+            qty: 0,
+            grossAmount: 0,
+            discount: 0,
+            vat: 0,
+            totalAmount: 0,
+            invoiceIds: new Set<string>(),
+          };
+        }
+
+        if (supplierName) prodSummaryMap[prodIdStr].supplierNames.add(supplierName);
+        prodSummaryMap[prodIdStr].invoiceIds.add(inv._id);
+
+        const qty = Number(b.quantity || 0);
+        const rate = Number(b.purchasePrice || 0);
+        const disc = Number(b.discAmount || 0);
+        const gross = qty * rate;
+        const net = Math.max(gross - disc, 0);
+
+        let lineVat = 0;
+        if (isVat) {
+          lineVat = taxMode === 'exclusive' ? (net * 0.05) : ((net * 5) / 105);
+        }
+        const lineTotal = taxMode === 'exclusive' && isVat ? net + lineVat : net;
+
+        prodSummaryMap[prodIdStr].qty += qty;
+        prodSummaryMap[prodIdStr].grossAmount += gross;
+        prodSummaryMap[prodIdStr].discount += disc;
+        prodSummaryMap[prodIdStr].vat += lineVat;
+        prodSummaryMap[prodIdStr].totalAmount += lineTotal;
+      }
+    }
+
+    let rows = Object.values(prodSummaryMap).map((r: any) => {
+      const sNames = Array.from(r.supplierNames as Set<string>);
+      const qty = Number(r.qty.toFixed(2));
+      const totalAmount = Number(r.totalAmount.toFixed(2));
+      const avgPrice = qty > 0 ? Number((totalAmount / qty).toFixed(2)) : 0;
+
+      return {
+        productId: r.productId,
+        productCode: r.productCode,
+        productName: r.productName,
+        productBarcode: r.productBarcode,
+        productOfficialName: r.productOfficialName,
+        category: r.category,
+        brand: r.brand,
+        supplierNames: sNames,
+        supplierName: sNames.join(', '),
+        unit: r.unit,
+        qty,
+        avgPurchasePrice: avgPrice,
+        grossAmount: Number(r.grossAmount.toFixed(2)),
+        discount: Number(r.discount.toFixed(2)),
+        vat: Number(r.vat.toFixed(2)),
+        totalAmount,
+        invoiceCount: (r.invoiceIds as Set<string>).size,
+      };
+    });
+
+    // Sort by total amount descending
+    rows.sort((a, b) => b.totalAmount - a.totalAmount);
+
+    if (opts.search && opts.search.trim()) {
+      const q = opts.search.trim().toLowerCase();
+      rows = rows.filter(
+        (r) =>
+          r.productCode.toLowerCase().includes(q) ||
+          r.productName.toLowerCase().includes(q) ||
+          r.productBarcode.toLowerCase().includes(q) ||
+          r.productOfficialName.toLowerCase().includes(q) ||
+          (r.category && r.category.toLowerCase().includes(q)) ||
+          (r.brand && r.brand.toLowerCase().includes(q)) ||
+          (r.supplierName && r.supplierName.toLowerCase().includes(q))
+      );
+    }
+
+    return { filterType: 'product_total', purchaseType: pType, isSpecificProduct: false, rows };
+  }
+
+  // 4. MONTH WISE ITEMS
+  if (filterType === 'month') {
+    const isSpecific = Boolean(
+      opts.productId && opts.productId !== 'ALL' && mongoose.Types.ObjectId.isValid(opts.productId)
+    );
+
+    const productIdSet = new Set<string>();
+    for (const inv of docs) {
+      for (const b of (inv.batches || [])) {
+        if (b.productId) productIdSet.add(b.productId.toString());
+      }
+    }
+
+    const products = await Product.find({ _id: { $in: Array.from(productIdSet) } })
+      .populate('categoryId', 'name code')
+      .lean();
+    const prodMetaMap = new Map(products.map((p) => [p._id.toString(), p]));
+
+    const monthKeySet = new Set<string>();
+    const prodMap: Record<string, any> = {};
+
+    for (const inv of docs) {
+      if (!inv.date) continue;
+      const d = new Date(inv.date);
+      if (isNaN(d.getTime())) continue;
+      const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      monthKeySet.add(monthKey);
+
+      const supplierName = inv.supplierName;
+      const isVat = (inv.vatType || 'Vat') === 'Vat';
+      const taxMode = inv.taxMode ?? 'inclusive';
+
+      for (const b of (inv.batches || [])) {
+        const prodIdStr = b.productId?.toString() || '';
+        if (!prodIdStr) continue;
+        if (isSpecific && prodIdStr !== opts.productId) continue;
+
+        const prod = prodMetaMap.get(prodIdStr) as any;
+        const category = prod?.categoryId as any;
+        const categoryName = category?.name || '';
+        const brand = prod?.brand || '';
+
+        if (!prodMap[prodIdStr]) {
+          prodMap[prodIdStr] = {
+            productId: prodIdStr,
+            productCode: b.productCode || prod?.code || prod?.sku || '',
+            productName: b.productName || prod?.name || '',
+            itemName: b.productName || prod?.name || '',
+            barcode: prod?.systemBarcode || prod?.internationalBarcode || prod?.sku || '',
+            productBarcode: prod?.systemBarcode || prod?.internationalBarcode || prod?.sku || '',
+            officialName: prod?.genericName || prod?.officialCode || '',
+            productOfficialName: prod?.genericName || prod?.officialCode || '',
+            category: categoryName,
+            brand,
+            supplierNames: new Set<string>(),
+            monthlyData: {},
+            totalQty: 0,
+            totalAmount: 0,
+          };
+        }
+
+        if (supplierName) prodMap[prodIdStr].supplierNames.add(supplierName);
+        if (!prodMap[prodIdStr].monthlyData[monthKey]) {
+          prodMap[prodIdStr].monthlyData[monthKey] = { qty: 0, amount: 0 };
+        }
+
+        const qty = Number(b.quantity || 0);
+        const rate = Number(b.purchasePrice || 0);
+        const disc = Number(b.discAmount || 0);
+        const net = Math.max(qty * rate - disc, 0);
+
+        let lineVat = 0;
+        if (isVat) {
+          lineVat = taxMode === 'exclusive' ? (net * 0.05) : ((net * 5) / 105);
+        }
+        const lineTotal = taxMode === 'exclusive' && isVat ? net + lineVat : net;
+
+        prodMap[prodIdStr].monthlyData[monthKey].qty += qty;
+        prodMap[prodIdStr].monthlyData[monthKey].amount += lineTotal;
+        prodMap[prodIdStr].totalQty += qty;
+        prodMap[prodIdStr].totalAmount += lineTotal;
+      }
+    }
+
+    const sortedMonthKeys = Array.from(monthKeySet).sort();
+    const months = sortedMonthKeys.map((key) => {
+      const [year, month] = key.split('-').map(Number);
+      const dateObj = new Date(year, month - 1, 1);
+      const label = dateObj.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+      return { key, label };
+    });
+
+    let rows = Object.values(prodMap).map((p: any) => {
+      const sNames = Array.from(p.supplierNames as Set<string>);
+      const roundedMonthly: Record<string, { qty: number; amount: number }> = {};
+      for (const m of sortedMonthKeys) {
+        const val = p.monthlyData[m] || { qty: 0, amount: 0 };
+        roundedMonthly[m] = {
+          qty: Number(val.qty.toFixed(2)),
+          amount: Number(val.amount.toFixed(2)),
+        };
+      }
+
+      return {
+        productId: p.productId,
+        productCode: p.productCode,
+        productName: p.productName,
+        itemName: p.itemName,
+        barcode: p.barcode,
+        productBarcode: p.productBarcode,
+        officialName: p.officialName,
+        productOfficialName: p.productOfficialName,
+        category: p.category,
+        brand: p.brand,
+        supplierNames: sNames,
+        supplierName: sNames.join(', '),
+        monthlyData: roundedMonthly,
+        totalQty: Number(p.totalQty.toFixed(2)),
+        totalAmount: Number(p.totalAmount.toFixed(2)),
+      };
+    });
+
+    if (opts.search && opts.search.trim()) {
+      const q = opts.search.trim().toLowerCase();
+      rows = rows.filter(
+        (r) =>
+          r.itemName.toLowerCase().includes(q) ||
+          r.barcode.toLowerCase().includes(q) ||
+          r.officialName.toLowerCase().includes(q) ||
+          (r.category && r.category.toLowerCase().includes(q)) ||
+          (r.brand && r.brand.toLowerCase().includes(q)) ||
+          (r.supplierName && r.supplierName.toLowerCase().includes(q))
+      );
+    }
+
+    return { filterType: 'month', purchaseType: pType, months, rows };
+  }
+
+  // 5. DAILY WISE: AGGREGATED DAILY TOTALS
+  if (filterType === 'daily') {
+    const dayMap: Record<string, any> = {};
+
+    for (const inv of docs) {
+      let dayKey = 'Unknown';
+      if (inv.date) {
+        const d = new Date(inv.date);
+        if (!isNaN(d.getTime())) {
+          const y = d.getFullYear();
+          const m = String(d.getMonth() + 1).padStart(2, '0');
+          const day = String(d.getDate()).padStart(2, '0');
+          dayKey = `${y}-${m}-${day}`;
+        }
+      }
+
+      if (!dayMap[dayKey]) {
+        dayMap[dayKey] = {
+          _id: dayKey,
+          date: dayKey,
+          grossAmount: 0,
+          itemsDiscount: 0,
+          otherDiscount: 0,
+          totalDiscount: 0,
+          freightCharge: 0,
+          otherCharge: 0,
+          vatAmount: 0,
+          roundoff: 0,
+          grandTotal: 0,
+          totalQuantity: 0,
+          invoiceCount: 0,
+          cashPaid: 0,
+          creditAmount: 0,
+        };
+      }
+
+      const isVat = (inv.vatType || 'Vat') === 'Vat';
+      const taxMode = inv.taxMode ?? 'inclusive';
+      const grandTotal = Number(inv.totalAmount || 0);
+      const itemsDiscount = Number(inv.itemsDiscount || 0);
+      const otherDiscount = Number(inv.otherDiscount || 0);
+      const totalDiscount = itemsDiscount + otherDiscount;
+      const freightCharge = Number(inv.freightCharge || 0);
+      const otherCharge = Number(inv.otherCharges || 0);
+      const roundoff = Number(inv.roundOff || 0);
+
+      let batchGrossSum = 0;
+      let totalQty = 0;
+      for (const b of (inv.batches || [])) {
+        const q = Number(b.quantity || 0);
+        const p = Number(b.purchasePrice || 0);
+        totalQty += q;
+        batchGrossSum += q * p;
+      }
+
+      let itemsVat = 0;
+      if (isVat) {
+        if (taxMode === 'inclusive') {
+          itemsVat = parseFloat(((grandTotal * 5) / 105).toFixed(2));
+        } else {
+          itemsVat = parseFloat(((grandTotal * 5) / 100).toFixed(2));
+        }
+      }
+      const netAdjustments = otherCharge + freightCharge + roundoff - otherDiscount;
+      const vatFromAdjustments = isVat && netAdjustments !== 0
+        ? parseFloat(((netAdjustments * 5) / 105).toFixed(2))
+        : 0;
+      const vatAmount = parseFloat((itemsVat + vatFromAdjustments).toFixed(2));
+
+      const grossAmount = batchGrossSum > 0 ? batchGrossSum : (grandTotal + totalDiscount - otherCharge - freightCharge - roundoff);
+
+      const dRecord = dayMap[dayKey];
+      dRecord.grossAmount += grossAmount;
+      dRecord.itemsDiscount += itemsDiscount;
+      dRecord.otherDiscount += otherDiscount;
+      dRecord.totalDiscount += totalDiscount;
+      dRecord.freightCharge += freightCharge;
+      dRecord.otherCharge += otherCharge;
+      dRecord.vatAmount += vatAmount;
+      dRecord.roundoff += roundoff;
+      dRecord.grandTotal += grandTotal;
+      dRecord.totalQuantity += totalQty;
+      dRecord.invoiceCount += 1;
+      if (inv.paymentType === 'Cash') {
+        dRecord.cashPaid += grandTotal;
+      } else {
+        dRecord.creditAmount += grandTotal;
+      }
+    }
+
+    let rows = Object.values(dayMap).map((r: any) => ({
+      _id: r._id,
+      date: r.date,
+      grossAmount: Number(r.grossAmount.toFixed(2)),
+      itemsDiscount: Number(r.itemsDiscount.toFixed(2)),
+      otherDiscount: Number(r.otherDiscount.toFixed(2)),
+      totalDiscount: Number(r.totalDiscount.toFixed(2)),
+      freightCharge: Number(r.freightCharge.toFixed(2)),
+      otherCharge: Number(r.otherCharge.toFixed(2)),
+      vatAmount: Number(r.vatAmount.toFixed(2)),
+      roundoff: Number(r.roundoff.toFixed(2)),
+      grandTotal: Number(r.grandTotal.toFixed(2)),
+      totalQuantity: Number(r.totalQuantity.toFixed(2)),
+      invoiceCount: r.invoiceCount,
+      cashPaid: Number(r.cashPaid.toFixed(2)),
+      creditAmount: Number(r.creditAmount.toFixed(2)),
+    }));
+
+    rows.sort((a, b) => b.date.localeCompare(a.date));
+
+    if (opts.search && opts.search.trim()) {
+      const q = opts.search.trim().toLowerCase();
+      rows = rows.filter((r) => r.date.toLowerCase().includes(q));
+    }
+
+    return { filterType: 'daily', purchaseType: pType, rows };
+  }
+
+  // 6. MONTHLY WISE: AGGREGATED MONTHLY TOTALS
+  if (filterType === 'monthly') {
+    const monthMap: Record<string, any> = {};
+
+    for (const inv of docs) {
+      let monthKey = 'Unknown';
+      let monthLabel = 'Unknown';
+      if (inv.date) {
+        const d = new Date(inv.date);
+        if (!isNaN(d.getTime())) {
+          const y = d.getFullYear();
+          const m = String(d.getMonth() + 1).padStart(2, '0');
+          monthKey = `${y}-${m}`;
+          const dateObj = new Date(y, d.getMonth(), 1);
+          monthLabel = dateObj.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+        }
+      }
+
+      if (!monthMap[monthKey]) {
+        monthMap[monthKey] = {
+          _id: monthKey,
+          monthKey,
+          month: monthLabel,
+          grossAmount: 0,
+          itemsDiscount: 0,
+          otherDiscount: 0,
+          totalDiscount: 0,
+          freightCharge: 0,
+          otherCharge: 0,
+          vatAmount: 0,
+          roundoff: 0,
+          grandTotal: 0,
+          totalQuantity: 0,
+          invoiceCount: 0,
+          cashPaid: 0,
+          creditAmount: 0,
+        };
+      }
+
+      const isVat = (inv.vatType || 'Vat') === 'Vat';
+      const taxMode = inv.taxMode ?? 'inclusive';
+      const grandTotal = Number(inv.totalAmount || 0);
+      const itemsDiscount = Number(inv.itemsDiscount || 0);
+      const otherDiscount = Number(inv.otherDiscount || 0);
+      const totalDiscount = itemsDiscount + otherDiscount;
+      const freightCharge = Number(inv.freightCharge || 0);
+      const otherCharge = Number(inv.otherCharges || 0);
+      const roundoff = Number(inv.roundOff || 0);
+
+      let batchGrossSum = 0;
+      let totalQty = 0;
+      for (const b of (inv.batches || [])) {
+        const q = Number(b.quantity || 0);
+        const p = Number(b.purchasePrice || 0);
+        totalQty += q;
+        batchGrossSum += q * p;
+      }
+
+      let itemsVat = 0;
+      if (isVat) {
+        if (taxMode === 'inclusive') {
+          itemsVat = parseFloat(((grandTotal * 5) / 105).toFixed(2));
+        } else {
+          itemsVat = parseFloat(((grandTotal * 5) / 100).toFixed(2));
+        }
+      }
+      const netAdjustments = otherCharge + freightCharge + roundoff - otherDiscount;
+      const vatFromAdjustments = isVat && netAdjustments !== 0
+        ? parseFloat(((netAdjustments * 5) / 105).toFixed(2))
+        : 0;
+      const vatAmount = parseFloat((itemsVat + vatFromAdjustments).toFixed(2));
+
+      const grossAmount = batchGrossSum > 0 ? batchGrossSum : (grandTotal + totalDiscount - otherCharge - freightCharge - roundoff);
+
+      const mRecord = monthMap[monthKey];
+      mRecord.grossAmount += grossAmount;
+      mRecord.itemsDiscount += itemsDiscount;
+      mRecord.otherDiscount += otherDiscount;
+      mRecord.totalDiscount += totalDiscount;
+      mRecord.freightCharge += freightCharge;
+      mRecord.otherCharge += otherCharge;
+      mRecord.vatAmount += vatAmount;
+      mRecord.roundoff += roundoff;
+      mRecord.grandTotal += grandTotal;
+      mRecord.totalQuantity += totalQty;
+      mRecord.invoiceCount += 1;
+      if (inv.paymentType === 'Cash') {
+        mRecord.cashPaid += grandTotal;
+      } else {
+        mRecord.creditAmount += grandTotal;
+      }
+    }
+
+    let rows = Object.values(monthMap).map((r: any) => ({
+      _id: r._id,
+      monthKey: r.monthKey,
+      month: r.month,
+      grossAmount: Number(r.grossAmount.toFixed(2)),
+      itemsDiscount: Number(r.itemsDiscount.toFixed(2)),
+      otherDiscount: Number(r.otherDiscount.toFixed(2)),
+      totalDiscount: Number(r.totalDiscount.toFixed(2)),
+      freightCharge: Number(r.freightCharge.toFixed(2)),
+      otherCharge: Number(r.otherCharge.toFixed(2)),
+      vatAmount: Number(r.vatAmount.toFixed(2)),
+      roundoff: Number(r.roundoff.toFixed(2)),
+      grandTotal: Number(r.grandTotal.toFixed(2)),
+      totalQuantity: Number(r.totalQuantity.toFixed(2)),
+      invoiceCount: r.invoiceCount,
+      cashPaid: Number(r.cashPaid.toFixed(2)),
+      creditAmount: Number(r.creditAmount.toFixed(2)),
+    }));
+
+    rows.sort((a, b) => b.monthKey.localeCompare(a.monthKey));
+
+    if (opts.search && opts.search.trim()) {
+      const q = opts.search.trim().toLowerCase();
+      rows = rows.filter((r) => r.month.toLowerCase().includes(q) || r.monthKey.toLowerCase().includes(q));
+    }
+
+    return { filterType: 'monthly', purchaseType: pType, rows };
+  }
+
+  return { filterType, purchaseType: pType, rows: [] };
 }
+

@@ -1,8 +1,15 @@
-import { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Dialog, DialogTitle, DialogContent, DialogActions, Button } from '@mui/material';
+import {
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  Button,
+} from '@mui/material';
 import { useAppSelector } from '../store/hooks';
 import { productApi } from '../services/api';
+import ProductTransactionsModal from '../components/ProductTransactionsModal';
 
 interface UnitInfo {
   _id: string;
@@ -31,6 +38,7 @@ interface ProductItem {
   systemBarcode?: string;
   unitOfMeasureId?: UnitInfo | string;
   unit?: string;
+  category?: string;
   sellingPrice: number;
   retailPrice?: number;
   purchasePrice: number;
@@ -39,15 +47,46 @@ interface ProductItem {
   multiUnits?: MultiUnitItem[];
 }
 
+type FilterType = 'all' | 'multi' | 'single';
+
+const AVATAR_PALETTE = [
+  { tint: '#EEF2FF', ink: '#4338CA' }, // Indigo
+  { tint: '#ECFDF5', ink: '#047857' }, // Emerald
+  { tint: '#F0F9FF', ink: '#0369A1' }, // Sky
+  { tint: '#FAF5FF', ink: '#7E22CE' }, // Purple
+  { tint: '#FFF7ED', ink: '#C2410C' }, // Orange
+  { tint: '#FEF2F2', ink: '#B91C1C' }, // Rose
+  { tint: '#F0FDFA', ink: '#0F766E' }, // Teal
+  { tint: '#FDF4FF', ink: '#A21CAF' }, // Fuchsia
+];
+
+function getAvatarColors(name: string) {
+  let hash = 0;
+  for (let i = 0; i < (name || '').length; i++) {
+    hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  const index = Math.abs(hash) % AVATAR_PALETTE.length;
+  return AVATAR_PALETTE[index];
+}
+
+function getInitials(name: string) {
+  const words = (name || '').trim().split(/\s+/);
+  if (words.length >= 2) {
+    return (words[0][0] + words[1][0]).toUpperCase();
+  }
+  return (name || '').slice(0, 2).toUpperCase() || 'PR';
+}
+
 export default function ProductList() {
   const [products, setProducts] = useState<ProductItem[]>([]);
   const [total, setTotal] = useState(0);
   const [search, setSearch] = useState('');
+  const [filterType, setFilterType] = useState<FilterType>('all');
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
   const limit = 50;
 
-  // Scroll indicator state
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const tableScrollRef = useRef<HTMLDivElement>(null);
   const [hasScrollMore, setHasScrollMore] = useState(false);
 
@@ -63,10 +102,30 @@ export default function ProductList() {
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
+  // Product Transactions Dialog state
+  const [transactionsDialogOpen, setTransactionsDialogOpen] = useState(false);
+  const [productForTransactions, setProductForTransactions] = useState<ProductItem | null>(null);
+
+  const handleOpenTransactions = (p: ProductItem) => {
+    setProductForTransactions(p);
+    setTransactionsDialogOpen(true);
+  };
+
   const navigate = useNavigate();
   const companyId = useAppSelector((s) => s.app.selectedCompanyId);
 
-  // Scroll check matching user's exact logic
+  // Keyboard shortcut Ctrl+K / Cmd+K for search
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   const checkScroll = useCallback(() => {
     const el = tableScrollRef.current;
     if (!el) return;
@@ -98,7 +157,6 @@ export default function ProductList() {
       });
   }, [companyId, search, page, limit]);
 
-  // Fetch when companyId, debounced search, or page changes
   useEffect(() => {
     const timer = setTimeout(() => {
       loadProducts();
@@ -106,13 +164,38 @@ export default function ProductList() {
     return () => clearTimeout(timer);
   }, [loadProducts]);
 
-  // Reset page to 1 on search change
+  useEffect(() => {
+    const onWindowActivated = (e: any) => {
+      const p = e.detail?.path;
+      if (p === '/master/products' || p === '/report/product-list' || p === '/master/products/management') {
+        loadProducts();
+      }
+    };
+    const onDatabaseUpdated = () => {
+      if (
+        window.location.hash.includes('/products') ||
+        window.location.pathname.includes('/products') ||
+        window.location.hash.includes('/product-list') ||
+        window.location.pathname.includes('/product-list')
+      ) {
+        loadProducts();
+      }
+    };
+    window.addEventListener('app:window-activated', onWindowActivated);
+    window.addEventListener('app:products-updated', onWindowActivated);
+    window.addEventListener('app:database-updated', onDatabaseUpdated);
+    return () => {
+      window.removeEventListener('app:window-activated', onWindowActivated);
+      window.removeEventListener('app:products-updated', onWindowActivated);
+      window.removeEventListener('app:database-updated', onDatabaseUpdated);
+    };
+  }, [loadProducts]);
+
   const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setSearch(e.target.value);
     setPage(1);
   };
 
-  // Re-check scroll on content update or window resize
   useEffect(() => {
     const t = setTimeout(checkScroll, 120);
     window.addEventListener('resize', checkScroll);
@@ -122,14 +205,12 @@ export default function ProductList() {
     };
   }, [products, checkScroll]);
 
-  // Double click handler to show Multi Unit details
   const handleOpenMultiUnit = useCallback(
     (p: ProductItem) => {
       setSelectedProduct(p);
       setDetailedProduct(p);
       setMultiUnitDialogOpen(true);
 
-      // Fetch fresh full product details (including all populated multiUnits and prices)
       if (companyId) {
         setLoadingDetails(true);
         productApi
@@ -172,30 +253,65 @@ export default function ProductList() {
 
   const getUnitDisplay = (p: ProductItem): string => {
     if (p.unitOfMeasureId && typeof p.unitOfMeasureId === 'object') {
-      return p.unitOfMeasureId.shortCode || p.unitOfMeasureId.name || '—';
+      return p.unitOfMeasureId.shortCode || p.unitOfMeasureId.name || 'Pcs';
     }
-    return p.unit || '—';
+    return p.unit || 'Pcs';
   };
 
   const getMultiUnitName = (u: MultiUnitItem): string => {
     if (u.unitId && typeof u.unitId === 'object') {
-      return u.unitId.shortCode || u.unitId.name || '—';
+      return u.unitId.shortCode || u.unitId.name || 'Unit';
     }
-    return String(u.unitId || '—');
+    return String(u.unitId || 'Unit');
+  };
+
+  const filteredProducts = useMemo(() => {
+    if (filterType === 'multi') {
+      return products.filter((p) => p.multiUnits && p.multiUnits.length > 0);
+    }
+    if (filterType === 'single') {
+      return products.filter((p) => !p.multiUnits || p.multiUnits.length === 0);
+    }
+    return products;
+  }, [products, filterType]);
+
+  const multiCount = useMemo(
+    () => products.filter((p) => p.multiUnits && p.multiUnits.length > 0).length,
+    [products]
+  );
+  const singleCount = Math.max(0, products.length - multiCount);
+
+  const handleExportCSV = () => {
+    if (products.length === 0) return;
+    const headers = ['Product Name', 'SKU', 'GTIN / Barcode', 'Base Unit', 'Selling Price (AED)', 'Purchase Price (AED)', 'Multi Units Count'];
+    const rows = products.map((p) => [
+      `"${(p.name || '').replace(/"/g, '""')}"`,
+      `"${p.sku || p.code || ''}"`,
+      `"${p.imei || ''}"`,
+      `"${getUnitDisplay(p)}"`,
+      Number(p.sellingPrice ?? p.retailPrice ?? 0).toFixed(2),
+      Number(p.purchasePrice ?? 0).toFixed(2),
+      p.multiUnits?.length || 0,
+    ]);
+
+    const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement('a');
+    link.setAttribute('href', encodedUri);
+    link.setAttribute('download', `products_catalog_${new Date().toISOString().slice(0, 10)}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   if (!companyId) {
     return (
-      <div className="pm-wrapper">
-        <style>{scopedStyles}</style>
-        <div className="container">
-          <div className="empty-state" style={{ background: '#fff', borderRadius: '8px', padding: '40px' }}>
-            <div className="empty-state-icon">🏢</div>
-            <h2 style={{ fontSize: '18px', fontWeight: 600, marginBottom: '8px', color: '#1a2332' }}>
-              No Company Selected
-            </h2>
-            <p style={{ color: '#64748b' }}>Please select a company from the top navigation to view and manage products.</p>
-          </div>
+      <div className="product-catalog-root">
+        <style>{clearStyles}</style>
+        <div className="empty-company-card">
+          <div className="empty-company-icon">🏢</div>
+          <h2>No Company Selected</h2>
+          <p>Please select a company from the top navigation to view and manage products.</p>
         </div>
       </div>
     );
@@ -203,206 +319,352 @@ export default function ProductList() {
 
   const totalPages = Math.ceil(total / limit) || 1;
   const activeProduct = detailedProduct || selectedProduct;
-  const baseUnitLabel = activeProduct ? getUnitDisplay(activeProduct) : '—';
+  const baseUnitLabel = activeProduct ? getUnitDisplay(activeProduct) : 'Pcs';
   const multiUnitsList = activeProduct?.multiUnits ?? [];
 
   return (
-    <div className="pm-wrapper">
-      <style>{scopedStyles}</style>
+    <div className="product-catalog-root">
+      <style>{clearStyles}</style>
 
-      <div className="container">
-        {/* Header */}
-        <div className="header">
-          <div>
-            <h1>Products</h1>
-            <div className="double-click-hint">
-              💡 Double-click any row to view <strong>Multi Unit Details</strong>
-            </div>
+      {/* 1. Header Section */}
+      <div className="catalog-header">
+        <div className="header-text-group">
+          <div className="header-title-line">
+            <h1 className="catalog-title">Product Catalog</h1>
+            <span className="catalog-badge">
+              <span className="dot-pulse" />
+              UAE FTA Standard Verified
+            </span>
           </div>
-          <div className="header-actions">
-            <div className="search-box">
-              <span className="search-icon">🔍</span>
-              <input
-                type="text"
-                placeholder="Search by name, SKU, or IMEI..."
-                value={search}
-                onChange={handleSearchChange}
-              />
-            </div>
-            <button className="btn-add" onClick={() => navigate('/master/products/create')}>
-              <span>+</span> Add Product
+          <p className="catalog-desc">
+            Manage multi-unit conversions, retail selling rates, purchase costs, and barcode inventory.
+          </p>
+        </div>
+
+        <div className="header-actions-group">
+          <button type="button" className="btn-export" onClick={handleExportCSV} title="Export current list to CSV">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+            Export CSV
+          </button>
+          <button type="button" className="btn-create" onClick={() => navigate('/master/products/create')}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="12" y1="5" x2="12" y2="19" />
+              <line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+            Add Product
+          </button>
+        </div>
+      </div>
+
+      {/* Main Data Card */}
+      <div className="main-data-card">
+        {/* Toolbar */}
+        <div className="card-toolbar">
+          <div className="search-box-wrapper">
+            <svg className="search-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="11" cy="11" r="8" />
+              <line x1="21" y1="21" x2="16.65" y2="16.65" />
+            </svg>
+            <input
+              ref={searchInputRef}
+              type="text"
+              placeholder="Search by product name, SKU, or GTIN / barcode..."
+              value={search}
+              onChange={handleSearchChange}
+              className="search-input-field"
+            />
+            {search ? (
+              <button type="button" className="clear-search-btn" onClick={() => setSearch('')}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            ) : (
+              <span className="kbd-badge">Ctrl+K</span>
+            )}
+          </div>
+
+          <div className="filter-pill-cluster">
+            <button
+              type="button"
+              className={`filter-pill ${filterType === 'all' ? 'pill-active' : ''}`}
+              onClick={() => setFilterType('all')}
+            >
+              All Products ({total})
+            </button>
+            <button
+              type="button"
+              className={`filter-pill ${filterType === 'multi' ? 'pill-active' : ''}`}
+              onClick={() => setFilterType('multi')}
+            >
+              Multi-Unit ({multiCount})
+            </button>
+            <button
+              type="button"
+              className={`filter-pill ${filterType === 'single' ? 'pill-active' : ''}`}
+              onClick={() => setFilterType('single')}
+            >
+              Single Unit ({singleCount})
+            </button>
+          </div>
+
+          <div className="toolbar-right-btns">
+            <button
+              type="button"
+              className="btn-refresh"
+              onClick={() => loadProducts()}
+              title="Refresh Catalog Data"
+            >
+              <svg className={loading ? 'spin-icon' : ''} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="23 4 23 10 17 10" />
+                <polyline points="1 20 1 14 7 14" />
+                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+              </svg>
             </button>
           </div>
         </div>
 
-        {/* Table Wrapper */}
-        <div className="table-wrapper">
-          {/* Table Header with Stats */}
-          <div className="table-header">
-            <div className="table-stats">
-              <div className="stat-item">
-                <span className="stat-label">Total Products:</span>
-                <span className="stat-value">{total}</span>
-              </div>
-              <div className="stat-item">
-                <span className="stat-label">Showing:</span>
-                <span className="stat-value">{products.length}</span>
-              </div>
-              {search && (
-                <div className="stat-item">
-                  <span className="stat-label">Filter:</span>
-                  <span className="stat-value">"{search}"</span>
-                </div>
-              )}
-            </div>
-          </div>
+        {/* Informational Hint Bar */}
+        <div className="info-tip-bar">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#2563EB" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="10" />
+            <line x1="12" y1="16" x2="12" y2="12" />
+            <line x1="12" y1="8" x2="12.01" y2="8" />
+          </svg>
+          <span>
+            <strong>Pro Tip:</strong> Double-click any row to view all <strong>Transactions (Purchase, Sales, Stock Adj, Damage, etc.)</strong> with voucher details. Click the Multi-Unit badge to view rate matrix.
+          </span>
+        </div>
 
-          {/* Table Scroll Container */}
-          <div
-            className="table-scroll-container"
-            id="tableScrollContainer"
-            ref={tableScrollRef}
-            onScroll={checkScroll}
-          >
-            <table>
-              <thead>
+        {/* Table Container */}
+        <div className="table-scroll-area" ref={tableScrollRef} onScroll={checkScroll}>
+          <table className="clean-table">
+            <thead>
+              <tr>
+                <th style={{ width: '28%' }}>Product Name</th>
+                <th style={{ width: '15%' }}>SKU / Code</th>
+                <th style={{ width: '15%' }}>GTIN / Barcode</th>
+                <th style={{ width: '16%' }} className="text-center">Multi-Unit Status</th>
+                <th style={{ width: '12%' }} className="text-right">Selling Rate</th>
+                <th style={{ width: '11%' }} className="text-right">Cost Rate</th>
+                <th style={{ width: '9%' }} className="text-center">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
                 <tr>
-                  <th style={{ width: '23%' }}>Name</th>
-                  <th style={{ width: '15%' }}>SKU</th>
-                  <th style={{ width: '15%' }}>IMEI</th>
-                  <th style={{ width: '16%' }}>Multi Unit IMEI</th>
-                  <th style={{ width: '11%', textAlign: 'right' }}>Selling (AED)</th>
-                  <th style={{ width: '11%', textAlign: 'right' }}>Purchase (AED)</th>
-                  <th style={{ width: '9%', textAlign: 'center' }}>Actions</th>
+                  <td colSpan={7} className="td-loading">
+                    <div className="loading-row">
+                      <div className="spinner-circle" />
+                      <span>Loading products catalog...</span>
+                    </div>
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {loading ? (
-                  <tr>
-                    <td colSpan={7} style={{ textAlign: 'center', padding: '32px', color: 'var(--text-muted)' }}>
-                      <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
-                        <span className="spinner" /> Loading products...
+              ) : filteredProducts.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="td-empty">
+                    <div className="empty-box">
+                      <div className="empty-icon-wrap">📦</div>
+                      <div className="empty-title-text">
+                        {search
+                          ? 'No products found matching your search.'
+                          : filterType !== 'all'
+                          ? 'No products match the selected filter.'
+                          : 'No products registered yet.'}
                       </div>
-                    </td>
-                  </tr>
-                ) : products.length === 0 ? (
-                  <tr>
-                    <td colSpan={7} style={{ padding: 0 }}>
-                      <div className="empty-state">
-                        <div className="empty-state-icon">📦</div>
-                        <p>{search ? 'No products found matching your search.' : 'No products have been added yet.'}</p>
-                        {!search && (
-                          <button className="btn-add" onClick={() => navigate('/master/products/create')}>
-                            <span>+</span> Add Your First Product
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ) : (
-                  products.map((p) => {
-                    const displaySku = p.sku || p.code || '—';
-                    const displaySelling = Number(p.sellingPrice ?? p.retailPrice ?? 0).toFixed(2);
-                    const displayPurchase = Number(p.purchasePrice ?? 0).toFixed(2);
-                    const multiUnitImeis = p.multiUnits
-                      ?.map((u) => u.imei?.trim())
-                      .filter(Boolean)
-                      .join(', ');
-                    const hasMultiUnits = p.multiUnits && p.multiUnits.length > 0;
+                      <p className="empty-sub-text">
+                        {search
+                          ? 'Try clearing the search term or switching filter tabs.'
+                          : 'Get started by creating your first product item.'}
+                      </p>
+                    </div>
+                  </td>
+                </tr>
+              ) : (
+                filteredProducts.map((p) => {
+                  const colors = getAvatarColors(p.name);
+                  const initials = getInitials(p.name);
+                  const hasMultiUnits = p.multiUnits && p.multiUnits.length > 0;
 
-                    return (
-                      <tr
-                        key={p._id}
-                        onDoubleClick={() => handleOpenMultiUnit(p)}
-                        title="Double-click to view Multi Unit Details"
-                      >
-                        <td className="cell-name">{p.name}</td>
-                        <td className="cell-sku">{displaySku}</td>
-                        <td className={p.imei ? 'cell-imei' : 'cell-dash'}>{p.imei || '—'}</td>
-                        <td className="cell-unit">
-                          {multiUnitImeis ? (
-                            <span className="cell-imei">{multiUnitImeis}</span>
-                          ) : (
-                            <span className="cell-dash">—</span>
-                          )}
-                          {hasMultiUnits && (
-                            <span
-                              className="multi-tag"
-                              title={`${p.multiUnits!.length} Multi Units configured`}
-                              style={{ marginLeft: '6px' }}
-                            >
-                              +{p.multiUnits!.length}
-                            </span>
-                          )}
-                        </td>
-                        <td className="cell-numeric cell-currency">{displaySelling}</td>
-                        <td className="cell-numeric cell-currency">{displayPurchase}</td>
-                        <td className="cell-actions" onClick={(e) => e.stopPropagation()}>
-                          <div className="action-buttons">
-                            <button
-                              type="button"
-                              className="btn-icon edit"
-                              title="Edit Product"
-                              onClick={() => navigate(`/master/products/create?edit=${p._id}`)}
-                            >
-                              ✏️
-                            </button>
-                            <button
-                              type="button"
-                              className="btn-icon delete"
-                              title="Delete Product"
-                              onClick={() => {
-                                setProductToDelete(p);
-                                setDeleteError(null);
-                                setDeleteDialogOpen(true);
-                              }}
-                            >
-                              🗑️
-                            </button>
+                  return (
+                    <tr
+                      key={p._id}
+                      className="data-row"
+                      onDoubleClick={() => handleOpenTransactions(p)}
+                      title="Double-click to view Product Transactions & Stock Ledger"
+                    >
+                      <td>
+                        <div className="product-identity-wrap">
+                          <div
+                            className="avatar-circle"
+                            style={{ backgroundColor: colors.tint, color: colors.ink }}
+                          >
+                            {initials}
                           </div>
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
-            <div className={`scroll-indicator ${hasScrollMore ? 'show' : ''}`} id="scrollIndicator">
-              ↓ Scroll for more
-            </div>
-          </div>
+                          <div className="product-details-wrap">
+                            <div className="product-title-text" title={p.name}>
+                              {p.name}
+                            </div>
+                            <div className="product-unit-text">
+                              Main Unit: <strong>{getUnitDisplay(p)}</strong>
+                            </div>
+                          </div>
+                        </div>
+                      </td>
 
-          {/* Table Footer */}
-          <div className="table-footer">
-            <div>
-              Showing {products.length > 0 ? (page - 1) * limit + 1 : 0}
-              {products.length > 1 ? `-${(page - 1) * limit + products.length}` : ''} of {total} products
-            </div>
+                      <td>
+                        <span className="sku-badge">{p.sku || p.code || '—'}</span>
+                      </td>
 
-            {totalPages > 1 && (
-              <div className="pagination-controls">
-                <button
-                  className="btn-page"
-                  disabled={page <= 1}
-                  onClick={() => setPage((p) => Math.max(1, p - 1))}
-                >
-                  ‹ Prev
-                </button>
-                <span className="page-indicator">
-                  {page} / {totalPages}
-                </span>
-                <button
-                  className="btn-page"
-                  disabled={page >= totalPages}
-                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                >
-                  Next ›
-                </button>
-              </div>
-            )}
+                      <td>
+                        <span className={p.imei ? 'imei-badge' : 'dash-text'}>
+                          {p.imei || '—'}
+                        </span>
+                      </td>
+
+                      <td className="text-center" onClick={(e) => hasMultiUnits && e.stopPropagation()}>
+                        {hasMultiUnits ? (
+                          <button
+                            type="button"
+                            className="multi-unit-btn"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleOpenMultiUnit(p);
+                            }}
+                            title="Click to view multi-unit price matrix"
+                          >
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4">
+                              <rect x="3" y="3" width="7" height="7"></rect>
+                              <rect x="14" y="3" width="7" height="7"></rect>
+                              <rect x="14" y="14" width="7" height="7"></rect>
+                              <rect x="3" y="14" width="7" height="7"></rect>
+                            </svg>
+                            +{p.multiUnits!.length} Units
+                          </button>
+                        ) : (
+                          <span className="single-unit-text">{getUnitDisplay(p)}</span>
+                        )}
+                      </td>
+
+                      <td className="text-right">
+                        <div className="price-selling-text">
+                          {Number(p.sellingPrice ?? p.retailPrice ?? 0).toFixed(2)}
+                        </div>
+                        <div className="vat-text">AED (VAT incl.)</div>
+                      </td>
+
+                      <td className="text-right">
+                        <div className="price-cost-text">
+                          {Number(p.purchasePrice ?? 0).toFixed(2)} AED
+                        </div>
+                      </td>
+
+                      <td className="text-center" onClick={(e) => e.stopPropagation()}>
+                        <div className="action-row">
+                          <button
+                            type="button"
+                            className="btn-action btn-action-view"
+                            title="View Product Transactions (or double-click row)"
+                            onClick={() => handleOpenTransactions(p)}
+                          >
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                              <polyline points="14 2 14 8 20 8"></polyline>
+                              <line x1="16" y1="13" x2="8" y2="13"></line>
+                              <line x1="16" y1="17" x2="8" y2="17"></line>
+                              <polyline points="10 9 9 9 8 9"></polyline>
+                            </svg>
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-action btn-action-edit"
+                            title="Edit Product"
+                            onClick={() => navigate(`/master/products/create?edit=${p._id}`)}
+                          >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                            </svg>
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-action btn-action-delete"
+                            title="Delete Product"
+                            onClick={() => {
+                              setProductToDelete(p);
+                              setDeleteError(null);
+                              setDeleteDialogOpen(true);
+                            }}
+                          >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <polyline points="3 6 5 6 21 6"></polyline>
+                              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                            </svg>
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+          <div className={`scroll-indicator-pill ${hasScrollMore ? 'show' : ''}`}>
+            ↓ Scroll for more products
           </div>
         </div>
+
+        {/* Card Footer */}
+        <div className="card-footer">
+          <div>
+            Showing {products.length > 0 ? (page - 1) * limit + 1 : 0}
+            {products.length > 1 ? `-${(page - 1) * limit + products.length}` : ''} of {total} products
+            {filterType !== 'all' && (
+              <span className="filter-badge-text">
+                {' '}• Filtered by {filterType === 'multi' ? 'Multi-Unit' : 'Single Unit'}
+              </span>
+            )}
+          </div>
+          {totalPages > 1 && (
+            <div className="pagination-wrap">
+              <button
+                className="btn-nav-page"
+                disabled={page <= 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+              >
+                ‹ Prev
+              </button>
+              <span className="page-label">
+                {page} / {totalPages}
+              </span>
+              <button
+                className="btn-nav-page"
+                disabled={page >= totalPages}
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              >
+                Next ›
+              </button>
+            </div>
+          )}
+        </div>
       </div>
+
+      {/* Product Transactions Modal */}
+      <ProductTransactionsModal
+        open={transactionsDialogOpen}
+        onClose={() => {
+          setTransactionsDialogOpen(false);
+          setProductForTransactions(null);
+        }}
+        productId={productForTransactions?._id ?? null}
+        productName={productForTransactions?.name}
+        productCode={productForTransactions?.sku || productForTransactions?.code}
+      />
 
       {/* Multi Unit Details Dialog */}
       <Dialog
@@ -412,7 +674,7 @@ export default function ProductList() {
         fullWidth
         PaperProps={{
           sx: {
-            borderRadius: '12px',
+            borderRadius: '14px',
             padding: '4px',
             boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
           },
@@ -421,69 +683,69 @@ export default function ProductList() {
         <DialogTitle sx={{ pb: 1, pt: 2, px: 3 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
             <div>
-              <div style={{ fontSize: '18px', fontWeight: 700, color: '#1a2332' }}>
-                Multi Unit Details
+              <div style={{ fontSize: '18px', fontWeight: 800, color: '#0F172A', letterSpacing: '-0.01em' }}>
+                Multi Unit Price Matrix
               </div>
-              <div style={{ fontSize: '13px', color: '#64748b', marginTop: '4px', display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-                <span>Product: <strong style={{ color: '#1a2332' }}>{activeProduct?.name}</strong></span>
-                <span>SKU: <strong style={{ color: '#1a2332' }}>{activeProduct?.sku || activeProduct?.code || '—'}</strong></span>
-                <span>Main Unit: <strong style={{ color: '#3b82f6' }}>{baseUnitLabel}</strong></span>
+              <div style={{ fontSize: '13px', color: '#64748B', marginTop: '4px', display: 'flex', gap: '14px', flexWrap: 'wrap' }}>
+                <span>Product: <strong style={{ color: '#0F172A' }}>{activeProduct?.name}</strong></span>
+                <span>SKU: <strong style={{ color: '#0F172A' }}>{activeProduct?.sku || activeProduct?.code || '—'}</strong></span>
+                <span>Base Unit: <strong style={{ color: '#4F46E5' }}>{baseUnitLabel}</strong></span>
               </div>
             </div>
             {loadingDetails && (
-              <span style={{ fontSize: '12px', color: '#64748b', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <span className="spinner" /> refreshing...
+              <span style={{ fontSize: '12px', color: '#64748B', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span className="spinner-circle-sm" /> updating...
               </span>
             )}
           </div>
         </DialogTitle>
         <DialogContent sx={{ px: 3, py: 1 }}>
           {multiUnitsList.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: '36px 16px', background: '#f8fafc', borderRadius: '8px', border: '1px dashed #e2e8f0' }}>
+            <div style={{ textAlign: 'center', padding: '36px 16px', background: '#F8FAFC', borderRadius: '10px', border: '1px dashed #E2E8F0' }}>
               <div style={{ fontSize: '32px', marginBottom: '8px' }}>📦</div>
-              <div style={{ fontSize: '14px', fontWeight: 600, color: '#1a2332', marginBottom: '4px' }}>
+              <div style={{ fontSize: '14px', fontWeight: 700, color: '#0F172A', marginBottom: '4px' }}>
                 No Multi Units Configured
               </div>
-              <div style={{ fontSize: '12.5px', color: '#64748b' }}>
-                This product only has its base unit (<strong>{baseUnitLabel}</strong>). Multi-units can be added in Product Registration.
+              <div style={{ fontSize: '12.5px', color: '#64748B' }}>
+                This product only has its base unit (<strong>{baseUnitLabel}</strong>). Additional units can be defined in Product Registration.
               </div>
             </div>
           ) : (
-            <div style={{ border: '1px solid #e2e8f0', borderRadius: '8px', overflow: 'hidden' }}>
+            <div style={{ border: '1px solid #E2E8F0', borderRadius: '10px', overflow: 'hidden' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12.5px' }}>
                 <thead>
-                  <tr style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
-                    <th style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 700, color: '#64748b' }}>Unit</th>
-                    <th style={{ padding: '8px 12px', textAlign: 'center', fontWeight: 700, color: '#64748b' }}>Conversion</th>
-                    <th style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 700, color: '#64748b' }}>IMEI / Barcode</th>
-                    <th style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 700, color: '#64748b' }}>Retail (AED)</th>
-                    <th style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 700, color: '#64748b' }}>Wholesale (AED)</th>
-                    <th style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 700, color: '#64748b' }}>Special 1</th>
-                    <th style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 700, color: '#64748b' }}>Special 2</th>
+                  <tr style={{ background: '#F8FAFC', borderBottom: '1px solid #E2E8F0' }}>
+                    <th style={{ padding: '9px 14px', textAlign: 'left', fontWeight: 700, color: '#475569' }}>Unit Name</th>
+                    <th style={{ padding: '9px 14px', textAlign: 'center', fontWeight: 700, color: '#475569' }}>Conversion Factor</th>
+                    <th style={{ padding: '9px 14px', textAlign: 'left', fontWeight: 700, color: '#475569' }}>GTIN / Barcode</th>
+                    <th style={{ padding: '9px 14px', textAlign: 'right', fontWeight: 700, color: '#475569' }}>Retail (AED)</th>
+                    <th style={{ padding: '9px 14px', textAlign: 'right', fontWeight: 700, color: '#475569' }}>Wholesale (AED)</th>
+                    <th style={{ padding: '9px 14px', textAlign: 'right', fontWeight: 700, color: '#475569' }}>Special 1</th>
+                    <th style={{ padding: '9px 14px', textAlign: 'right', fontWeight: 700, color: '#475569' }}>Special 2</th>
                   </tr>
                 </thead>
                 <tbody>
                   {multiUnitsList.map((u, idx) => (
-                    <tr key={u.multiUnitId || idx} style={{ borderBottom: idx === multiUnitsList.length - 1 ? 'none' : '1px solid #f1f5f9' }}>
-                      <td style={{ padding: '9px 12px', fontWeight: 700, color: '#1a2332' }}>
+                    <tr key={u.multiUnitId || idx} style={{ borderBottom: idx === multiUnitsList.length - 1 ? 'none' : '1px solid #F1F5F9' }}>
+                      <td style={{ padding: '10px 14px', fontWeight: 700, color: '#0F172A' }}>
                         {getMultiUnitName(u)}
                       </td>
-                      <td style={{ padding: '9px 12px', textAlign: 'center', color: '#475569', fontWeight: 600 }}>
+                      <td style={{ padding: '10px 14px', textAlign: 'center', color: '#475569', fontWeight: 600 }}>
                         {u.conversion ? `= ${u.conversion} ${baseUnitLabel}` : '—'}
                       </td>
-                      <td style={{ padding: '9px 12px', fontFamily: "'Courier New', monospace", fontWeight: 700, color: '#1e293b' }}>
+                      <td style={{ padding: '10px 14px', fontFamily: "'Courier New', monospace", fontWeight: 700, color: '#0369A1' }}>
                         {u.imei || '—'}
                       </td>
-                      <td style={{ padding: '9px 12px', textAlign: 'right', color: '#10b981', fontWeight: 600 }}>
+                      <td style={{ padding: '10px 14px', textAlign: 'right', color: '#059669', fontWeight: 700 }}>
                         {u.retail !== undefined && u.retail !== null ? Number(u.retail).toFixed(2) : '—'}
                       </td>
-                      <td style={{ padding: '9px 12px', textAlign: 'right', color: '#10b981', fontWeight: 600 }}>
+                      <td style={{ padding: '10px 14px', textAlign: 'right', color: '#059669', fontWeight: 700 }}>
                         {u.wholesale !== undefined && u.wholesale !== null ? Number(u.wholesale).toFixed(2) : '—'}
                       </td>
-                      <td style={{ padding: '9px 12px', textAlign: 'right', color: '#475569' }}>
+                      <td style={{ padding: '10px 14px', textAlign: 'right', color: '#475569' }}>
                         {u.specialPrice1 !== undefined && u.specialPrice1 !== null ? Number(u.specialPrice1).toFixed(2) : '—'}
                       </td>
-                      <td style={{ padding: '9px 12px', textAlign: 'right', color: '#475569' }}>
+                      <td style={{ padding: '10px 14px', textAlign: 'right', color: '#475569' }}>
                         {u.specialPrice2 !== undefined && u.specialPrice2 !== null ? Number(u.specialPrice2).toFixed(2) : '—'}
                       </td>
                     </tr>
@@ -497,11 +759,12 @@ export default function ProductList() {
           <Button
             onClick={() => setMultiUnitDialogOpen(false)}
             sx={{
-              color: '#64748b',
+              color: '#64748B',
               textTransform: 'none',
               fontWeight: 600,
               fontSize: '13px',
-              '&:hover': { background: '#f1f5f9' },
+              borderRadius: '8px',
+              '&:hover': { background: '#F1F5F9' },
             }}
           >
             Close
@@ -514,11 +777,12 @@ export default function ProductList() {
                 navigate(`/master/products/create?edit=${activeProduct._id}`);
               }}
               sx={{
-                background: 'linear-gradient(135deg, #3b82f6 0%, #0284c7 100%)',
+                background: 'linear-gradient(135deg, #4F46E5 0%, #4338CA 100%)',
                 color: '#fff',
                 textTransform: 'none',
                 fontWeight: 600,
                 fontSize: '13px',
+                borderRadius: '8px',
                 boxShadow: 'none',
               }}
             >
@@ -536,20 +800,20 @@ export default function ProductList() {
         fullWidth
         PaperProps={{
           sx: {
-            borderRadius: '12px',
+            borderRadius: '14px',
             padding: '4px',
             boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1)',
           },
         }}
       >
-        <DialogTitle sx={{ pb: 1, pt: 2, px: 3, fontWeight: 700, fontSize: '17px', color: '#1a2332' }}>
+        <DialogTitle sx={{ pb: 1, pt: 2, px: 3, fontWeight: 700, fontSize: '17px', color: '#0F172A' }}>
           Delete Product
         </DialogTitle>
         <DialogContent sx={{ px: 3, py: 1 }}>
           <p style={{ color: '#475569', fontSize: '13px', margin: 0, lineHeight: 1.5 }}>
             Are you sure you want to delete <strong>{productToDelete?.name}</strong> (SKU: {productToDelete?.sku || productToDelete?.code || '—'})?
           </p>
-          <p style={{ color: '#ef4444', fontSize: '12px', marginTop: '8px', marginBottom: 0 }}>
+          <p style={{ color: '#DC2626', fontSize: '12px', marginTop: '8px', marginBottom: 0 }}>
             ⚠️ This action cannot be undone.
           </p>
           {deleteError && (
@@ -557,9 +821,9 @@ export default function ProductList() {
               style={{
                 marginTop: '12px',
                 padding: '8px 12px',
-                background: '#fef2f2',
-                color: '#b91c1c',
-                border: '1px solid #fecaca',
+                background: '#FEF2F2',
+                color: '#B91C1C',
+                border: '1px solid #FECACA',
                 borderRadius: '6px',
                 fontSize: '12.5px',
               }}
@@ -573,11 +837,12 @@ export default function ProductList() {
             onClick={() => setDeleteDialogOpen(false)}
             disabled={deleting}
             sx={{
-              color: '#64748b',
+              color: '#64748B',
               textTransform: 'none',
               fontWeight: 600,
               fontSize: '13px',
-              '&:hover': { background: '#f1f5f9' },
+              borderRadius: '8px',
+              '&:hover': { background: '#F1F5F9' },
             }}
           >
             Cancel
@@ -587,12 +852,13 @@ export default function ProductList() {
             disabled={deleting}
             onClick={handleConfirmDelete}
             sx={{
-              background: '#ef4444',
-              '&:hover': { background: '#dc2626' },
+              background: '#DC2626',
+              '&:hover': { background: '#B91C1C' },
               color: '#fff',
               textTransform: 'none',
               fontWeight: 600,
               fontSize: '13px',
+              borderRadius: '8px',
               boxShadow: 'none',
             }}
           >
@@ -604,523 +870,665 @@ export default function ProductList() {
   );
 }
 
-const scopedStyles = `
-  .pm-wrapper {
-    --bg-primary: #f8f9fb;
-    --bg-secondary: #ffffff;
-    --text-primary: #1a2332;
-    --text-secondary: #64748b;
-    --text-muted: #94a3b8;
-    --border-color: #e2e8f0;
-    --border-hover: #cbd5e1;
-    --accent-primary: #3b82f6;
-    --accent-secondary: #06b6d4;
-    --status-success: #10b981;
-    --status-warning: #f59e0b;
-    --status-error: #ef4444;
-    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
-    --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.07);
-    --radius: 8px;
-    --spacing-xs: 4px;
-    --spacing-sm: 6px;
-    --spacing-md: 12px;
-    --spacing-lg: 16px;
-    --spacing-xl: 20px;
+const clearStyles = `
+  .product-catalog-root {
+    --primary: #4F46E5;
+    --primary-light: #EEF2FF;
+    --primary-hover: #4338CA;
+    --text-heading: #0F172A;
+    --text-body: #334155;
+    --text-muted: #64748B;
+    --border-color: #E2E8F0;
+    --border-light: #F1F5F9;
+    --bg-page: #F8FAFC;
+    --bg-card: #FFFFFF;
+    --radius-lg: 14px;
+    --radius-md: 10px;
+    --radius-sm: 6px;
+    --shadow-card: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
 
-    background: var(--bg-primary);
-    color: var(--text-primary);
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-    font-size: 13px;
-    line-height: 1.5;
-    padding: var(--spacing-lg);
+    background-color: var(--bg-page);
     min-height: 100%;
+    padding: 24px 28px;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    color: var(--text-body);
     box-sizing: border-box;
   }
 
-  .pm-wrapper *,
-  .pm-wrapper *::before,
-  .pm-wrapper *::after {
+  .product-catalog-root *,
+  .product-catalog-root *::before,
+  .product-catalog-root *::after {
     box-sizing: border-box;
   }
 
-  .pm-wrapper .container {
-    max-width: 1400px;
-    margin: 0 auto;
-  }
-
-  .pm-wrapper .header {
+  /* Header */
+  .product-catalog-root .catalog-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    gap: var(--spacing-md);
-    margin-bottom: var(--spacing-lg);
+    gap: 16px;
+    margin-bottom: 20px;
     flex-wrap: wrap;
   }
 
-  .pm-wrapper .header h1 {
-    font-size: 24px;
-    font-weight: 700;
-    letter-spacing: -0.4px;
-    margin: 0;
-    color: var(--text-primary);
-    line-height: 1.2;
-  }
-
-  .pm-wrapper .double-click-hint {
-    font-size: 11.5px;
-    color: var(--text-secondary);
-    margin-top: 3px;
-  }
-
-  .pm-wrapper .header-actions {
+  .product-catalog-root .header-title-line {
     display: flex;
-    gap: var(--spacing-md);
     align-items: center;
-    flex-wrap: wrap;
+    gap: 12px;
   }
 
-  .pm-wrapper .search-box {
-    position: relative;
-    flex: 1;
-    min-width: 250px;
-    max-width: 320px;
+  .product-catalog-root .catalog-title {
+    font-size: 24px;
+    font-weight: 800;
+    color: var(--text-heading);
+    letter-spacing: -0.02em;
+    margin: 0;
   }
 
-  .pm-wrapper .search-box input {
-    width: 100%;
-    padding: 8px 14px 8px 36px;
-    border: 1px solid var(--border-color);
-    border-radius: var(--radius);
+  .product-catalog-root .catalog-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background-color: #ECFDF5;
+    color: #047857;
+    border: 1px solid #A7F3D0;
+    padding: 3px 10px;
+    border-radius: 9999px;
+    font-size: 11.5px;
+    font-weight: 600;
+  }
+
+  .product-catalog-root .dot-pulse {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background-color: #10B981;
+    display: inline-block;
+  }
+
+  .product-catalog-root .catalog-desc {
+    margin: 4px 0 0 0;
     font-size: 13px;
-    font-family: inherit;
-    transition: all 0.2s ease;
-    background: var(--bg-secondary);
-    color: var(--text-primary);
-  }
-
-  .pm-wrapper .search-box input::placeholder {
     color: var(--text-muted);
   }
 
-  .pm-wrapper .search-box input:hover {
-    border-color: var(--border-hover);
-    box-shadow: var(--shadow-sm);
+  .product-catalog-root .header-actions-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
   }
 
-  .pm-wrapper .search-box input:focus {
-    outline: none;
-    border-color: var(--accent-primary);
-    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-  }
-
-  .pm-wrapper .search-icon {
-    position: absolute;
-    left: 11px;
-    top: 50%;
-    transform: translateY(-50%);
-    color: var(--text-muted);
-    font-size: 14px;
-    pointer-events: none;
-    line-height: 1;
-  }
-
-  .pm-wrapper .btn-add {
-    padding: 8px 16px;
-    background: linear-gradient(135deg, var(--accent-primary) 0%, #0284c7 100%);
-    color: white;
-    border: none;
-    border-radius: var(--radius);
+  .product-catalog-root .btn-export {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    background-color: #FFFFFF;
+    color: #334155;
+    border: 1px solid var(--border-color);
+    padding: 8px 14px;
+    border-radius: 8px;
     font-size: 13px;
     font-weight: 600;
     cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .product-catalog-root .btn-export:hover {
+    background-color: #F8FAFC;
+    border-color: #CBD5E1;
+  }
+
+  .product-catalog-root .btn-create {
     display: inline-flex;
     align-items: center;
-    gap: var(--spacing-sm);
-    transition: all 0.2s ease;
-    box-shadow: var(--shadow-sm);
-    white-space: nowrap;
-    text-decoration: none;
+    gap: 7px;
+    background: linear-gradient(135deg, #4F46E5 0%, #4338CA 100%);
+    color: #FFFFFF;
+    border: none;
+    padding: 8px 18px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: 0 2px 4px rgba(79, 70, 229, 0.2);
+    transition: all 0.15s ease;
   }
 
-  .pm-wrapper .btn-add:hover {
+  .product-catalog-root .btn-create:hover {
     transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+    box-shadow: 0 4px 10px rgba(79, 70, 229, 0.3);
   }
 
-  .pm-wrapper .btn-add:active {
-    transform: translateY(0);
-  }
-
-  /* Table Wrapper */
-  .pm-wrapper .table-wrapper {
-    background: var(--bg-secondary);
-    border-radius: var(--radius);
-    box-shadow: var(--shadow-md);
-    overflow: hidden;
+  /* Main Card */
+  .product-catalog-root .main-data-card {
+    background-color: var(--bg-card);
+    border-radius: var(--radius-lg);
     border: 1px solid var(--border-color);
+    box-shadow: var(--shadow-card);
+    overflow: hidden;
   }
 
-  .pm-wrapper .table-header {
-    padding: 10px 16px;
-    border-bottom: 1.5px solid var(--border-color);
-    background: linear-gradient(to right, #f8fafc 0%, #f1f5f9 100%);
-  }
-
-  .pm-wrapper .table-stats {
-    display: flex;
-    gap: var(--spacing-lg);
-    font-size: 12px;
-  }
-
-  .pm-wrapper .stat-item {
+  /* Toolbar */
+  .product-catalog-root .card-toolbar {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border-color);
     display: flex;
     align-items: center;
-    gap: 6px;
+    justify-content: space-between;
+    gap: 14px;
+    flex-wrap: wrap;
+    background-color: #FFFFFF;
   }
 
-  .pm-wrapper .stat-label {
-    color: var(--text-muted);
-    font-weight: 500;
+  .product-catalog-root .search-box-wrapper {
+    position: relative;
+    flex: 1;
+    min-width: 260px;
+    max-width: 380px;
   }
 
-  .pm-wrapper .stat-value {
-    color: var(--text-primary);
+  .product-catalog-root .search-icon {
+    position: absolute;
+    left: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: #94A3B8;
+    pointer-events: none;
+  }
+
+  .product-catalog-root .search-input-field {
+    width: 100%;
+    height: 38px;
+    padding: 0 70px 0 38px;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    background-color: #F8FAFC;
+    color: var(--text-heading);
+    font-size: 13px;
+    outline: none;
+    transition: all 0.15s ease;
+  }
+
+  .product-catalog-root .search-input-field:focus {
+    background-color: #FFFFFF;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+  }
+
+  .product-catalog-root .clear-search-btn {
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: none;
+    border: none;
+    color: #94A3B8;
+    cursor: pointer;
+    display: flex;
+    padding: 3px;
+  }
+
+  .product-catalog-root .kbd-badge {
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 10.5px;
     font-weight: 700;
-    font-size: 13.5px;
+    background-color: #EDF2F7;
+    color: #718096;
+    border: 1px solid #E2E8F0;
+    padding: 2px 6px;
+    border-radius: 4px;
   }
 
-  /* Table Scroll Container */
-  .pm-wrapper .table-scroll-container {
-    max-height: clamp(250px, calc(100vh - 270px), 640px);
+  .product-catalog-root .filter-pill-cluster {
+    display: inline-flex;
+    background-color: #F1F5F9;
+    padding: 3px;
+    border-radius: 8px;
+    gap: 3px;
+  }
+
+  .product-catalog-root .filter-pill {
+    border: none;
+    background-color: transparent;
+    color: #64748B;
+    font-size: 12.5px;
+    font-weight: 600;
+    padding: 6px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .product-catalog-root .filter-pill:hover {
+    color: var(--text-heading);
+  }
+
+  .product-catalog-root .filter-pill.pill-active {
+    background-color: #FFFFFF;
+    color: var(--primary);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  }
+
+  .product-catalog-root .toolbar-right-btns {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .product-catalog-root .btn-refresh {
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    background-color: #FFFFFF;
+    color: #64748B;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .product-catalog-root .btn-refresh:hover {
+    background-color: #F8FAFC;
+    color: var(--text-heading);
+  }
+
+  /* Info Tip Bar */
+  .product-catalog-root .info-tip-bar {
+    padding: 9px 20px;
+    background-color: #F8FAFC;
+    border-bottom: 1px solid var(--border-color);
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    font-size: 12.5px;
+    color: #475569;
+  }
+
+  /* Table */
+  .product-catalog-root .table-scroll-area {
+    max-height: clamp(300px, calc(100vh - 290px), 680px);
     overflow-y: auto;
     position: relative;
   }
 
-  .pm-wrapper .table-scroll-container::-webkit-scrollbar {
-    width: 7px;
-  }
-
-  .pm-wrapper .table-scroll-container::-webkit-scrollbar-track {
-    background: transparent;
-  }
-
-  .pm-wrapper .table-scroll-container::-webkit-scrollbar-thumb {
-    background: var(--border-color);
-    border-radius: 4px;
-  }
-
-  .pm-wrapper .table-scroll-container::-webkit-scrollbar-thumb:hover {
-    background: var(--border-hover);
-  }
-
-  .pm-wrapper .scroll-indicator {
-    position: absolute;
-    bottom: 8px;
-    right: 8px;
-    font-size: 11.5px;
-    font-weight: 600;
-    color: var(--accent-primary);
-    background: rgba(255, 255, 255, 0.95);
-    border: 1px solid var(--border-color);
-    padding: 2px 9px;
-    border-radius: 16px;
-    box-shadow: var(--shadow-sm);
-    pointer-events: none;
-    display: none;
-    animation: bounce 1.5s infinite;
-  }
-
-  .pm-wrapper .scroll-indicator.show {
-    display: block;
-  }
-
-  @keyframes bounce {
-    0%, 100% { transform: translateY(0); }
-    50% { transform: translateY(-3px); }
-  }
-
-  /* Table */
-  .pm-wrapper table {
+  .product-catalog-root .clean-table {
     width: 100%;
     border-collapse: collapse;
+    font-size: 13px;
+    text-align: left;
   }
 
-  .pm-wrapper thead th {
-    padding: 9px 14px;
-    text-align: left;
+  .product-catalog-root .clean-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background-color: #F8FAFC;
+    color: #475569;
     font-size: 11.5px;
     font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.5px;
-    color: var(--text-muted);
-    background: var(--bg-primary);
-    border-bottom: 1px solid var(--border-color);
-    vertical-align: middle;
-    position: sticky;
-    top: 0;
-    z-index: 2;
+    letter-spacing: 0.04em;
+    padding: 11px 18px;
+    border-bottom: 1.5px solid var(--border-color);
   }
 
-  .pm-wrapper tbody td {
-    padding: 8px 14px;
-    border-bottom: 1px solid var(--border-color);
-    color: var(--text-primary);
-    vertical-align: middle;
-    font-size: 12.5px;
-  }
-
-  .pm-wrapper tbody tr {
+  .product-catalog-root .clean-table tbody tr {
+    border-bottom: 1px solid #F1F5F9;
     transition: background-color 0.15s ease;
     cursor: pointer;
-    user-select: none;
   }
 
-  .pm-wrapper tbody tr:hover {
-    background-color: #f1f5f9;
+  .product-catalog-root .clean-table tbody tr:hover {
+    background-color: #F8FAFC;
   }
 
-  .pm-wrapper tbody tr:last-child td {
-    border-bottom: none;
-  }
-
-  /* Cell Styling - Reduced Size & Bold fields */
-  .pm-wrapper .cell-name {
-    font-weight: 600;
-    color: var(--text-primary);
-    font-size: 13px;
-  }
-
-  .pm-wrapper .cell-sku {
-    font-family: 'Courier New', monospace;
-    color: #0f172a;
-    font-weight: 700;
-    font-size: 13px;
-    letter-spacing: 0.2px;
-  }
-
-  .pm-wrapper .cell-imei {
-    font-family: 'Courier New', monospace;
-    color: #0f172a;
-    font-weight: 700;
-    font-size: 13px;
-    letter-spacing: 0.2px;
-  }
-
-  .pm-wrapper .cell-unit {
-    color: #0f172a;
-    font-weight: 700;
-    font-size: 12.5px;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding-top: 10px;
-    padding-bottom: 10px;
-  }
-
-  .pm-wrapper .unit-tag {
-    font-weight: 700;
-    color: #0f172a;
-  }
-
-  .pm-wrapper .multi-tag {
-    background: #e0f2fe;
-    color: #0369a1;
-    font-size: 10.5px;
-    font-weight: 700;
-    padding: 1px 5px;
-    border-radius: 4px;
-    border: 1px solid #bae6fd;
-    line-height: 1.2;
-  }
-
-  .pm-wrapper .cell-numeric {
-    text-align: right;
-    font-weight: 600;
-    font-family: 'Segoe UI', Roboto, sans-serif;
-  }
-
-  .pm-wrapper .cell-currency {
-    color: var(--status-success);
-    font-weight: 600;
-  }
-
-  .pm-wrapper .cell-dash {
-    color: var(--text-muted);
-    text-align: center;
-    font-weight: 400;
-  }
-
-  /* Actions Column */
-  .pm-wrapper .cell-actions {
-    text-align: center;
+  .product-catalog-root .clean-table tbody td {
+    padding: 12px 18px;
     vertical-align: middle;
   }
 
-  .pm-wrapper .action-buttons {
-    display: inline-flex;
-    gap: 6px;
-    align-items: center;
-    justify-content: center;
+  .product-catalog-root .text-right {
+    text-align: right;
   }
 
-  .pm-wrapper .btn-icon {
-    width: 28px;
-    height: 28px;
-    padding: 0;
-    border: 1px solid var(--border-color);
-    background: var(--bg-secondary);
-    color: var(--text-secondary);
-    border-radius: 4px;
-    cursor: pointer;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 13px;
-    transition: all 0.2s ease;
-  }
-
-  .pm-wrapper .btn-icon:hover {
-    background: #f1f5f9;
-    border-color: var(--border-hover);
-  }
-
-  .pm-wrapper .btn-icon.edit:hover {
-    color: var(--accent-primary);
-    border-color: var(--accent-primary);
-    background: #eff6ff;
-  }
-
-  .pm-wrapper .btn-icon.delete:hover {
-    color: var(--status-error);
-    border-color: var(--status-error);
-    background: #fef2f2;
-  }
-
-  /* Empty State */
-  .pm-wrapper .empty-state {
-    padding: 32px 20px;
+  .product-catalog-root .text-center {
     text-align: center;
+  }
+
+  /* Product identity */
+  .product-catalog-root .product-identity-wrap {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .product-catalog-root .avatar-circle {
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12.5px;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+
+  .product-catalog-root .product-details-wrap {
+    min-width: 0;
+  }
+
+  .product-catalog-root .product-title-text {
+    font-weight: 700;
+    color: var(--text-heading);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 320px;
+    font-size: 13.5px;
+  }
+
+  .product-catalog-root .product-unit-text {
+    font-size: 11px;
     color: var(--text-muted);
+    margin-top: 1px;
   }
 
-  .pm-wrapper .empty-state-icon {
-    font-size: 40px;
-    margin-bottom: 10px;
-    opacity: 0.5;
-  }
-
-  .pm-wrapper .empty-state p {
-    font-size: 13px;
-    margin-bottom: 12px;
-    color: var(--text-secondary);
-  }
-
-  /* Footer */
-  .pm-wrapper .table-footer {
-    padding: 10px 16px;
-    border-top: 1px solid var(--border-color);
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    background: #fafbfc;
+  /* Badges */
+  .product-catalog-root .sku-badge {
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
     font-size: 12px;
-    color: var(--text-secondary);
-  }
-
-  .pm-wrapper .pagination-controls {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-
-  .pm-wrapper .btn-page {
-    border: 1px solid var(--border-color);
-    background: #ffffff;
-    color: var(--text-primary);
+    font-weight: 600;
+    color: #475569;
+    background-color: #F1F5F9;
     padding: 3px 8px;
-    border-radius: 4px;
+    border-radius: 5px;
+    border: 1px solid #E2E8F0;
+  }
+
+  .product-catalog-root .imei-badge {
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    font-size: 11.5px;
+    font-weight: 500;
+    color: #0369A1;
+    background-color: #F0F9FF;
+    padding: 3px 8px;
+    border-radius: 5px;
+    border: 1px solid #BAE6FD;
+  }
+
+  .product-catalog-root .dash-text {
+    color: #CBD5E1;
+  }
+
+  .product-catalog-root .multi-unit-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background-color: #EEF2FF;
+    color: #4F46E5;
+    border: 1px solid #C7D2FE;
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 700;
     cursor: pointer;
-    font-size: 11.5px;
+    transition: all 0.15s ease;
+  }
+
+  .product-catalog-root .multi-unit-btn:hover {
+    background-color: #4F46E5;
+    color: #FFFFFF;
+    border-color: #4F46E5;
+  }
+
+  .product-catalog-root .single-unit-text {
+    font-size: 12px;
+    color: #94A3B8;
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  }
+
+  /* Rates */
+  .product-catalog-root .price-selling-text {
+    font-weight: 700;
+    font-size: 13.5px;
+    color: #059669;
+  }
+
+  .product-catalog-root .vat-text {
+    font-size: 10.5px;
+    color: #94A3B8;
+    margin-top: 1px;
+  }
+
+  .product-catalog-root .price-cost-text {
+    font-size: 13.5px;
+    color: #475569;
     font-weight: 500;
-    transition: all 0.15s;
   }
 
-  .pm-wrapper .btn-page:hover:not(:disabled) {
-    border-color: var(--accent-primary);
-    color: var(--accent-primary);
+  /* Actions */
+  .product-catalog-root .action-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
   }
 
-  .pm-wrapper .btn-page:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
+  .product-catalog-root .btn-action {
+    width: 30px;
+    height: 30px;
+    border-radius: 6px;
+    border: 1px solid var(--border-color);
+    background-color: #FFFFFF;
+    color: #64748B;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: all 0.15s ease;
   }
 
-  .pm-wrapper .page-indicator {
-    font-size: 11.5px;
-    color: var(--text-secondary);
-    font-weight: 500;
+  .product-catalog-root .btn-action-view:hover {
+    background-color: #EEF2FF;
+    color: #4F46E5;
+    border-color: #C7D2FE;
   }
 
-  .pm-wrapper .spinner {
-    width: 13px;
-    height: 13px;
-    border: 2px solid #cbd5e1;
-    border-top-color: var(--accent-primary);
+  .product-catalog-root .btn-action-edit:hover {
+    background-color: #F0FDF4;
+    color: #16A34A;
+    border-color: #BBF7D0;
+  }
+
+  .product-catalog-root .btn-action-delete:hover {
+    background-color: #FEF2F2;
+    color: #DC2626;
+    border-color: #FECACA;
+  }
+
+  /* Empty & Loading States */
+  .product-catalog-root .td-loading,
+  .product-catalog-root .td-empty {
+    text-align: center;
+    padding: 48px 16px;
+  }
+
+  .product-catalog-root .loading-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    color: #64748B;
+    font-size: 13.5px;
+    font-weight: 600;
+  }
+
+  .product-catalog-root .spinner-circle {
+    width: 16px;
+    height: 16px;
+    border: 2px solid #CBD5E1;
+    border-top-color: var(--primary);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+
+  .product-catalog-root .spinner-circle-sm {
+    width: 12px;
+    height: 12px;
+    border: 2px solid #CBD5E1;
+    border-top-color: var(--primary);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
     display: inline-block;
+  }
+
+  .product-catalog-root .spin-icon {
+    animation: spin 0.8s linear infinite;
   }
 
   @keyframes spin {
     to { transform: rotate(360deg); }
   }
 
-  /* Responsive */
+  .product-catalog-root .empty-box {
+    text-align: center;
+    color: #64748B;
+  }
+
+  .product-catalog-root .empty-icon-wrap {
+    font-size: 38px;
+    margin-bottom: 8px;
+    opacity: 0.6;
+  }
+
+  .product-catalog-root .empty-title-text {
+    font-size: 15px;
+    font-weight: 700;
+    color: #0F172A;
+  }
+
+  .product-catalog-root .empty-sub-text {
+    font-size: 13px;
+    color: #64748B;
+    margin: 4px 0 0 0;
+  }
+
+  /* Card Footer */
+  .product-catalog-root .card-footer {
+    padding: 12px 20px;
+    border-top: 1px solid var(--border-color);
+    background-color: #FCFDFE;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 13px;
+    color: var(--text-muted);
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .product-catalog-root .filter-badge-text {
+    color: var(--primary);
+    font-weight: 600;
+  }
+
+  .product-catalog-root .pagination-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .product-catalog-root .btn-nav-page {
+    border: 1px solid var(--border-color);
+    background-color: #FFFFFF;
+    color: var(--text-heading);
+    padding: 5px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12.5px;
+    font-weight: 600;
+    transition: all 0.15s ease;
+  }
+
+  .product-catalog-root .btn-nav-page:hover:not(:disabled) {
+    border-color: var(--primary);
+    color: var(--primary);
+  }
+
+  .product-catalog-root .btn-nav-page:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .product-catalog-root .page-label {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--text-muted);
+  }
+
+  .product-catalog-root .scroll-indicator-pill {
+    position: absolute;
+    bottom: 12px;
+    right: 16px;
+    font-size: 11.5px;
+    font-weight: 700;
+    color: var(--primary);
+    background: rgba(255, 255, 255, 0.95);
+    border: 1px solid var(--border-color);
+    padding: 3px 10px;
+    border-radius: 9999px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+  }
+
+  .product-catalog-root .scroll-indicator-pill.show {
+    opacity: 1;
+  }
+
+  /* Empty Company */
+  .product-catalog-root .empty-company-card {
+    background-color: #FFFFFF;
+    border-radius: 16px;
+    padding: 48px;
+    border: 1px solid #E2E8F0;
+    text-align: center;
+    max-width: 500px;
+    margin: 40px auto;
+  }
+
+  .product-catalog-root .empty-company-icon {
+    font-size: 44px;
+    margin-bottom: 12px;
+  }
+
   @media (max-width: 768px) {
-    .pm-wrapper {
-      padding: var(--spacing-sm);
+    .product-catalog-root {
+      padding: 16px;
     }
 
-    .pm-wrapper .header {
+    .product-catalog-root .catalog-header {
       flex-direction: column;
-      align-items: stretch;
+      align-items: flex-start;
     }
 
-    .pm-wrapper .header h1 {
-      font-size: 20px;
-    }
-
-    .pm-wrapper .header-actions {
-      flex-direction: column;
-    }
-
-    .pm-wrapper .search-box {
-      max-width: 100%;
-    }
-
-    .pm-wrapper .btn-add {
+    .product-catalog-root .header-actions-group {
       width: 100%;
+    }
+
+    .product-catalog-root .btn-create,
+    .product-catalog-root .btn-export {
+      flex: 1;
       justify-content: center;
     }
 
-    .pm-wrapper table {
-      font-size: 12px;
-    }
-
-    .pm-wrapper thead th,
-    .pm-wrapper tbody td {
-      padding: 6px 8px;
-    }
-
-    .pm-wrapper .table-stats {
-      flex-wrap: wrap;
-      gap: 8px;
-    }
-
-    .pm-wrapper .table-footer {
-      flex-direction: column;
-      gap: 8px;
-      text-align: center;
+    .product-catalog-root .search-box-wrapper {
+      max-width: 100%;
     }
   }
 `;

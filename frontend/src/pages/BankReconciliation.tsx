@@ -49,7 +49,7 @@ const formatDateDisplay = (dateStr?: string | Date) => {
   if (!dateStr) return '';
   const d = dayjs(dateStr);
   if (!d.isValid()) return String(dateStr);
-  return d.format('DD MMM YYYY');
+  return d.format('DD-MM-YYYY');
 };
 
 const formatCurrency = (amount: number) => {
@@ -67,7 +67,7 @@ export default function BankReconciliation() {
   // Filter States
   const [bankAccounts, setBankAccounts] = useState<Array<{ _id: string; name: string; code: string; type?: string }>>([]);
   const [selectedBankId, setSelectedBankId] = useState<string>('');
-  const [fromDate, setFromDate] = useState<string>(() => dayjs().startOf('month').format('YYYY-MM-DD'));
+  const [fromDate, setFromDate] = useState<string>(() => dayjs().format('YYYY-MM-DD'));
   const [toDate, setToDate] = useState<string>(() => dayjs().format('YYYY-MM-DD'));
 
   // Data States
@@ -95,16 +95,19 @@ export default function BankReconciliation() {
   useEffect(() => {
     if (!companyId) return;
     ledgerAccountApi.list(companyId).then((res) => {
-      const all = (res.data.data as Array<{ _id: string; name: string; code: string; type?: string }>) || [];
+      const all = (res.data.data as Array<{ _id: string; name: string; code: string; type?: string; reconciliation?: boolean }>) || [];
       const banks = all.filter(
         (a) =>
-          a.type === 'Bank' ||
+          (a.type === 'Bank' ||
           a.type === 'BANK' ||
-          a.name.toUpperCase().includes('BANK')
+          a.name.toUpperCase().includes('BANK')) &&
+          a.reconciliation !== false
       );
-      setBankAccounts(banks.length > 0 ? banks : all);
-      if (banks.length > 0 && !selectedBankId) {
+      setBankAccounts(banks);
+      if (banks.length > 0 && (!selectedBankId || !banks.some((b) => b._id === selectedBankId))) {
         setSelectedBankId(banks[0]._id);
+      } else if (banks.length === 0) {
+        setSelectedBankId('');
       }
     });
   }, [companyId]);

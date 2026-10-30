@@ -3,11 +3,13 @@ import { LedgerAccount, ILedgerAccount, IOpeningBalance } from '../models/Ledger
 import { LedgerEntry } from '../models/LedgerEntry';
 import { SalesInvoice } from '../models/SalesInvoice';
 import { Voucher } from '../models/Voucher';
+import { FinancialYear } from '../models/FinancialYear';
 import { AppError } from '../middlewares/errorHandler';
+import { getOpeningAccountsLedger } from './openingPurchaseService';
 
 export async function listByCompany(
   companyId: string,
-  opts: { type?: string; search?: string } = {}
+  opts: { type?: string; search?: string; financialYearId?: string; lite?: boolean } = {}
 ): Promise<ILedgerAccount[]> {
   const filter: Record<string, unknown> = { companyId };
   if (opts.type) filter.type = opts.type;
@@ -19,7 +21,72 @@ export async function listByCompany(
       { aliasName: new RegExp(search, 'i') },
     ];
   }
-  return LedgerAccount.find(filter).populate('groupId', 'name code type').sort({ code: 1 }).lean() as unknown as ILedgerAccount[];
+  const accounts = (await LedgerAccount.find(filter)
+    .populate('groupId', 'name code type')
+    .sort({ code: 1 })
+    .lean()) as any[];
+
+  if (accounts.length === 0) return [];
+  // Entry pages only need name/code/type; skip the per-account ledger aggregation there
+  if (opts.lite) return accounts as unknown as ILedgerAccount[];
+
+  const accountIds = accounts.map((a) => a._id);
+  const entryMatch: Record<string, unknown> = {
+    companyId: new mongoose.Types.ObjectId(companyId),
+    ledgerAccountId: { $in: accountIds },
+  };
+  if (opts.financialYearId) {
+    entryMatch.financialYearId = new mongoose.Types.ObjectId(opts.financialYearId);
+  }
+
+  const entryAgg = await LedgerEntry.aggregate([
+    { $match: entryMatch },
+    {
+      $group: {
+        _id: '$ledgerAccountId',
+        totalDebit: { $sum: '$debitAmount' },
+        totalCredit: { $sum: '$creditAmount' },
+      },
+    },
+  ]);
+
+  const entryMap = new Map<string, { totalDebit: number; totalCredit: number }>();
+  for (const e of entryAgg) {
+    entryMap.set(e._id.toString(), {
+      totalDebit: e.totalDebit || 0,
+      totalCredit: e.totalCredit || 0,
+    });
+  }
+
+  return accounts.map((acc: any) => {
+    let obDebit = 0;
+    let obCredit = 0;
+    if (Array.isArray(acc.openingBalances)) {
+      for (const ob of acc.openingBalances) {
+        if (
+          opts.financialYearId &&
+          ob.financialYearId &&
+          ob.financialYearId.toString() !== opts.financialYearId
+        ) {
+          continue;
+        }
+        if (ob.isDebit) obDebit += Number(ob.amount) || 0;
+        else obCredit += Number(ob.amount) || 0;
+      }
+    }
+
+    const e = entryMap.get(acc._id.toString());
+    const totalDebit = obDebit + (e?.totalDebit || 0);
+    const totalCredit = obCredit + (e?.totalCredit || 0);
+    const net = totalDebit - totalCredit;
+
+    return {
+      ...acc,
+      closingBalance: Math.abs(net),
+      closingIsDebit: net >= 0,
+      outstandingBalance: acc.type === 'Supplier' || acc.type === 'SUPPLIER' ? -net : net,
+    };
+  }) as unknown as ILedgerAccount[];
 }
 
 export async function getById(ledgerAccountId: string, companyId: string): Promise<ILedgerAccount | null> {
@@ -93,6 +160,9 @@ export interface CreateLedgerAccountInput {
   mailingName?: string;
   mailingBank?: string;
   againstRef?: boolean;
+  reconciliation?: boolean;
+  isCardAccount?: boolean;
+  cardAccount?: boolean;
   createdBy?: string;
 }
 
@@ -178,8 +248,15 @@ export async function create(input: CreateLedgerAccountInput): Promise<ILedgerAc
     mailingName: input.mailingName,
     mailingBank: input.mailingBank,
     againstRef: input.againstRef !== undefined ? input.againstRef : true,
+    reconciliation: input.reconciliation !== undefined ? input.reconciliation : true,
+    isCardAccount: input.isCardAccount !== undefined ? input.isCardAccount : (input.cardAccount !== undefined ? input.cardAccount : false),
     createdBy: input.createdBy,
   });
+
+  if (openingBalances.length > 0) {
+    await syncOpeningAccountsLedgerBalance(input.companyId, input.financialYearId);
+  }
+
   return account.toObject();
 }
 
@@ -191,7 +268,7 @@ const updateableFields = [
   'rating', 'story', 'empCode', 'salesMan', 'person', 'agent2', 'branchId',
   'accountHolderName', 'accountNumber', 'iban', 'swiftCode', 'bankName', 'branch',
   'vatRegistrationType', 'vatRegistrationDate', 'country', 'poBox', 'localLanguageDetails',
-  'mailingName', 'mailingBank', 'againstRef',
+  'mailingName', 'mailingBank', 'againstRef', 'reconciliation', 'isCardAccount',
 ] as const;
 
 export async function update(
@@ -213,6 +290,9 @@ export async function update(
   const safe: Record<string, unknown> = {};
   for (const key of updateableFields) {
     if (updates[key] !== undefined) safe[key] = updates[key];
+  }
+  if (updates.cardAccount !== undefined && updates.isCardAccount === undefined) {
+    safe.isCardAccount = updates.cardAccount;
   }
 
   if (updates.financialYearId) {
@@ -243,6 +323,11 @@ export async function update(
     { new: true }
   ).lean();
   if (!account) throw new AppError('Ledger account not found', 404);
+
+  if (updates.financialYearId) {
+    await syncOpeningAccountsLedgerBalance(companyId, String(updates.financialYearId));
+  }
+
   return account as unknown as ILedgerAccount;
 }
 
@@ -280,4 +365,69 @@ export async function remove(ledgerAccountId: string, companyId: string): Promis
 
   const result = await LedgerAccount.deleteOne({ _id: ledgerAccountId, companyId });
   if (result.deletedCount === 0) throw new AppError('Ledger account not found', 404);
+
+  await syncOpeningAccountsLedgerBalance(companyId);
+}
+
+export async function syncOpeningAccountsLedgerBalance(
+  companyId: string,
+  financialYearId?: string
+): Promise<void> {
+  const openingAcc = await getOpeningAccountsLedger(companyId);
+  if (!openingAcc) return;
+
+  const accounts = await LedgerAccount.find({
+    companyId,
+    _id: { $ne: openingAcc._id },
+  }).lean();
+
+  let fyIds: string[] = [];
+  if (financialYearId) {
+    fyIds = [financialYearId];
+  } else {
+    const allFy = await FinancialYear.find({ companyId }).lean();
+    fyIds = allFy.map((f: any) => f._id.toString());
+  }
+
+  for (const acc of accounts) {
+    for (const ob of (acc.openingBalances || [])) {
+      if (ob.financialYearId) {
+        const idStr = ob.financialYearId.toString();
+        if (!fyIds.includes(idStr)) fyIds.push(idStr);
+      }
+    }
+  }
+
+  const existingBalances = (openingAcc.openingBalances || []).filter(
+    (b: any) => b.financialYearId && !fyIds.includes(b.financialYearId.toString())
+  );
+
+  for (const fyIdStr of fyIds) {
+    let otherTotalDr = 0;
+    let otherTotalCr = 0;
+
+    for (const acc of accounts) {
+      const ob = (acc.openingBalances || []).find(
+        (b: any) => b.financialYearId && b.financialYearId.toString() === fyIdStr
+      );
+      if (ob && Number(ob.amount) > 0) {
+        if (ob.isDebit) otherTotalDr += Number(ob.amount);
+        else otherTotalCr += Number(ob.amount);
+      }
+    }
+
+    const net = otherTotalDr - otherTotalCr;
+    if (Math.abs(net) > 0.001) {
+      existingBalances.push({
+        financialYearId: new mongoose.Types.ObjectId(fyIdStr),
+        amount: Math.abs(net),
+        isDebit: net < 0, // If other accounts have net Debit, Opening Accounts has Credit (isDebit: false) to balance
+      });
+    }
+  }
+
+  await LedgerAccount.updateOne(
+    { _id: openingAcc._id },
+    { $set: { openingBalances: existingBalances } }
+  );
 }

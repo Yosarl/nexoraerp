@@ -4,6 +4,9 @@ export type AuditAction =
   | 'Create'
   | 'Update'
   | 'Delete'
+  | 'Saved'
+  | 'Edited'
+  | 'Deleted'
   | 'Login'
   | 'Logout'
   | 'Backup'
@@ -22,6 +25,16 @@ export interface IAuditLog extends Document {
   ip?: string;
   userAgent?: string;
   details?: string;
+  form?: string;
+  entryNo?: string;
+  salesType?: string;
+  voucherType?: string;
+  editedDate?: string;
+  editedTime?: string;
+  eventTime?: string;
+  oldAmount?: number;
+  newAmount?: number;
+  systemName?: string;
 }
 
 const AuditLogSchema = new Schema<IAuditLog>(
@@ -33,7 +46,7 @@ const AuditLogSchema = new Schema<IAuditLog>(
     entityId: { type: String },
     action: {
       type: String,
-      enum: ['Create', 'Update', 'Delete', 'Login', 'Logout', 'Backup', 'Restore', 'Import'],
+      enum: ['Create', 'Update', 'Delete', 'Saved', 'Edited', 'Deleted', 'Login', 'Logout', 'Backup', 'Restore', 'Import'],
       required: true,
     },
     before: { type: Schema.Types.Mixed },
@@ -41,6 +54,16 @@ const AuditLogSchema = new Schema<IAuditLog>(
     ip: { type: String },
     userAgent: { type: String },
     details: { type: String },
+    form: { type: String },
+    entryNo: { type: String },
+    salesType: { type: String },
+    voucherType: { type: String },
+    editedDate: { type: String },
+    editedTime: { type: String },
+    eventTime: { type: String },
+    oldAmount: { type: Number },
+    newAmount: { type: Number },
+    systemName: { type: String },
   },
   { timestamps: false }
 );
@@ -48,5 +71,8 @@ const AuditLogSchema = new Schema<IAuditLog>(
 AuditLogSchema.index({ companyId: 1, timestamp: -1 });
 AuditLogSchema.index({ userId: 1, timestamp: -1 });
 AuditLogSchema.index({ entityType: 1, entityId: 1 });
+AuditLogSchema.index({ form: 1 });
+AuditLogSchema.index({ action: 1 });
+AuditLogSchema.index({ entryNo: 1 });
 
 export const AuditLog = mongoose.model<IAuditLog>('AuditLog', AuditLogSchema);

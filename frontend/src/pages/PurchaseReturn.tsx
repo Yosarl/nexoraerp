@@ -24,6 +24,7 @@ import {
   Alert,
   MenuItem,
   Tooltip,
+  Checkbox,
 } from '@mui/material';
 import {
   Delete as DeleteIcon,
@@ -267,6 +268,7 @@ export default function PurchaseReturn() {
   const [otherCharges, setOtherCharges] = useState(0);
   const [freightCharge, setFreightCharge] = useState(0);
   const [roundOff, setRoundOff] = useState(0);
+  const [autoRoundOff, setAutoRoundOff] = useState(false);
   const [narration, setNarration] = useState('');
 
   // List & navigation
@@ -425,8 +427,32 @@ export default function PurchaseReturn() {
     const totalVat = itemsVat + vatFromAdjustments;
     const subTotal = lines.reduce((sum, l) => sum + l.total, 0);
     const grandTotal = subTotal - otherDiscount + otherCharges + freightCharge + roundOff;
-    return { itemsGross, itemsDiscount, itemsVat, totalVat, grandTotal };
+    return { itemsGross, itemsDiscount, itemsVat, totalVat, grandTotal, subTotal };
   }, [lines, otherDiscount, otherCharges, freightCharge, roundOff, vatType]);
+
+  // Auto round-off toggle handler
+  const handleAutoRoundOffToggle = useCallback((checked: boolean) => {
+    setAutoRoundOff(checked);
+    if (checked) {
+      const baseTotal = calculations.subTotal - otherDiscount + otherCharges + freightCharge;
+      const rounded = Math.round(baseTotal);
+      const diff = parseFloat((rounded - baseTotal).toFixed(2));
+      setRoundOff(diff);
+    } else {
+      setRoundOff(0);
+    }
+  }, [calculations.subTotal, otherDiscount, otherCharges, freightCharge]);
+
+  // Keep roundOff in sync when autoRoundOff is active and totals change
+  useEffect(() => {
+    if (!autoRoundOff) return;
+    const baseTotal = calculations.subTotal - otherDiscount + otherCharges + freightCharge;
+    const rounded = Math.round(baseTotal);
+    const diff = parseFloat((rounded - baseTotal).toFixed(2));
+    if (diff !== roundOff) {
+      setRoundOff(diff);
+    }
+  }, [autoRoundOff, calculations.subTotal, otherDiscount, otherCharges, freightCharge, roundOff]);
 
   const handleOtherDiscPercentChange = (percent: number) => {
     setOtherDiscPercent(percent);
@@ -476,17 +502,46 @@ export default function PurchaseReturn() {
     const createdName = state.createdLedgerName;
     setPendingSupplierName(createdName);
     loadSuppliers();
+    window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
     const path = routeLocation.pathname;
     setTimeout(() => navigate(path, { replace: true, state: {} }), 0);
   }, [routeLocation.pathname, routeLocation.state, loadSuppliers, navigate]);
 
-  // Load products
-  useEffect(() => {
+  const loadProducts = useCallback(() => {
     if (!companyId) return;
     productApi.list(companyId, { limit: 1000 }).then((res) => {
       setProducts((res.data.data?.products || []) as Product[]);
     }).catch(() => setProducts([]));
   }, [companyId]);
+
+  // Load products
+  useEffect(() => {
+    loadProducts();
+  }, [loadProducts]);
+
+  useEffect(() => {
+    const onProductsUpdated = () => {
+      loadProducts();
+    };
+    const onLedgersUpdated = () => {
+      loadSuppliers();
+    };
+    const onWindowActivated = (e: any) => {
+      const p = e.detail?.path;
+      if (p === '/entry/purchase-return' || p === '/entry/purchasereturn') {
+        loadProducts();
+        loadSuppliers();
+      }
+    };
+    window.addEventListener('app:products-updated', onProductsUpdated);
+    window.addEventListener('app:ledgers-updated', onLedgersUpdated);
+    window.addEventListener('app:window-activated', onWindowActivated);
+    return () => {
+      window.removeEventListener('app:products-updated', onProductsUpdated);
+      window.removeEventListener('app:ledgers-updated', onLedgersUpdated);
+      window.removeEventListener('app:window-activated', onWindowActivated);
+    };
+  }, [loadProducts, loadSuppliers]);
 
   // Load return list and next invoice no on mount
   useEffect(() => {
@@ -637,6 +692,7 @@ export default function PurchaseReturn() {
       setOtherCharges(data.otherCharges ?? 0);
       setFreightCharge(data.freightCharge ?? 0);
       setRoundOff(data.roundOff ?? 0);
+      setAutoRoundOff(false);
       setNarration(data.narration || '');
       const subTotal = (data.items || []).reduce((s, i) => s + i.quantity * i.purchasePrice - (i.discAmount ?? 0), 0);
       setOtherDiscPercent(subTotal > 0 && (data.otherDiscount ?? 0) > 0
@@ -689,6 +745,17 @@ export default function PurchaseReturn() {
       setLoading(false);
     }
   }, [companyId, returnList, calcVatAndTotal, products]);
+
+  // Auto-load purchase return if navigated with returnId or invoiceId in location state
+  useEffect(() => {
+    const state = routeLocation.state as { returnId?: string; invoiceId?: string; id?: string } | null;
+    const urlParams = new URLSearchParams(window.location.search);
+    const targetId = state?.returnId || state?.invoiceId || state?.id || urlParams.get('id');
+    if (targetId && companyId) {
+      loadReturnIntoForm(targetId);
+      navigate(routeLocation.pathname, { replace: true, state: {} });
+    }
+  }, [companyId, routeLocation.pathname, routeLocation.state, loadReturnIntoForm, navigate]);
 
   const navFirst = useCallback(() => {
     if (returnList.length === 0) return;
@@ -1420,6 +1487,7 @@ export default function PurchaseReturn() {
     setOtherCharges(0);
     setFreightCharge(0);
     setRoundOff(0);
+    setAutoRoundOff(false);
     setNarration('');
     setCurrentNavIndex(-1);
     setSelectedProductInfo(null);
@@ -2296,12 +2364,30 @@ export default function PurchaseReturn() {
                 />
               </Grid>
               <Grid item xs={6}>
-                <Typography sx={{ fontSize: '0.7rem', color: '#64748b', mb: 0.3 }}>Round Off</Typography>
+                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.3 }}>
+                  <Typography sx={{ fontSize: '0.7rem', color: '#64748b' }}>Round Off</Typography>
+                  <Tooltip title="Round Off Total (Auto Round)" arrow placement="top">
+                    <Checkbox
+                      size="small"
+                      checked={autoRoundOff}
+                      onChange={(e) => handleAutoRoundOffToggle(e.target.checked)}
+                      sx={{
+                        p: 0,
+                        color: '#94a3b8',
+                        '&.Mui-checked': { color: '#0f766e' },
+                        '& .MuiSvgIcon-root': { fontSize: '1rem' },
+                      }}
+                    />
+                  </Tooltip>
+                </Box>
                 <TextField
                   size="small"
                   type="number"
                   value={roundOff === 0 ? '' : roundOff}
-                  onChange={(e) => setRoundOff(parseFloat(e.target.value) || 0)}
+                  onChange={(e) => {
+                    setAutoRoundOff(false);
+                    setRoundOff(parseFloat(e.target.value) || 0);
+                  }}
                   inputRef={roundOffRef}
                   onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); narrationRef.current?.focus(); } }}
                   fullWidth

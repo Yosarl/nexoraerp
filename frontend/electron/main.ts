@@ -52,7 +52,25 @@ function getBackendCwd(): string {
 }
 
 // ── Start the Express backend using Electron's utilityProcess ───────
-function startBackend(): Promise<void> {
+async function startBackend(): Promise<void> {
+  // Check if backend is already running (e.g. via 'npm run dev:backend')
+  const alreadyRunning = await new Promise<boolean>((resolve) => {
+    const req = http.get(`http://localhost:${BACKEND_PORT}/api/health`, (res) => {
+      res.resume();
+      resolve(res.statusCode === 200);
+    });
+    req.on('error', () => resolve(false));
+    req.setTimeout(1000, () => {
+      req.destroy();
+      resolve(false);
+    });
+  });
+
+  if (alreadyRunning) {
+    console.log(`[electron] Backend is already running on port ${BACKEND_PORT}`);
+    return;
+  }
+
   return new Promise((resolve, reject) => {
     const entry = getBackendEntry();
     const cwd = getBackendCwd();
@@ -192,6 +210,16 @@ ipcMain.on('minimize-window', () => {
 
 ipcMain.on('close-window', () => {
   mainWindow?.close();
+});
+
+ipcMain.handle('get-printers', async () => {
+  if (!mainWindow) return [];
+  try {
+    return await mainWindow.webContents.getPrintersAsync();
+  } catch (err) {
+    console.error('[electron] Failed to get printers', err);
+    return [];
+  }
 });
 
 // ── App lifecycle ───────────────────────────────────────────────────

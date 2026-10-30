@@ -29,6 +29,9 @@ import {
   ListItem,
   ListItemText,
   ListItemSecondaryAction,
+  CircularProgress,
+  InputAdornment,
+  Checkbox,
 } from '@mui/material';
 import {
   Delete as DeleteIcon,
@@ -46,11 +49,16 @@ import {
   RestorePage as RestoreIcon,
   WarningAmber as WarningIcon,
   Send as SendIcon,
+  LocalPharmacy as LocalPharmacyIcon,
+  CheckCircle as CheckCircleIcon,
+  Close as CloseIcon,
+  EditOutlined as EditOutlinedIcon,
+  Add as AddIcon,
 } from '@mui/icons-material';
 import { useSelector, useDispatch } from 'react-redux';
 import type { RootState } from '../store';
 import { salesApi, productApi, ledgerAccountApi, purchaseApi, stockApi, B2CLineItem, B2CInvoiceInput } from '../services/api';
-import DateInput, { getCurrentDate } from '../components/DateInput';
+import DateInput, { getCurrentDate, formatDateDisplay } from '../components/DateInput';
 import { setDrawerOpen } from '../store/slices/appSlice';
 import {
   commonButtonStyles,
@@ -60,6 +68,32 @@ import {
   calculateProfit,
   formatStockDisplay,
 } from '../utils/salesDesignPatterns';
+
+export interface DoctorItem {
+  _id?: string;
+  name: string;
+  licenseNumber: string;
+  licensingAuthority?: string;
+  phone?: string;
+  specialty?: string;
+}
+
+export interface PatientItem {
+  _id?: string;
+  emiratesId: string;
+  firstName: string;
+  familyName: string;
+  fullName: string;
+  dob?: string;
+  gender?: 'Female' | 'Male' | 'Unknown';
+  mrn?: string;
+  phone?: string;
+  language?: string;
+  emirate?: string;
+  city?: string;
+  street?: string;
+  country?: string;
+}
 
 interface UnitOption {
   id: string;
@@ -81,6 +115,17 @@ interface LineItem {
   productCode: string;
   imei: string;
   name: string;
+  isRx?: boolean;
+  dosageInstructions?: {
+    duration: string;
+    durationUnit: string;
+    timing: string;
+    frequency: string;
+    summary: string;
+  };
+  duration?: string;
+  timing?: string;
+  frequency?: string;
   unitId: string;
   unitName: string;
   availableUnits: UnitOption[];
@@ -91,6 +136,7 @@ interface LineItem {
   batchMaxPieces?: number;
   /** Batch number selected for this line (used for cross-row batch cap checks) */
   batchNumber?: string;
+  expiryDate?: string;
   price: number;
   purchasePrice: number;
   gross: number;
@@ -166,6 +212,7 @@ interface HeldInvoice {
   cashAccountId: string | null;
   cardAccountId: string | null;
   cardAmount: number;
+  cardReference?: string;
   lines: LineItem[];
   cashReceived: number;
   oldBalance: number;
@@ -175,7 +222,15 @@ interface HeldInvoice {
   freightCharge: number;
   lendAddLess: number;
   roundOff: number;
+  autoRoundOff?: boolean;
   narration: string;
+  emiratesId?: string;
+  patientName?: string;
+  doctorName?: string;
+  doctorLicenseNo?: string;
+  prescriptionNumber?: string;
+  prescriptionDate?: string;
+  isRiayati?: boolean;
 }
 
 const HOLD_STORAGE_KEY = 'salesB2C_heldInvoices';
@@ -199,6 +254,7 @@ const emptyLine = (): LineItem => ({
   productCode: '',
   imei: '',
   name: '',
+  isRx: false,
   unitId: '',
   unitName: '',
   availableUnits: [],
@@ -256,16 +312,66 @@ export default function SalesB2C() {
 
   // Customer
   const [customerId, setCustomerId] = useState<string | null>(null);
-  const [customerName, setCustomerName] = useState(isB2BMode ? '' : 'CASH');
+  const [customerName, setCustomerName] = useState(isB2BMode ? '' : 'CASH IN HAND');
   const [customerAddress, setCustomerAddress] = useState('');
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [pendingCustomerName, setPendingCustomerName] = useState<string | null>(null);
   const [customerAcListboxOpen, setCustomerAcListboxOpen] = useState(false);
   const [createCustomerConfirmOpen, setCreateCustomerConfirmOpen] = useState(false);
   const [createCustomerConfirmName, setCreateCustomerConfirmName] = useState<string | null>(null);
+  const [createProductConfirmOpen, setCreateProductConfirmOpen] = useState(false);
+  const [createProductConfirmName, setCreateProductConfirmName] = useState<string | null>(null);
+  const pendingProductLineIdRef = useRef<string | null>(null);
+  const [pendingProductName, setPendingProductName] = useState<string | null>(null);
+  const [pendingProductLineId, setPendingProductLineId] = useState<string | null>(null);
+  const handledProductReturnRef = useRef(false);
   const customerAcRef = useRef<HTMLInputElement>(null);
   const customerNameRef = useRef<HTMLInputElement>(null);
+  const customerInitializedRef = useRef(false);
+  const shouldFocusCustomerAcRef = useRef(false);
   const rateTypeRef = useRef<HTMLInputElement>(null);
+
+  // Collapse duplicate mount/activation loads and skip refetches of just-loaded data
+  type LoadKey = 'products' | 'customers' | 'cash' | 'invoiceIds' | 'doctors' | 'patients' | 'nextInvoiceNo';
+  const loadGuardsRef = useRef<Record<LoadKey, { promise: Promise<void> | null; loadedAt: number }>>({
+    products: { promise: null, loadedAt: 0 },
+    customers: { promise: null, loadedAt: 0 },
+    cash: { promise: null, loadedAt: 0 },
+    invoiceIds: { promise: null, loadedAt: 0 },
+    doctors: { promise: null, loadedAt: 0 },
+    patients: { promise: null, loadedAt: 0 },
+    nextInvoiceNo: { promise: null, loadedAt: 0 },
+  });
+  const runGuardedLoad = useCallback((key: LoadKey, task: () => Promise<void>, force = false): Promise<void> => {
+    const guard = loadGuardsRef.current[key];
+    if (guard.promise) return guard.promise;
+    if (!force && Date.now() - guard.loadedAt < 5000) return Promise.resolve();
+    const promise = task()
+      .catch(() => {})
+      .finally(() => {
+        guard.promise = null;
+        guard.loadedAt = Date.now();
+      });
+    guard.promise = promise;
+    return promise;
+  }, []);
+
+  const focusCustomerAc = useCallback(() => {
+    const el = customerAcRef.current || (document.getElementById('sales-customer-ac-input') as HTMLInputElement | null);
+    if (el) {
+      el.focus({ preventScroll: true });
+      el.select?.();
+    }
+  }, []);
+
+  useEffect(() => {
+    if (shouldFocusCustomerAcRef.current) {
+      shouldFocusCustomerAcRef.current = false;
+      focusCustomerAc();
+      const t = setTimeout(focusCustomerAc, 60);
+      return () => clearTimeout(t);
+    }
+  });
 
   // Address Details Dialog
   const [addressDialogOpen, setAddressDialogOpen] = useState(false);
@@ -288,11 +394,61 @@ export default function SalesB2C() {
   const [cardAccountId, setCardAccountId] = useState<string | null>(null);
   const [cardAccounts, setCardAccounts] = useState<CashAccount[]>([]);
   const [cardAmount, setCardAmount] = useState(0);
+  const [cardReference, setCardReference] = useState('');
 
   // Products
   const [products, setProducts] = useState<Product[]>([]);
   // Line items
   const [lines, setLines] = useState<LineItem[]>([emptyLine()]);
+
+  // Pharmacy & Riayati (E-Prescription) State
+  const [emiratesId, setEmiratesId] = useState('');
+  const [selectedPatient, setSelectedPatient] = useState('');
+  const [selectedDoctor, setSelectedDoctor] = useState('');
+  const [prescriptionNumber, setPrescriptionNumber] = useState('');
+  const [prescriptionDate, setPrescriptionDate] = useState('');
+  const [isRiayati, setIsRiayati] = useState(false);
+  const [riayatiDialogOpen, setRiayatiDialogOpen] = useState(false);
+  const [doctors, setDoctors] = useState<DoctorItem[]>([]);
+  const [patients, setPatients] = useState<PatientItem[]>([]);
+
+  // Doctor Dialog State
+  const [doctorDialogOpen, setDoctorDialogOpen] = useState(false);
+  const [docTab, setDocTab] = useState<'saved' | 'new'>('saved');
+  const [docFormSavedSelect, setDocFormSavedSelect] = useState('');
+  const [docFormName, setDocFormName] = useState('');
+  const [docFormLic, setDocFormLic] = useState('');
+  const [docFormProv, setDocFormProv] = useState<'MOHAP' | 'DHA' | 'DOH'>('MOHAP');
+  const [docFormPhone, setDocFormPhone] = useState('');
+  const [docFormSpecialty, setDocFormSpecialty] = useState('');
+  const [docIsOpenAsUnsaved, setDocIsOpenAsUnsaved] = useState(false);
+
+  // Patient Dialog State
+  const [patientDialogOpen, setPatientDialogOpen] = useState(false);
+  const [patTab, setPatTab] = useState<'saved' | 'new'>('saved');
+  const [patFormSavedSelect, setPatFormSavedSelect] = useState('');
+  const [patFormEid, setPatFormEid] = useState('');
+  const [patFormFirst, setPatFormFirst] = useState('');
+  const [patFormFamily, setPatFormFamily] = useState('');
+  const [patFormDob, setPatFormDob] = useState('');
+  const [patFormGender, setPatFormGender] = useState<'Female' | 'Male' | 'Unknown'>('Unknown');
+  const [patFormMrn, setPatFormMrn] = useState('');
+  const [patFormPhone, setPatFormPhone] = useState('');
+  const [patFormLang, setPatFormLang] = useState('English');
+  const [patFormEmirate, setPatFormEmirate] = useState('');
+  const [patFormCity, setPatFormCity] = useState('');
+  const [patFormStreet, setPatFormStreet] = useState('');
+  const [patFormCountry, setPatFormCountry] = useState('United Arab Emirates');
+  const [patSearchLoading, setPatSearchLoading] = useState(false);
+  const [patIsOpenAsUnsaved, setPatIsOpenAsUnsaved] = useState(false);
+
+  // Medication Instructions Dialog State
+  const [medicationDialogOpen, setMedicationDialogOpen] = useState(false);
+  const [selectedMedLineId, setSelectedMedLineId] = useState<string | null>(null);
+  const [medDuration, setMedDuration] = useState('30');
+  const [medDurationUnit, setMedDurationUnit] = useState<'Days' | 'Weeks' | 'Months'>('Days');
+  const [medTiming, setMedTiming] = useState('Before Food');
+  const [medFrequency, setMedFrequency] = useState('1');
 
   // Refs for input fields to enable focus navigation
   const imeiInputRefs = useRef<{ [key: string]: HTMLInputElement | null }>({});
@@ -308,8 +464,98 @@ export default function SalesB2C() {
   // Payment details refs for focus navigation
   const cashReceivedRef = useRef<HTMLInputElement>(null);
   const cardPaymentRef = useRef<HTMLInputElement>(null);
+  const cardReferenceRef = useRef<HTMLInputElement>(null);
   const narrationRef = useRef<HTMLInputElement>(null);
   const saveButtonRef = useRef<HTMLButtonElement>(null);
+  const printButtonRef = useRef<HTMLButtonElement>(null);
+  const actionButtonsContainerRef = useRef<HTMLDivElement>(null);
+  const navButtonsContainerRef = useRef<HTMLDivElement>(null);
+
+  const focusPrintButton = useCallback(() => {
+    setTimeout(() => {
+      printButtonRef.current?.focus();
+    }, 50);
+    setTimeout(() => {
+      printButtonRef.current?.focus();
+    }, 150);
+  }, []);
+
+  // Payment tender fields are disabled for credit sales — skip them in keyboard flow
+  const focusPaymentEntry = useCallback(() => {
+    if (paymentType === 'Credit') {
+      narrationRef.current?.focus();
+    } else {
+      cashReceivedRef.current?.focus();
+    }
+  }, [paymentType]);
+
+  const handleActionButtonKeyDown = (e: React.KeyboardEvent<HTMLElement>) => {
+    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
+      return;
+    }
+    const container = actionButtonsContainerRef.current;
+    if (!container) return;
+
+    const buttons = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')
+    ).filter((btn) => btn.offsetParent !== null);
+
+    if (buttons.length === 0) return;
+
+    const activeEl = document.activeElement as HTMLButtonElement | null;
+    const currentIndex = activeEl ? buttons.indexOf(activeEl) : -1;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (currentIndex === -1) {
+      buttons[0]?.focus();
+      return;
+    }
+
+    let nextIndex = currentIndex;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+      nextIndex = (currentIndex + 1) % buttons.length;
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      nextIndex = (currentIndex - 1 + buttons.length) % buttons.length;
+    }
+
+    buttons[nextIndex]?.focus();
+  };
+
+  const handleNavButtonKeyDown = (e: React.KeyboardEvent<HTMLElement>) => {
+    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
+      return;
+    }
+    const container = navButtonsContainerRef.current;
+    if (!container) return;
+
+    const buttons = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')
+    ).filter((btn) => btn.offsetParent !== null);
+
+    if (buttons.length === 0) return;
+
+    const activeEl = document.activeElement as HTMLButtonElement | null;
+    const currentIndex = activeEl ? buttons.indexOf(activeEl) : -1;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (currentIndex === -1) {
+      buttons[0]?.focus();
+      return;
+    }
+
+    let nextIndex = currentIndex;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+      nextIndex = (currentIndex + 1) % buttons.length;
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      nextIndex = (currentIndex - 1 + buttons.length) % buttons.length;
+    }
+
+    buttons[nextIndex]?.focus();
+  };
 
   // Store original invoice items when editing — used to add back stock during pre-save check
   const originalInvoiceItemsRef = useRef<Array<{ productId: string; quantity: number; unitConversion: number }>>([]);
@@ -331,6 +577,7 @@ export default function SalesB2C() {
   const [freightCharge, setFreightCharge] = useState(0);
   const [lendAddLess, setLendAddLess] = useState(0);
   const [roundOff, setRoundOff] = useState(0);
+  const [autoRoundOff, setAutoRoundOff] = useState(false);
   const [narration, setNarration] = useState('');
 
   // Dialogs
@@ -369,9 +616,34 @@ export default function SalesB2C() {
     searchedImei?: string;
   } | null>(null);
 
-  // Scroll focused batch into view
+  // Focus and scroll focused batch into view
+  useEffect(() => {
+    if (batchDialogOpen) {
+      setFocusedBatchIndex(0);
+      const focusFirst = () => {
+        const row = batchRowRefs.current[0];
+        if (row) {
+          row.focus();
+          row.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+      };
+      focusFirst();
+      const id1 = requestAnimationFrame(focusFirst);
+      const t1 = setTimeout(focusFirst, 50);
+      const t2 = setTimeout(focusFirst, 150);
+      const t3 = setTimeout(focusFirst, 300);
+      return () => {
+        cancelAnimationFrame(id1);
+        clearTimeout(t1);
+        clearTimeout(t2);
+        clearTimeout(t3);
+      };
+    }
+  }, [batchDialogOpen]);
+
   useEffect(() => {
     if (batchDialogOpen && batchRowRefs.current[focusedBatchIndex]) {
+      batchRowRefs.current[focusedBatchIndex]?.focus();
       batchRowRefs.current[focusedBatchIndex]?.scrollIntoView({
         behavior: 'smooth',
         block: 'nearest'
@@ -537,6 +809,30 @@ export default function SalesB2C() {
     setOtherDiscount(parseFloat(discountAmount.toFixed(2)));
   }, [calculations.subTotal]);
 
+  // Auto round-off toggle handler
+  const handleAutoRoundOffToggle = useCallback((checked: boolean) => {
+    setAutoRoundOff(checked);
+    if (checked) {
+      const baseTotal = calculations.subTotal - otherDiscount + otherCharges + freightCharge + lendAddLess;
+      const rounded = Math.round(baseTotal);
+      const diff = parseFloat((rounded - baseTotal).toFixed(2));
+      setRoundOff(diff);
+    } else {
+      setRoundOff(0);
+    }
+  }, [calculations.subTotal, otherDiscount, otherCharges, freightCharge, lendAddLess]);
+
+  // Keep roundOff in sync when autoRoundOff is active and totals change
+  useEffect(() => {
+    if (!autoRoundOff) return;
+    const baseTotal = calculations.subTotal - otherDiscount + otherCharges + freightCharge + lendAddLess;
+    const rounded = Math.round(baseTotal);
+    const diff = parseFloat((rounded - baseTotal).toFixed(2));
+    if (diff !== roundOff) {
+      setRoundOff(diff);
+    }
+  }, [autoRoundOff, calculations.subTotal, otherDiscount, otherCharges, freightCharge, lendAddLess, roundOff]);
+
   // Customer handlers
   const handleCustomerSelect = (customer: Customer | null) => {
     if (!customer) {
@@ -548,7 +844,7 @@ export default function SalesB2C() {
       setPaymentType(isB2BMode ? 'Credit' : 'Cash'); // Revert to Credit/Cash when no customer selected
       return;
     }
-    const isCash = customer.type === 'Cash' || customer._id === 'cash';
+    const isCash = customer.type === 'Cash' || customer._id === 'cash' || /cash\s*in\s*hand/i.test(customer.name || '');
     if (isB2BMode && isCash) {
       setCustomerId(null);
       setCustomerName('');
@@ -573,59 +869,97 @@ export default function SalesB2C() {
       setCustomerAddress(customer.address || '');
       setBillingAddress(customer.address || '');
       setBillingPhone(customer.phone || '');
-      if (isB2BMode) {
-        setPaymentType('Credit');
-      }
+      setPaymentType('Credit');
     }
   };
 
-  const loadCustomers = useCallback(() => {
-    if (!companyId) return;
+  const loadCustomers = useCallback((force = false) => {
+    if (!companyId) return Promise.resolve();
     const isB2B = routeLocation.pathname === '/entry/sales-b2b';
-    const cashOption = { _id: 'cash', code: 'CASH', name: 'CASH', address: '', type: 'Cash' };
-    const promises = [ledgerAccountApi.list(companyId, 'Customer')];
-    if (!isB2B) {
-      promises.push(ledgerAccountApi.list(companyId, 'Cash'));
-    }
-    Promise.all(promises).then(([custRes, cashRes]) => {
-      const custList = (custRes.data.data ?? []) as Customer[];
-      const cashList = cashRes ? (cashRes.data.data ?? []) as Customer[] : [];
-      if (!isB2B && cashList.length === 0) {
-        cashList.push(cashOption);
+    return runGuardedLoad('customers', async () => {
+      const cashOption = { _id: 'cash', code: 'CASH', name: 'CASH IN HAND', address: '', type: 'Cash' };
+      const promises = [ledgerAccountApi.list(companyId, 'Customer', undefined, undefined, true)];
+      if (!isB2B) {
+        promises.push(ledgerAccountApi.list(companyId, 'Cash', undefined, undefined, true));
       }
-      const all = [...custList, ...cashList];
-      const sorted = all.sort((a, b) =>
-        (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' })
-      );
-      setCustomers(sorted);
-      if (!invoiceId && !isB2B) {
-        const defaultCash = cashList.find((c) => c.type === 'Cash') || cashList[0];
-        if (defaultCash) {
-          setCustomerId(null);
-          setCustomerName(defaultCash.name);
-          setCustomerAddress(defaultCash.address || '');
-          setBillingAddress(defaultCash.address || '');
-          setBillingPhone(defaultCash.phone || '');
-          setPaymentType('Cash');
-          setCashAccountId(defaultCash._id);
-          setSelectedCashAccount(defaultCash as unknown as CashAccount);
+      try {
+        const [custRes, cashRes] = await Promise.all(promises);
+        const custList = (custRes.data.data ?? []) as Customer[];
+        const cashList = cashRes ? (cashRes.data.data ?? []) as Customer[] : [];
+        let primaryCash = cashList.find((c) => /cash\s*in\s*hand/i.test(c.name || ''));
+        if (!primaryCash) {
+          primaryCash = cashList.find((c) => c.type === 'Cash') || cashList[0];
         }
+        if (!isB2B && cashList.length === 0) {
+          cashList.push(cashOption);
+          primaryCash = cashOption;
+        }
+        const all = [...custList, ...cashList];
+        const sorted = all.sort((a, b) =>
+          (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' })
+        );
+        setCustomers(sorted);
+        if (!customerInitializedRef.current && !invoiceId && !isB2B) {
+          customerInitializedRef.current = true;
+          const defaultCash = primaryCash || cashList[0];
+          if (defaultCash) {
+            setCustomerId(null);
+            setCustomerName(defaultCash.name);
+            setCustomerAddress(defaultCash.address || '');
+            setBillingAddress(defaultCash.address || '');
+            setBillingPhone(defaultCash.phone || '');
+            setPaymentType('Cash');
+            setCashAccountId(defaultCash._id);
+            setSelectedCashAccount(defaultCash as unknown as CashAccount);
+          }
+        }
+      } catch {
+        setCustomers(isB2B ? [] : [cashOption]);
       }
-    }).catch(() => {
-      setCustomers(isB2B ? [] : [cashOption]);
-    });
-  }, [companyId, routeLocation.pathname, invoiceId]);
+    }, force);
+  }, [companyId, routeLocation.pathname, invoiceId, runGuardedLoad]);
+
+  const loadDoctors = useCallback((force = false) => {
+    if (!companyId) return Promise.resolve();
+    return runGuardedLoad('doctors', async () => {
+      try {
+        const res = await salesApi.getDoctors(companyId);
+        setDoctors((res.data?.data ?? []) as DoctorItem[]);
+      } catch {
+        // ignore
+      }
+    }, force);
+  }, [companyId, runGuardedLoad]);
+
+  const loadPatients = useCallback((force = false) => {
+    if (!companyId) return Promise.resolve();
+    return runGuardedLoad('patients', async () => {
+      try {
+        const res = await salesApi.getPatients(companyId);
+        setPatients((res.data?.data ?? []) as PatientItem[]);
+      } catch {
+        // ignore
+      }
+    }, force);
+  }, [companyId, runGuardedLoad]);
+
+  const prevPathnameRef = useRef(routeLocation.pathname);
 
   // Reset page state when route path changes
   useEffect(() => {
-    const state = routeLocation.state as { fromQuotation?: boolean } | null;
-    if (state?.fromQuotation) return; // Skip reset if pre-filling from quotation
+    const state = routeLocation.state as { fromQuotation?: boolean; invoiceId?: string; id?: string; invoiceNo?: string } | null;
+    if (state?.fromQuotation || state?.invoiceId || state?.id || state?.invoiceNo) return; // Skip reset if loading invoice or pre-filling from quotation
+
+    const pathChanged = prevPathnameRef.current !== routeLocation.pathname;
+    prevPathnameRef.current = routeLocation.pathname;
+    if (!pathChanged) return;
+    customerInitializedRef.current = false;
 
     const isB2B = routeLocation.pathname === '/entry/sales-b2b';
     setInvoiceId(null);
     setInvoiceNo('');
     setCustomerId(null);
-    setCustomerName(isB2B ? '' : 'CASH');
+    setCustomerName(isB2B ? '' : 'CASH IN HAND');
     setCustomerAddress('');
     setBillingAddress('');
     setBillingPhone('');
@@ -641,6 +975,13 @@ export default function SalesB2C() {
     setFreightCharge(0);
     setLendAddLess(0);
     setRoundOff(0);
+    setAutoRoundOff(false);
+    setEmiratesId('');
+    setSelectedPatient('');
+    setSelectedDoctor('');
+    setPrescriptionNumber('');
+    setPrescriptionDate('');
+    setIsRiayati(false);
     setIsSaved(false);
   }, [routeLocation.pathname, routeLocation.state]);
 
@@ -651,26 +992,36 @@ export default function SalesB2C() {
     loadCustomers();
     loadCashAccounts();
     loadProducts();
+    loadDoctors();
+    loadPatients();
     loadInvoiceIds();
     // Focus Customer AC on page load
-    setTimeout(() => customerAcRef.current?.focus(), 300);
-  }, [companyId, financialYearId, routeLocation.pathname]);
+    setTimeout(() => customerAcRef.current?.focus({ preventScroll: true }), 300);
+  }, [companyId, financialYearId, routeLocation.pathname, loadDoctors, loadPatients]);
 
   // Focus Customer AC when navigating back to this page
   useEffect(() => {
-    if (routeLocation.pathname === '/entry/sales-b2c' || routeLocation.pathname === '/entry/sales-b2b') {
-      setTimeout(() => customerAcRef.current?.focus(), 300);
+    if (routeLocation.pathname === '/entry/sales-b2c' || routeLocation.pathname === '/entry/sales-b2b' || routeLocation.pathname === '/entry/quotation-sales') {
+      setTimeout(() => customerAcRef.current?.focus({ preventScroll: true }), 300);
     }
   }, [routeLocation.pathname]);
 
   // Detect return from Customer Create page — read created ledger from state, set pending and reload customers
+  const handledReturnFromCreateRef = useRef(false);
   useEffect(() => {
     const state = routeLocation.state as { createdLedgerName?: string } | null;
-    if ((routeLocation.pathname === '/entry/sales-b2c' || routeLocation.pathname === '/entry/sales-b2b') && state?.createdLedgerName) {
-      setPendingCustomerName(state.createdLedgerName);
-      loadCustomers();
-      navigate(routeLocation.pathname, { replace: true, state: {} });
+    const isSalesPath = routeLocation.pathname === '/entry/sales-b2c' || routeLocation.pathname === '/entry/sales-b2b' || routeLocation.pathname === '/entry/quotation-sales';
+    if (!isSalesPath || !state?.createdLedgerName) {
+      handledReturnFromCreateRef.current = false;
+      return;
     }
+    if (handledReturnFromCreateRef.current) return;
+    handledReturnFromCreateRef.current = true;
+    setPendingCustomerName(state.createdLedgerName);
+    loadCustomers(true);
+    window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+    const path = routeLocation.pathname;
+    setTimeout(() => navigate(path, { replace: true, state: {} }), 0);
   }, [routeLocation.pathname, routeLocation.state, loadCustomers, navigate]);
 
   // Once customers list is reloaded after creating a new customer, auto-select it by name
@@ -680,9 +1031,50 @@ export default function SalesB2C() {
     if (found) {
       handleCustomerSelect(found);
       setPendingCustomerName(null);
-      setTimeout(() => customerAcRef.current?.focus(), 200);
+      setTimeout(() => customerAcRef.current?.focus({ preventScroll: true }), 200);
     }
   }, [customers, pendingCustomerName, handleCustomerSelect]);
+
+  // Detect return from Product Create page — read created product name and line id, reload products, then auto-fill line
+  useEffect(() => {
+    const state = routeLocation.state as { createdProductName?: string; lineIdForProduct?: string } | null;
+    const isSalesPath = routeLocation.pathname === '/entry/sales-b2c' || routeLocation.pathname === '/entry/sales-b2b' || routeLocation.pathname === '/entry/quotation-sales';
+    if (!isSalesPath || !state?.createdProductName) {
+      handledProductReturnRef.current = false;
+      return;
+    }
+    if (handledProductReturnRef.current) return;
+    handledProductReturnRef.current = true;
+    setPendingProductName(state.createdProductName);
+    setPendingProductLineId(state.lineIdForProduct ?? null);
+    loadProducts(true);
+    const path = routeLocation.pathname;
+    setTimeout(() => navigate(path, { replace: true, state: {} }), 0);
+  }, [routeLocation.pathname, routeLocation.state, navigate]);
+
+  useEffect(() => {
+    const onProductsUpdated = () => {
+      loadProducts(true);
+    };
+    const onLedgersUpdated = () => {
+      loadCustomers(true);
+    };
+    const onWindowActivated = (e: any) => {
+      const p = e.detail?.path;
+      if (p === '/entry/sales-b2c' || p === '/entry/sales-b2b' || p === '/entry/quotation-sales') {
+        loadProducts();
+        loadCustomers();
+      }
+    };
+    window.addEventListener('app:products-updated', onProductsUpdated);
+    window.addEventListener('app:ledgers-updated', onLedgersUpdated);
+    window.addEventListener('app:window-activated', onWindowActivated);
+    return () => {
+      window.removeEventListener('app:products-updated', onProductsUpdated);
+      window.removeEventListener('app:ledgers-updated', onLedgersUpdated);
+      window.removeEventListener('app:window-activated', onWindowActivated);
+    };
+  }, [loadCustomers]);
 
   // Pre-fill from Sales Order (Quotation) when navigated via "Post to Sales"
   useEffect(() => {
@@ -737,6 +1129,7 @@ export default function SalesB2C() {
     setFreightCharge(state.freightCharge ?? 0);
     setLendAddLess(0);
     setRoundOff(state.roundOff ?? 0);
+    setAutoRoundOff(false);
     setNarration(state.narration ?? '');
     setShippingName(state.shippingName ?? '');
     setShippingAddress(state.shippingAddress ?? '');
@@ -773,44 +1166,92 @@ export default function SalesB2C() {
     setCardAmount(0);
     setCardAccountId(null);
     setOldBalance(0);
-    loadNextInvoiceNo();
+    loadNextInvoiceNo(true);
     window.history.replaceState({}, '', routeLocation.pathname);
   }, [companyId, financialYearId, routeLocation.pathname, routeLocation.state]);
 
-  const loadNextInvoiceNo = async () => {
-    try {
-      const res = await salesApi.getNextB2CInvoiceNo(companyId!, financialYearId!, invoiceType);
-      setInvoiceNo(res.data.data.invoiceNo);
-    } catch {
-      // ignore
-    }
+  const loadNextInvoiceNo = (force = false) => {
+    if (!companyId || !financialYearId) return Promise.resolve();
+    return runGuardedLoad('nextInvoiceNo', async () => {
+      try {
+        const res = await salesApi.getNextB2CInvoiceNo(companyId, financialYearId, invoiceType);
+        setInvoiceNo(res.data.data.invoiceNo);
+      } catch {
+        // ignore
+      }
+    }, force);
   };
 
-  const loadInvoiceIds = async () => {
-    try {
-      const res = await salesApi.listB2C(companyId!, financialYearId!, { limit: 10000, type: invoiceType });
-      const invoices = res.data.data.invoices as Array<{ _id: string }>;
-      setInvoiceIds(invoices.map((inv) => inv._id));
-    } catch {
-      // ignore
-    }
+  const loadInvoiceIds = (force = false) => {
+    if (!companyId || !financialYearId) return Promise.resolve();
+    return runGuardedLoad('invoiceIds', async () => {
+      try {
+        const res = await salesApi.listB2CIds(companyId, financialYearId, invoiceType);
+        const invoices = res.data.data.invoices as Array<{ _id: string }>;
+        setInvoiceIds(invoices.map((inv) => inv._id));
+      } catch {
+        // ignore
+      }
+    }, force);
   };
 
-  const navigateToInvoice = async (id: string) => {
+  const navigateToInvoice = async (id: string, fallbackInvoiceNo?: string) => {
     setLoading(true);
     setErrorDialogOpen(false);
     try {
-      const res = await salesApi.getB2C(id, companyId!, invoiceType);
-      if (res.data.data) {
+      let res;
+      try {
+        res = await salesApi.getB2C(id, companyId!, invoiceType);
+      } catch {
+        res = await salesApi.getB2C(id, companyId!);
+      }
+      if (res?.data?.data) {
         loadInvoice(res.data.data as Record<string, unknown>);
+      } else if (fallbackInvoiceNo) {
+        const searchRes = await salesApi.searchB2CByInvoiceNo(companyId!, fallbackInvoiceNo);
+        if (searchRes.data?.data) {
+          loadInvoice(searchRes.data.data as Record<string, unknown>);
+        } else {
+          setErrorDialogMessage('Failed to load invoice');
+          setErrorDialogOpen(true);
+        }
+      } else {
+        setErrorDialogMessage('Failed to load invoice');
+        setErrorDialogOpen(true);
       }
     } catch {
+      if (fallbackInvoiceNo) {
+        try {
+          const searchRes = await salesApi.searchB2CByInvoiceNo(companyId!, fallbackInvoiceNo);
+          if (searchRes.data?.data) {
+            loadInvoice(searchRes.data.data as Record<string, unknown>);
+            return;
+          }
+        } catch {
+          // ignore
+        }
+      }
       setErrorDialogMessage('Failed to load invoice');
       setErrorDialogOpen(true);
     } finally {
       setLoading(false);
     }
   };
+
+  // Auto-load invoice if navigated with invoiceId in location state
+  useEffect(() => {
+    const state = routeLocation.state as { invoiceId?: string; id?: string; invoiceNo?: string } | null;
+    const urlParams = new URLSearchParams(window.location.search);
+    const targetId = state?.invoiceId || state?.id || urlParams.get('id');
+    const invNo = state?.invoiceNo || urlParams.get('invoiceNo') || undefined;
+    if (targetId && companyId) {
+      navigateToInvoice(targetId, invNo);
+      navigate(routeLocation.pathname, { replace: true, state: {} });
+    } else if (invNo && companyId) {
+      navigateToInvoice(invNo, invNo);
+      navigate(routeLocation.pathname, { replace: true, state: {} });
+    }
+  }, [companyId, routeLocation.pathname, routeLocation.state, navigate]);
 
   const handleFirstInvoice = () => {
     if (invoiceIds.length > 0) {
@@ -848,36 +1289,505 @@ export default function SalesB2C() {
     }
   };
 
-  const loadCashAccounts = async () => {
-    try {
-      const res = await ledgerAccountApi.list(companyId!, 'Cash');
-      const cashList = res.data.data as CashAccount[];
-      setCashAccounts(cashList);
-      const bankRes = await ledgerAccountApi.list(companyId!, 'Bank');
-      const bankList = bankRes.data.data as CashAccount[];
-      setCardAccounts(bankList);
-      // Default Cash A/C: first Cash account (typically "CASH")
-      if (cashList.length > 0) {
-        const defaultCash = cashList[0];
-        setCashAccountId(defaultCash._id);
-        setSelectedCashAccount(defaultCash);
+  const loadCashAccounts = (force = false) => {
+    if (!companyId) return Promise.resolve();
+    return runGuardedLoad('cash', async () => {
+      try {
+        const [cashRes, bankRes] = await Promise.all([
+          ledgerAccountApi.list(companyId, 'Cash', undefined, undefined, true),
+          ledgerAccountApi.list(companyId, 'Bank', undefined, undefined, true),
+        ]);
+        const cashList = cashRes.data.data as CashAccount[];
+        setCashAccounts(cashList);
+        const bankList = (bankRes.data.data as Array<CashAccount & { isCardAccount?: boolean; cardAccount?: boolean }>) || [];
+        const cardOnlyBanks = bankList.filter((b) => b.isCardAccount === true || b.cardAccount === true);
+        setCardAccounts(cardOnlyBanks);
+        // Default Cash A/C: prioritize "CASH IN HAND"
+        if (cashList.length > 0) {
+          const defaultCash = cashList.find((c) => /cash\s*in\s*hand/i.test(c.name || '')) || cashList[0];
+          setCashAccountId(defaultCash._id);
+          setSelectedCashAccount(defaultCash);
+          if (!customerInitializedRef.current && !invoiceId && routeLocation.pathname !== '/entry/sales-b2b') {
+            customerInitializedRef.current = true;
+            setCustomerName((prev) => (!prev || prev === 'CASH' || /cash\s*in\s*hand/i.test(prev)) ? defaultCash.name : prev);
+          }
+        }
+        // Default Card A/C: account named "CC1" if found, otherwise first card account if any
+        const cc1 = cardOnlyBanks.find((b) => b.name.toUpperCase() === 'CC1');
+        if (cc1) {
+          setCardAccountId(cc1._id);
+        } else if (cardOnlyBanks.length > 0) {
+          setCardAccountId(cardOnlyBanks[0]._id);
+        } else {
+          setCardAccountId(null);
+        }
+      } catch {
+        // ignore
       }
-      // Default Card A/C: account named "CC1" if found
-      const cc1 = bankList.find((b) => b.name.toUpperCase() === 'CC1');
-      if (cc1) {
-        setCardAccountId(cc1._id);
+    }, force);
+  };
+
+  const loadProducts = useCallback((force = false) => {
+    if (!companyId) return Promise.resolve();
+    return runGuardedLoad('products', async () => {
+      try {
+        const res = await productApi.list(companyId, { limit: 10000 });
+        setProducts((res.data.data.products || []) as Product[]);
+      } catch {
+        // ignore
       }
-    } catch {
-      // ignore
+    }, force);
+  }, [companyId, runGuardedLoad]);
+
+
+  // Helper: Format Emirates ID strictly as 784-YYYY-NNNNNNN-C (max 15 digits)
+  const formatEmiratesId = (raw: string): string => {
+    const digits = raw.replace(/\D/g, '').slice(0, 15);
+    if (!digits) return '';
+    if (digits.length <= 3) return digits;
+    if (digits.length <= 7) return `${digits.slice(0, 3)}-${digits.slice(3)}`;
+    if (digits.length <= 14) return `${digits.slice(0, 3)}-${digits.slice(3, 7)}-${digits.slice(7)}`;
+    return `${digits.slice(0, 3)}-${digits.slice(3, 7)}-${digits.slice(7, 14)}-${digits.slice(14, 15)}`;
+  };
+
+  const handleEmiratesIdKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (
+      ['Backspace', 'Delete', 'ArrowLeft', 'ArrowRight', 'Tab', 'Enter', 'Escape'].includes(e.key) ||
+      e.ctrlKey ||
+      e.metaKey
+    ) {
+      return;
+    }
+    if (!/^\d$/.test(e.key)) {
+      e.preventDefault();
     }
   };
 
-  const loadProducts = async () => {
+  const handleEmiratesIdChange = (raw: string) => {
+    const formatted = formatEmiratesId(raw);
+    setEmiratesId(formatted);
+    setPatFormEid(formatted);
+
+    // Clear patient details form on edit/clear
+    setPatFormFirst('');
+    setPatFormFamily('');
+    setPatFormDob('');
+    setPatFormGender('Unknown');
+    setPatFormMrn('');
+    setPatFormPhone('');
+    setPatFormLang('English');
+    setPatFormEmirate('');
+    setPatFormCity('');
+    setPatFormStreet('');
+    setPatFormCountry('United Arab Emirates');
+    setPatFormSavedSelect('');
+    setSelectedPatient('');
+
+    // If a full 15-digit Emirates ID is entered (18 chars with hyphens), check if an existing saved patient matches
+    if (formatted.length === 18) {
+      const match = patients.find((p) => p.emiratesId === formatted);
+      if (match) {
+        setPatFormFirst(match.firstName || match.fullName);
+        setPatFormFamily(match.familyName || '');
+        setPatFormDob(match.dob || '');
+        setPatFormGender(match.gender || 'Unknown');
+        setPatFormMrn(match.mrn || '');
+        setPatFormPhone(match.phone || '');
+        setPatFormLang(match.language || 'English');
+        setPatFormEmirate(match.emirate || '');
+        setPatFormCity(match.city || '');
+        setPatFormStreet(match.street || '');
+        setPatFormCountry(match.country || 'United Arab Emirates');
+        setSelectedPatient(match.fullName);
+        setPatFormSavedSelect(match.fullName);
+      }
+    }
+  };
+
+  // ── DOCTOR DIALOG HANDLERS ──
+  const handleOpenDoctorDialog = () => {
+    const trimmed = selectedDoctor.trim();
+    const existing = doctors.find((d) => d.name.toLowerCase() === trimmed.toLowerCase());
+    if (existing) {
+      setDocTab('saved');
+      setDocFormSavedSelect(existing.name);
+      setDocFormName(existing.name);
+      setDocFormLic(existing.licenseNumber);
+      if (existing.licensingAuthority) setDocFormProv(existing.licensingAuthority as any);
+      setDocFormPhone(existing.phone || '');
+      setDocFormSpecialty(existing.specialty || '');
+      setDocIsOpenAsUnsaved(false);
+    } else {
+      setDocTab('new');
+      setDocFormSavedSelect('');
+      setDocFormName(trimmed);
+      setDocFormLic('');
+      setDocFormProv('MOHAP');
+      setDocFormPhone('');
+      setDocFormSpecialty('');
+      setDocIsOpenAsUnsaved(Boolean(trimmed));
+    }
+    setDoctorDialogOpen(true);
+  };
+
+  const handleCloseDoctorDialog = () => {
+    if (docIsOpenAsUnsaved) {
+      setSelectedDoctor('');
+      setDocFormName('');
+    }
+    setDoctorDialogOpen(false);
+    setDocIsOpenAsUnsaved(false);
+  };
+
+  const handleSelectSavedDoctor = () => {
+    if (!docFormSavedSelect) {
+      return;
+    }
+    const found = doctors.find((d) => d.name === docFormSavedSelect);
+    if (found) {
+      setDocIsOpenAsUnsaved(false);
+      setSelectedDoctor(found.name);
+      setDoctorDialogOpen(false);
+    }
+  };
+
+  const handleSaveDoctor = async () => {
+    if (!docFormName.trim() || !docFormLic.trim()) {
+      setErrorDialogMessage('Doctor Name and License Number are required');
+      setErrorDialogOpen(true);
+      return;
+    }
+    const docName = docFormName.trim();
+    const docLic = docFormLic.trim();
+    const newDoc: DoctorItem = {
+      name: docName,
+      licenseNumber: docLic,
+      licensingAuthority: docFormProv,
+      phone: docFormPhone.trim() || undefined,
+      specialty: docFormSpecialty.trim() || undefined,
+    };
     try {
-      const res = await productApi.list(companyId!, { limit: 10000 });
-      setProducts((res.data.data.products || []) as Product[]);
+      if (companyId) {
+        await salesApi.createDoctor({
+          companyId,
+          name: docName,
+          licenseNumber: docLic,
+          licensingAuthority: docFormProv,
+          phone: docFormPhone.trim() || undefined,
+          specialty: docFormSpecialty.trim() || undefined,
+        });
+      }
+    } catch {
+      // Local fallback
+    }
+    setDoctors((prev) => {
+      const filtered = prev.filter((d) => d.name.toLowerCase() !== docName.toLowerCase());
+      return [newDoc, ...filtered];
+    });
+    setDocIsOpenAsUnsaved(false);
+    setSelectedDoctor(docName);
+    setDoctorDialogOpen(false);
+  };
+
+  // ── PATIENT DIALOG HANDLERS ──
+  const handleOpenPatientDialog = () => {
+    const trimmed = selectedPatient.trim();
+    const existing = patients.find(
+      (p) => p.fullName.toLowerCase() === trimmed.toLowerCase() || p.firstName.toLowerCase() === trimmed.toLowerCase()
+    );
+
+    if (existing) {
+      setPatTab('saved');
+      setPatFormSavedSelect(existing.fullName);
+      setPatFormEid(existing.emiratesId || emiratesId);
+      setPatFormFirst(existing.firstName || '');
+      setPatFormFamily(existing.familyName || '');
+      setPatFormDob(existing.dob || '');
+      setPatFormGender(existing.gender || 'Unknown');
+      setPatFormMrn(existing.mrn || '');
+      setPatFormPhone(existing.phone || '');
+      setPatFormLang(existing.language || 'English');
+      setPatFormEmirate(existing.emirate || '');
+      setPatFormCity(existing.city || '');
+      setPatFormStreet(existing.street || '');
+      setPatFormCountry(existing.country || 'United Arab Emirates');
+      setPatIsOpenAsUnsaved(false);
+    } else {
+      const matchByEid = emiratesId.trim() ? patients.find((p) => p.emiratesId === emiratesId.trim()) : null;
+      if (matchByEid) {
+        setPatTab('saved');
+        setPatFormSavedSelect(matchByEid.fullName);
+        setPatFormEid(matchByEid.emiratesId);
+        setPatFormFirst(matchByEid.firstName || matchByEid.fullName);
+        setPatFormFamily(matchByEid.familyName || '');
+        setPatFormDob(matchByEid.dob || '');
+        setPatFormGender(matchByEid.gender || 'Unknown');
+        setPatFormMrn(matchByEid.mrn || '');
+        setPatFormPhone(matchByEid.phone || '');
+        setPatFormLang(matchByEid.language || 'English');
+        setPatFormEmirate(matchByEid.emirate || '');
+        setPatFormCity(matchByEid.city || '');
+        setPatFormStreet(matchByEid.street || '');
+        setPatFormCountry(matchByEid.country || 'United Arab Emirates');
+        setPatIsOpenAsUnsaved(false);
+      } else {
+        setPatTab('new');
+        setPatFormSavedSelect('');
+        setPatFormEid(emiratesId);
+        setPatFormFirst(trimmed);
+        setPatFormFamily('');
+        setPatFormDob('');
+        setPatFormGender('Unknown');
+        setPatFormMrn('');
+        setPatFormPhone('');
+        setPatFormLang('English');
+        setPatFormEmirate('');
+        setPatFormCity('');
+        setPatFormStreet('');
+        setPatFormCountry('United Arab Emirates');
+        setPatIsOpenAsUnsaved(Boolean(trimmed));
+      }
+    }
+    setPatientDialogOpen(true);
+  };
+
+  const handleClosePatientDialog = () => {
+    if (patIsOpenAsUnsaved) {
+      setSelectedPatient('');
+      setPatFormFirst('');
+      setPatFormFamily('');
+    }
+    setPatientDialogOpen(false);
+    setPatIsOpenAsUnsaved(false);
+  };
+
+  const handleSelectSavedPatient = () => {
+    if (!patFormSavedSelect) return;
+    const found = patients.find((p) => p.fullName === patFormSavedSelect);
+    if (found) {
+      setPatIsOpenAsUnsaved(false);
+      setSelectedPatient(found.fullName);
+      setPatFormFirst(found.firstName || found.fullName);
+      if (found.emiratesId) setEmiratesId(formatEmiratesId(found.emiratesId));
+      setIsRiayati(true);
+      setPatientDialogOpen(false);
+    }
+  };
+
+  const handlePatientSelect = (val: string | null) => {
+    const patientName = val || '';
+    setSelectedPatient(patientName);
+    if (!patientName.trim()) return;
+
+    setIsRiayati(true);
+
+    const found = patients.find(
+      (p) =>
+        (p.fullName || '').toLowerCase() === patientName.toLowerCase() ||
+        `${p.firstName || ''} ${p.familyName || ''}`.trim().toLowerCase() === patientName.toLowerCase()
+    );
+    if (found && found.emiratesId) {
+      setEmiratesId(formatEmiratesId(found.emiratesId));
+    }
+  };
+
+  const handleSearchPatientByEid = async (eidOverride?: string | React.MouseEvent | unknown) => {
+    const searchEid = (typeof eidOverride === 'string' ? eidOverride : patFormEid || '').trim();
+    if (!companyId || !searchEid) return;
+    setPatSearchLoading(true);
+    try {
+      const res = await salesApi.findPatientByEmiratesId(companyId, searchEid);
+      const pat = res.data?.data as PatientItem | null;
+      if (pat) {
+        setPatFormEid(pat.emiratesId || searchEid);
+        setPatFormFirst(pat.firstName || '');
+        setPatFormFamily(pat.familyName || '');
+        setPatFormDob(pat.dob || '');
+        setPatFormGender(pat.gender || 'Unknown');
+        setPatFormMrn(pat.mrn || '');
+        setPatFormPhone(pat.phone || '');
+        setPatFormLang(pat.language || 'English');
+        setPatFormEmirate(pat.emirate || '');
+        setPatFormCity(pat.city || '');
+        setPatFormStreet(pat.street || '');
+        setPatFormCountry(pat.country || 'United Arab Emirates');
+        setSelectedPatient(pat.fullName);
+        setEmiratesId(formatEmiratesId(pat.emiratesId || searchEid));
+        setIsRiayati(true);
+      }
     } catch {
       // ignore
+    } finally {
+      setPatSearchLoading(false);
+    }
+  };
+
+  const handleSavePatient = async () => {
+    if (!patFormFirst.trim()) {
+      setErrorDialogMessage('First name is required to save patient');
+      setErrorDialogOpen(true);
+      return;
+    }
+    const fName = patFormFirst.trim();
+    const famName = patFormFamily.trim();
+    const fullName = famName ? `${fName} ${famName}` : fName;
+    const newPat: PatientItem = {
+      emiratesId: patFormEid.trim(),
+      firstName: fName,
+      familyName: famName,
+      fullName,
+      dob: patFormDob,
+      gender: patFormGender,
+      mrn: patFormMrn.trim(),
+      phone: patFormPhone.trim(),
+      language: patFormLang,
+      emirate: patFormEmirate,
+      city: patFormCity.trim(),
+      street: patFormStreet.trim(),
+      country: patFormCountry,
+    };
+    try {
+      if (companyId) {
+        await salesApi.createPatient({ companyId, ...newPat });
+      }
+    } catch {
+      // Local fallback
+    }
+    setPatients((prev) => {
+      const filtered = prev.filter((p) => p.fullName.toLowerCase() !== fullName.toLowerCase());
+      return [newPat, ...filtered];
+    });
+    setPatIsOpenAsUnsaved(false);
+    setSelectedPatient(fullName);
+    if (patFormEid.trim()) {
+      setEmiratesId(formatEmiratesId(patFormEid.trim()));
+    }
+    setIsRiayati(true);
+    setPatientDialogOpen(false);
+  };
+
+  const handleEditPatient = async () => {
+    if (!patFormFirst.trim()) {
+      setErrorDialogMessage('First name is required to edit patient');
+      setErrorDialogOpen(true);
+      return;
+    }
+    const fName = patFormFirst.trim();
+    const famName = patFormFamily.trim();
+    const fullName = famName ? `${fName} ${famName}` : fName;
+    const updatedPat: PatientItem = {
+      emiratesId: patFormEid.trim(),
+      firstName: fName,
+      familyName: famName,
+      fullName,
+      dob: patFormDob,
+      gender: patFormGender,
+      mrn: patFormMrn.trim(),
+      phone: patFormPhone.trim(),
+      language: patFormLang,
+      emirate: patFormEmirate,
+      city: patFormCity.trim(),
+      street: patFormStreet.trim(),
+      country: patFormCountry,
+    };
+    try {
+      if (companyId) {
+        await salesApi.createPatient({ companyId, ...updatedPat });
+      }
+    } catch {
+      // Local fallback
+    }
+    setPatients((prev) => {
+      const idx = prev.findIndex((p) => p.fullName.toLowerCase() === fullName.toLowerCase() || (patFormEid.trim() && p.emiratesId === patFormEid.trim()));
+      if (idx >= 0) {
+        const copy = [...prev];
+        copy[idx] = updatedPat;
+        return copy;
+      }
+      return [updatedPat, ...prev];
+    });
+    setPatIsOpenAsUnsaved(false);
+    setSelectedPatient(fullName);
+    if (patFormEid.trim()) {
+      setEmiratesId(formatEmiratesId(patFormEid.trim()));
+    }
+    setIsRiayati(true);
+    setPatientDialogOpen(false);
+  };
+
+  // ── MEDICATION INSTRUCTIONS HANDLERS ──
+  const handleOpenMedicationDialog = (lineId: string) => {
+    setSelectedMedLineId(lineId);
+    const line = lines.find((l) => l.id === lineId);
+    if (line?.dosageInstructions) {
+      setMedDuration(line.dosageInstructions.duration || '30');
+      setMedDurationUnit((line.dosageInstructions.durationUnit as any) || 'Days');
+      setMedTiming(line.dosageInstructions.timing || 'Before Food');
+      setMedFrequency(line.dosageInstructions.frequency || '1');
+    } else {
+      setMedDuration(line?.duration || '30');
+      setMedDurationUnit('Days');
+      setMedTiming(line?.timing || 'Before Food');
+      setMedFrequency(line?.frequency || '1');
+    }
+    setMedicationDialogOpen(true);
+  };
+
+  const medInstructionSummary = useMemo(() => {
+    if (!medDuration && !medTiming && !medFrequency) {
+      return 'No dosage instructions specified.';
+    }
+    const parts: string[] = ['Take'];
+    if (medFrequency) {
+      const num = parseFloat(medFrequency);
+      if (!isNaN(num)) {
+        parts.push(`${medFrequency} time(s) daily`);
+      } else {
+        parts.push(medFrequency);
+      }
+    }
+    if (medTiming && medTiming !== 'None') parts.push(medTiming);
+    if (medDuration) parts.push(`for ${medDuration} ${medDurationUnit}`);
+    return parts.join(' ') + '.';
+  }, [medDuration, medDurationUnit, medTiming, medFrequency]);
+
+  const handleSaveMedInstructions = () => {
+    if (!selectedMedLineId) return;
+    setLines((prev) =>
+      prev.map((l) => {
+        if (l.id !== selectedMedLineId) return l;
+        return {
+          ...l,
+          isRx: true,
+          duration: medDuration,
+          timing: medTiming,
+          frequency: medFrequency,
+          dosageInstructions: {
+            duration: medDuration,
+            durationUnit: medDurationUnit,
+            timing: medTiming,
+            frequency: medFrequency,
+            summary: medInstructionSummary,
+          },
+        };
+      })
+    );
+    setMedicationDialogOpen(false);
+  };
+
+  const handleClearMedInstructions = () => {
+    setMedDuration('');
+    setMedTiming('');
+    setMedFrequency('');
+    if (selectedMedLineId) {
+      setLines((prev) =>
+        prev.map((l) => {
+          if (l.id !== selectedMedLineId) return l;
+          const updated = { ...l, isRx: false, duration: '', timing: '', frequency: '' };
+          delete updated.dosageInstructions;
+          return updated;
+        })
+      );
     }
   };
 
@@ -914,7 +1824,8 @@ export default function SalesB2C() {
   const handleItemNameFocus = useCallback((line: LineItem) => {
     // Save snapshot for potential revert using reusable pattern
     itemNameSnapshotRef.current = { lineId: line.id, data: { ...line } };
-  }, []);
+    loadProducts();
+  }, [loadProducts]);
 
   // Item name blur: if user cleared and did not select a product, restore from snapshot using reusable pattern
   const handleItemNameBlur = useCallback((line: LineItem) => {
@@ -1087,8 +1998,8 @@ export default function SalesB2C() {
         });
       }
 
-      // Add multi-units (only if allowBatches is disabled)
-      if (product.allowBatches === false && product.multiUnits && product.multiUnits.length > 0) {
+      // Add multi-units
+      if (product.multiUnits && product.multiUnits.length > 0) {
         product.multiUnits.forEach((mu) => {
           const muUnitId = typeof mu.unitId === 'object' ? mu.unitId?._id : mu.unitId;
           const muUnitName = typeof mu.unitId === 'object' ? (mu.unitId?.shortCode || mu.unitId?.name || 'Unit') : 'Unit';
@@ -1157,6 +2068,22 @@ export default function SalesB2C() {
         setStockAlertMessage(`Cannot sell "${product.name}" — not enough stock for this unit.`);
         setStockAlertOpen(true);
         return false;
+      }
+
+      // Block if batch does not have enough stock for this multi-unit
+      if (!isQuotationMode && selectedBatch && selectedBatch.batchNumber !== 'MERGED' && selectedUnit?.isMultiUnit && selectedUnit?.conversion && selectedUnit.conversion > 0) {
+        const usedByOtherBatchRows = lines.reduce((sum, l) => {
+          if (l.id === lineId || l.productId !== product._id || l.batchNumber !== selectedBatch.batchNumber) return sum;
+          const u = l.availableUnits.find((au) => au.id === l.unitId);
+          const c = (u?.isMultiUnit && u?.conversion) ? u.conversion : 1;
+          return sum + (l.quantity * c);
+        }, 0);
+        const batchRemaining = (selectedBatch.quantity ?? 0) - usedByOtherBatchRows;
+        if (batchRemaining < selectedUnit.conversion) {
+          setStockAlertMessage(`Cannot sell "${product.name}" in ${selectedUnit.name} — batch "${selectedBatch.batchNumber}" has only ${batchRemaining} pcs (requires at least ${selectedUnit.conversion} pcs).`);
+          setStockAlertOpen(true);
+          return false;
+        }
       }
 
       // Calculate profit: for multi-unit, cost = purchaseRate * pcsInside
@@ -1262,10 +2189,11 @@ export default function SalesB2C() {
         // Merged: batches disabled or not set – merge all batches into one with average purchase rate
         if (batches.length > 0) {
           const nonZeroBatches = batches.filter((b) => b.quantity > 0);
-          const avgPurchasePrice = nonZeroBatches.length > 0
-            ? nonZeroBatches.reduce((sum, b) => sum + b.purchasePrice, 0) / nonZeroBatches.length
-            : batches[0].purchasePrice;
           const totalQty = nonZeroBatches.reduce((sum, b) => sum + b.quantity, 0) || batches.reduce((sum, b) => sum + b.quantity, 0);
+          const totalValuation = nonZeroBatches.reduce((sum, b) => sum + (b.purchasePrice * b.quantity), 0);
+          const avgPurchasePrice = nonZeroBatches.length > 0 && totalQty > 0
+            ? totalValuation / totalQty
+            : batches[0].purchasePrice;
           const avgRetail = nonZeroBatches.length > 0
             ? nonZeroBatches.reduce((sum, b) => sum + b.retail, 0) / nonZeroBatches.length
             : batches[0].retail;
@@ -1319,6 +2247,33 @@ export default function SalesB2C() {
     setPendingProductSelection(null);
   }, [pendingProductSelection, completeProductSelection]);
 
+  // Once products list is reloaded after creating a new product, auto-select it into the line
+  useEffect(() => {
+    if (!pendingProductName || pendingProductLineId == null) return;
+    const lineId = pendingProductLineId;
+    const match = Array.isArray(products) && products.length > 0
+      ? products.find((p) => (p.name || '').toLowerCase() === pendingProductName.toLowerCase())
+      : null;
+    if (match) {
+      handleProductSelect(lineId, match).then(() => {
+        setPendingProductName(null);
+        setPendingProductLineId(null);
+        setTimeout(() => {
+          qtyInputRefs.current[lineId]?.focus();
+          qtyInputRefs.current[lineId]?.select();
+        }, 150);
+      });
+    } else if (Array.isArray(products) && products.length > 0) {
+      updateLine(lineId, 'name', pendingProductName);
+      setPendingProductName(null);
+      setPendingProductLineId(null);
+      setTimeout(() => {
+        qtyInputRefs.current[lineId]?.focus();
+        qtyInputRefs.current[lineId]?.select();
+      }, 150);
+    }
+  }, [products, pendingProductName, pendingProductLineId, handleProductSelect, updateLine]);
+
   // Handle batch dialog close without selection
   const handleBatchDialogClose = useCallback(() => {
     setBatchDialogOpen(false);
@@ -1333,10 +2288,18 @@ export default function SalesB2C() {
 
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      setFocusedBatchIndex((prev) => (prev < availableBatches.length - 1 ? prev + 1 : prev));
+      setFocusedBatchIndex((prev) => {
+        const next = prev < availableBatches.length - 1 ? prev + 1 : prev;
+        setTimeout(() => batchRowRefs.current[next]?.focus(), 10);
+        return next;
+      });
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      setFocusedBatchIndex((prev) => (prev > 0 ? prev - 1 : 0));
+      setFocusedBatchIndex((prev) => {
+        const next = prev > 0 ? prev - 1 : 0;
+        setTimeout(() => batchRowRefs.current[next]?.focus(), 10);
+        return next;
+      });
     } else if (e.key === 'Enter') {
       e.preventDefault();
       const selectedBatch = availableBatches[focusedBatchIndex];
@@ -1354,6 +2317,22 @@ export default function SalesB2C() {
       const currentLine = lines.find((l) => l.id === lineId);
       const selectedUnit = currentLine?.availableUnits.find((u) => u.id === unitId);
       if (!currentLine || !selectedUnit) return;
+
+      // Disallow multi-unit if batch stock is insufficient
+      if (!isQuotationMode && selectedUnit.isMultiUnit && selectedUnit.conversion && selectedUnit.conversion > 0 && currentLine.batchMaxPieces != null && currentLine.batchNumber && currentLine.batchNumber !== 'MERGED') {
+        const usedByOtherBatchRows = lines.reduce((sum, l) => {
+          if (l.id === lineId || l.productId !== currentLine.productId || l.batchNumber !== currentLine.batchNumber) return sum;
+          const u = l.availableUnits.find((au) => au.id === l.unitId);
+          const c = (u?.isMultiUnit && u?.conversion) ? u.conversion : 1;
+          return sum + (l.quantity * c);
+        }, 0);
+        const batchRemaining = currentLine.batchMaxPieces - usedByOtherBatchRows;
+        if (batchRemaining < selectedUnit.conversion) {
+          setStockAlertMessage(`Cannot change unit to "${selectedUnit.name}" — batch "${currentLine.batchNumber}" has only ${batchRemaining} pcs (requires at least ${selectedUnit.conversion} pcs).`);
+          setStockAlertOpen(true);
+          return;
+        }
+      }
 
       // Pick multi-unit price based on rateType
       let newPrice = selectedUnit.price ?? currentLine.price;
@@ -1592,7 +2571,20 @@ export default function SalesB2C() {
         if (currentIndex === lines.length - 1) {
           e.preventDefault();
           e.stopPropagation();
-          setTimeout(() => cashReceivedRef.current?.focus(), 50);
+          setTimeout(() => focusPaymentEntry(), 50);
+          return;
+        }
+      }
+
+      // If item name was typed but does not match any product and line has no product
+      if (!line.productId && typed) {
+        const isPrefixOfAny = products.some((p) => (p.name && String(p.name).trim().toLowerCase().startsWith(typed.toLowerCase())));
+        if (!isPrefixOfAny || !itemNameListboxOpenRef.current) {
+          e.preventDefault();
+          e.stopPropagation();
+          pendingProductLineIdRef.current = line.id;
+          setCreateProductConfirmName(typed);
+          setCreateProductConfirmOpen(true);
           return;
         }
       }
@@ -1609,7 +2601,7 @@ export default function SalesB2C() {
         }, 50);
       }
     }
-  }, [products, updateLine, handleProductSelect, lines, openBatchDialogForLine]);
+  }, [products, updateLine, handleProductSelect, lines, openBatchDialogForLine, focusPaymentEntry]);
 
   // Handle Enter key on Qty field - focus on Price if qty > 0; if last row and any field blank, go to Cash Received
   const handleQtyKeyDown = useCallback((e: React.KeyboardEvent, line: LineItem) => {
@@ -1623,7 +2615,7 @@ export default function SalesB2C() {
 
       const isBlank = !line.productCode || currentQty <= 0 || line.price <= 0;
       if (isLastRow && isBlank) {
-        setTimeout(() => cashReceivedRef.current?.focus(), 50);
+        setTimeout(() => focusPaymentEntry(), 50);
         return;
       }
       if (currentQty > 0) {
@@ -1634,7 +2626,7 @@ export default function SalesB2C() {
         }
       }
     }
-  }, [lines]);
+  }, [lines, focusPaymentEntry]);
 
   // Handle Enter key on Price field - commit row edit and move to next row
   const handlePriceKeyDown = useCallback((e: React.KeyboardEvent, line: LineItem) => {
@@ -1648,7 +2640,7 @@ export default function SalesB2C() {
         const isBlank = !line.productCode || line.quantity <= 0 || line.price <= 0;
         // If last row and product code or qty or price is blank, go to Cash Received
         if (isLastRow && isBlank) {
-          setTimeout(() => cashReceivedRef.current?.focus(), 50);
+          setTimeout(() => focusPaymentEntry(), 50);
           return;
         }
         // Find which field is missing and focus it
@@ -1698,7 +2690,7 @@ export default function SalesB2C() {
         }
       }, 100);
     }
-  }, [lines, enterRow, updateLine]);
+  }, [lines, enterRow, updateLine, focusPaymentEntry]);
 
   // Handle QTY blur — if qty exceeds stock, show dialog and keep focus on QTY field
   const handleQtyBlur = useCallback((line: LineItem) => {
@@ -1927,6 +2919,7 @@ export default function SalesB2C() {
       cashAccountId,
       cardAccountId,
       cardAmount,
+      cardReference,
       lines,
       cashReceived,
       oldBalance,
@@ -1936,7 +2929,15 @@ export default function SalesB2C() {
       freightCharge,
       lendAddLess,
       roundOff,
+      autoRoundOff,
       narration,
+      emiratesId,
+      patientName: selectedPatient,
+      doctorName: selectedDoctor,
+      doctorLicenseNo: doctors.find((d) => d.name === selectedDoctor.trim())?.licenseNumber,
+      prescriptionNumber,
+      prescriptionDate,
+      isRiayati,
     };
     const updated = [...heldInvoices, held];
     setHeldInvoices(updated);
@@ -1969,6 +2970,7 @@ export default function SalesB2C() {
     setCashAccountId(held.cashAccountId);
     setCardAccountId(held.cardAccountId);
     setCardAmount(held.cardAmount);
+    setCardReference(held.cardReference || '');
     setLines(held.lines.length > 0 ? held.lines.map(l => ({ ...l, isCommitted: true })) : [emptyLine()]);
     setCashReceived(held.cashReceived);
     setOldBalance(held.oldBalance);
@@ -1978,7 +2980,14 @@ export default function SalesB2C() {
     setFreightCharge(held.freightCharge);
     setLendAddLess(held.lendAddLess);
     setRoundOff(held.roundOff);
+    setAutoRoundOff(held.autoRoundOff ?? false);
     setNarration(held.narration);
+    setEmiratesId(held.emiratesId || '');
+    setSelectedPatient(held.patientName || '');
+    setSelectedDoctor(held.doctorName || '');
+    setPrescriptionNumber(held.prescriptionNumber || '');
+    setPrescriptionDate(held.prescriptionDate || '');
+    setIsRiayati(Boolean(held.isRiayati));
     setErrorDialogOpen(false);
     // Remove from held list
     const updated = heldInvoices.filter((h) => h.id !== held.id);
@@ -1999,10 +3008,15 @@ export default function SalesB2C() {
     setDate(getCurrentDate());
     setVatType('Vat');
     setTaxMode('inclusive');
-    setPaymentType('Cash');
+    setPaymentType(isB2BMode ? 'Credit' : 'Cash');
     setRateType('WSale');
     setCustomerId(null);
-    setCustomerName('CASH');
+    const defaultCash = cashAccounts.find((c) => /cash\s*in\s*hand/i.test(c.name || '')) || cashAccounts[0];
+    setCustomerName(isB2BMode ? '' : (defaultCash?.name || 'CASH IN HAND'));
+    if (defaultCash && !isB2BMode) {
+      setCashAccountId(defaultCash._id);
+      setSelectedCashAccount(defaultCash);
+    }
     setCustomerAddress('');
     // Clear address details
     setBillingAddress('');
@@ -2012,6 +3026,12 @@ export default function SalesB2C() {
     setShippingAddress('');
     setShippingPhone('');
     setShippingContactPerson('');
+    setEmiratesId('');
+    setSelectedPatient('');
+    setSelectedDoctor('');
+    setPrescriptionNumber('');
+    setPrescriptionDate('');
+    setIsRiayati(false);
     setLines([emptyLine()]);
     setCashReceived(0);
     setOldBalance(0);
@@ -2026,13 +3046,22 @@ export default function SalesB2C() {
     setFreightCharge(0);
     setLendAddLess(0);
     setRoundOff(0);
+    setAutoRoundOff(false);
     setNarration('');
     setCardAmount(0);
-    // Reset Card A/C to CC1 default
+    setCardReference('');
+    // Reset Card A/C to CC1 default or first card account
     const cc1 = cardAccounts.find((b) => b.name.toUpperCase() === 'CC1');
-    setCardAccountId(cc1?._id || null);
+    setCardAccountId(cc1?._id || (cardAccounts.length > 0 ? cardAccounts[0]._id : null));
     setErrorDialogOpen(false);
-    await loadNextInvoiceNo();
+    shouldFocusCustomerAcRef.current = true;
+    focusCustomerAc();
+    setTimeout(focusCustomerAc, 50);
+    setTimeout(focusCustomerAc, 150);
+    await loadNextInvoiceNo(true);
+    focusCustomerAc();
+    setTimeout(focusCustomerAc, 100);
+    setTimeout(focusCustomerAc, 250);
   };
 
   // ── Shared invoice validation ──────────────────────────────────────
@@ -2144,6 +3173,12 @@ export default function SalesB2C() {
         unitId: l.unitId,
         unitName: l.unitName,
         batchNumber: l.batchNumber || undefined,
+        expiryDate: l.expiryDate,
+        isRx: l.isRx || Boolean(l.dosageInstructions?.summary),
+        dosageInstructions: l.dosageInstructions,
+        duration: l.dosageInstructions?.duration || l.duration,
+        timing: l.dosageInstructions?.timing || l.timing,
+        frequency: l.dosageInstructions?.frequency || l.frequency,
       };
     });
   }, [vatType]);
@@ -2155,6 +3190,26 @@ export default function SalesB2C() {
 
     const stockOk = await checkStockAvailability(validLines);
     if (!stockOk) return;
+
+    const effectiveCardAccountId = cardAccountId || (cardAccounts.length > 0 ? cardAccounts[0]._id : undefined);
+    const effectiveCashAccountId = cashAccountId || (cashAccounts.length > 0 ? cashAccounts[0]._id : undefined);
+
+    const activePaymentDetails: Array<{ mode: string; amount: number; reference?: string; accountId?: string }> = [];
+    if (cashReceived > 0) {
+      activePaymentDetails.push({
+        mode: 'Cash',
+        amount: cashReceived,
+        accountId: effectiveCashAccountId,
+      });
+    }
+    if (cardAmount > 0) {
+      activePaymentDetails.push({
+        mode: 'Card',
+        amount: cardAmount,
+        reference: cardReference.trim() || undefined,
+        accountId: effectiveCardAccountId,
+      });
+    }
 
     const payload: B2CInvoiceInput = {
       companyId: companyId!,
@@ -2170,7 +3225,7 @@ export default function SalesB2C() {
       paymentType,
       vatType,
       taxMode,
-      cashAccountId: cashAccountId || undefined,
+      cashAccountId: effectiveCashAccountId,
       otherDiscount,
       otherCharges,
       freightCharge,
@@ -2183,7 +3238,14 @@ export default function SalesB2C() {
       shippingAddress,
       shippingPhone,
       shippingContactPerson,
-      paymentDetails: cardAmount > 0 && cardAccountId ? [{ mode: 'Card', amount: cardAmount, accountId: cardAccountId }] : [],
+      paymentDetails: activePaymentDetails,
+      emiratesId: emiratesId.trim() || undefined,
+      patientName: selectedPatient.trim() || undefined,
+      doctorName: selectedDoctor.trim() || undefined,
+      doctorLicenseNo: doctors.find((d) => d.name === selectedDoctor.trim())?.licenseNumber || undefined,
+      prescriptionNumber: prescriptionNumber.trim() || undefined,
+      prescriptionDate: prescriptionDate || date,
+      isRiayati,
     };
 
     setLoading(true);
@@ -2196,7 +3258,8 @@ export default function SalesB2C() {
       setInvoiceId(res.data.data.invoiceId);
       setIsSaved(true);
       setSavedDialogOpen(true);
-      loadInvoiceIds();
+      loadInvoiceIds(true);
+      focusPrintButton();
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Save failed';
       setErrorDialogMessage(msg);
@@ -2220,6 +3283,26 @@ export default function SalesB2C() {
     const stockOk = await checkStockAvailability(validLines);
     if (!stockOk) { setEditConfirmOpen(false); return; }
 
+    const effectiveCardAccountId = cardAccountId || (cardAccounts.length > 0 ? cardAccounts[0]._id : undefined);
+    const effectiveCashAccountId = cashAccountId || (cashAccounts.length > 0 ? cashAccounts[0]._id : undefined);
+
+    const activePaymentDetails: Array<{ mode: string; amount: number; reference?: string; accountId?: string }> = [];
+    if (cashReceived > 0) {
+      activePaymentDetails.push({
+        mode: 'Cash',
+        amount: cashReceived,
+        accountId: effectiveCashAccountId,
+      });
+    }
+    if (cardAmount > 0) {
+      activePaymentDetails.push({
+        mode: 'Card',
+        amount: cardAmount,
+        reference: cardReference.trim() || undefined,
+        accountId: effectiveCardAccountId,
+      });
+    }
+
     const payload: B2CInvoiceInput = {
       companyId: companyId!,
       financialYearId: financialYearId!,
@@ -2234,7 +3317,7 @@ export default function SalesB2C() {
       paymentType,
       vatType,
       taxMode,
-      cashAccountId: cashAccountId || undefined,
+      cashAccountId: effectiveCashAccountId,
       otherDiscount,
       otherCharges,
       freightCharge,
@@ -2246,7 +3329,14 @@ export default function SalesB2C() {
       shippingAddress,
       shippingPhone,
       shippingContactPerson,
-      paymentDetails: cardAmount > 0 && cardAccountId ? [{ mode: 'Card', amount: cardAmount, accountId: cardAccountId }] : [],
+      paymentDetails: activePaymentDetails,
+      emiratesId: emiratesId.trim() || undefined,
+      patientName: selectedPatient.trim() || undefined,
+      doctorName: selectedDoctor.trim() || undefined,
+      doctorLicenseNo: doctors.find((d) => d.name === selectedDoctor.trim())?.licenseNumber || undefined,
+      prescriptionNumber: prescriptionNumber.trim() || undefined,
+      prescriptionDate: prescriptionDate || date,
+      isRiayati,
     };
 
     setLoading(true);
@@ -2255,7 +3345,7 @@ export default function SalesB2C() {
     try {
       await salesApi.updateB2C(invoiceId, payload);
       invalidateStockCache();
-      loadInvoiceIds();
+      loadInvoiceIds(true);
       setEditSuccessDialogOpen(true);
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Update failed';
@@ -2276,7 +3366,7 @@ export default function SalesB2C() {
       invalidateStockCache();
       setSuccessDialogMessage('Invoice deleted successfully');
       setSuccessDialogOpen(true);
-      loadInvoiceIds();
+      loadInvoiceIds(true);
       setTimeout(() => {
         handleClear();
       }, 2000);
@@ -2370,6 +3460,12 @@ export default function SalesB2C() {
     setCustomerAddress((invoice.customerAddress as string) || '');
     setBillingAddress((invoice.customerAddress as string) || '');
     setBillingPhone((invoice.customerPhone as string) || '');
+    setEmiratesId((invoice.emiratesId as string) || '');
+    setSelectedPatient((invoice.patientName as string) || '');
+    setSelectedDoctor((invoice.doctorName as string) || '');
+    setPrescriptionNumber((invoice.prescriptionNumber as string) || '');
+    setPrescriptionDate((invoice.prescriptionDate as string) || '');
+    setIsRiayati(Boolean(invoice.isRiayati));
     const loadedCashId = invoice.cashAccountId
       ? (typeof invoice.cashAccountId === 'object' ? (invoice.cashAccountId as any)._id : invoice.cashAccountId as string)
       : null;
@@ -2399,17 +3495,20 @@ export default function SalesB2C() {
     setFreightCharge((invoice.freightCharge as number) || 0);
     setLendAddLess((invoice.lendAddLess as number) || 0);
     setRoundOff((invoice.roundOff as number) || 0);
+    setAutoRoundOff(false);
     setCashReceived((invoice.cashReceived as number) || 0);
     setOldBalance((invoice.oldBalance as number) || 0);
     setNarration((invoice.narration as string) || '');
     // Restore card payment details
-    const paymentDetails = (invoice.paymentDetails as Array<{ mode: string; amount: number; accountId: string }>) || [];
-    const cardPayment = paymentDetails.find((pd) => pd.mode === 'Card');
+    const paymentDetails = (invoice.paymentDetails as Array<{ mode: string; amount: number; reference?: string; accountId: string }>) || [];
+    const cardPayment = paymentDetails.find((pd) => /card/i.test(pd.mode));
     if (cardPayment) {
       setCardAmount(cardPayment.amount || 0);
       setCardAccountId(cardPayment.accountId || null);
+      setCardReference(cardPayment.reference || '');
     } else {
       setCardAmount(0);
+      setCardReference('');
     }
 
     const items = (invoice.items as Array<Record<string, unknown>>) || [];
@@ -2451,8 +3550,8 @@ export default function SalesB2C() {
               });
             }
 
-            // Add multi-units from current product (only if allowBatches is disabled)
-            if ((currentProduct as any).allowBatches === false && currentProduct.multiUnits && currentProduct.multiUnits.length > 0) {
+            // Add multi-units from current product
+            if (currentProduct.multiUnits && currentProduct.multiUnits.length > 0) {
               currentProduct.multiUnits.forEach((mu) => {
                 const muUnitId = typeof mu.unitId === 'object' ? mu.unitId?._id : mu.unitId;
                 const muUnitName = typeof mu.unitId === 'object' ? (mu.unitId?.shortCode || mu.unitId?.name || 'Unit') : 'Unit';
@@ -2491,8 +3590,6 @@ export default function SalesB2C() {
             if (mainUnitId) {
               availableUnits.push({ id: mainUnitId, name: mainUnitName, isMultiUnit: false });
             }
-
-            const savedAllowBatches = (savedProduct as any)?.allowBatches;
             const multiUnits = savedProduct?.multiUnits as Array<{
               multiUnitId?: string;
               unitId?: { _id?: string; name?: string; shortCode?: string } | string;
@@ -2505,7 +3602,7 @@ export default function SalesB2C() {
               conversion?: number;
               imei?: string;
             }> | undefined;
-            if (savedAllowBatches === false && multiUnits && Array.isArray(multiUnits)) {
+            if (multiUnits && Array.isArray(multiUnits)) {
               multiUnits.forEach((mu) => {
                 const muUnitId = typeof mu.unitId === 'object' ? mu.unitId?._id : mu.unitId;
                 const muUnitName = typeof mu.unitId === 'object' ? (mu.unitId?.name || mu.unitId?.shortCode) : '';
@@ -2599,6 +3696,13 @@ export default function SalesB2C() {
             discAmount: disc,
             vatAmount: vat,
             total,
+            isRx: (item.isRx as boolean) || false,
+            dosageInstructions: (item.dosageInstructions as any) || undefined,
+            duration: (item.duration as string) || undefined,
+            timing: (item.timing as string) || undefined,
+            frequency: (item.frequency as string) || undefined,
+            expiryDate: (item.expiryDate as string) || undefined,
+            batchNumber: (item.batchNumber as string) || undefined,
             isCommitted: true,
           };
         })
@@ -2865,8 +3969,13 @@ export default function SalesB2C() {
                 const containsOnly = options.filter((c) => name(c).includes(q) && !name(c).startsWith(q));
                 return [...sortByName(startsWith), ...sortByName(containsOnly)];
               }}
-              value={customers.find((c) => c.name === customerName) || null}
+              value={customers.find((c) => (c.name || '').trim().toLowerCase() === (customerName || '').trim().toLowerCase()) || null}
               onChange={(_, v) => handleCustomerSelect(v)}
+              onInputChange={(_, newInputValue, reason) => {
+                if (reason === 'clear' || (reason === 'input' && newInputValue.trim() === '')) {
+                  handleCustomerSelect(null);
+                }
+              }}
               onOpen={() => setCustomerAcListboxOpen(true)}
               onClose={() => setCustomerAcListboxOpen(false)}
               autoHighlight
@@ -2879,9 +3988,11 @@ export default function SalesB2C() {
               renderInput={(params) => (
                 <TextField
                   {...params}
+                  id="sales-customer-ac-input"
                   label="Cash / Customer A/C"
                   InputLabelProps={{ shrink: true }}
                   inputRef={customerAcRef}
+                  onFocus={() => loadCustomers()}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
                       const typed = (e.target as HTMLInputElement).value.trim();
@@ -3057,7 +4168,11 @@ export default function SalesB2C() {
                 </TextField>
               </Box>
               {/* Navigation buttons */}
-              <Box sx={{ display: 'flex', gap: 0.4 }}>
+              <Box
+                ref={navButtonsContainerRef}
+                onKeyDown={handleNavButtonKeyDown}
+                sx={{ display: 'flex', gap: 0.4 }}
+              >
                 {[
                   { icon: <FirstIcon />, handler: handleFirstInvoice, tip: 'First' },
                   { icon: <PrevIcon />, handler: handlePrevInvoice, tip: 'Previous' },
@@ -3069,7 +4184,12 @@ export default function SalesB2C() {
                       variant="contained"
                       size="small"
                       onClick={nav.handler}
-                      sx={{ flex: 1, py: 0.15, height: 22, minWidth: 0, borderRadius: 1.2, bgcolor: '#334155', '&:hover': { bgcolor: '#1e293b' }, boxShadow: 'none', '& .MuiSvgIcon-root': { fontSize: 15 } }}
+                      sx={{
+                        flex: 1, py: 0.15, height: 22, minWidth: 0, borderRadius: 1.2,
+                        bgcolor: '#334155', '&:hover': { bgcolor: '#1e293b' }, boxShadow: 'none',
+                        '& .MuiSvgIcon-root': { fontSize: 15 },
+                        '&:focus, &:focus-visible': { outline: '2px solid #000000', outlineOffset: 1 },
+                      }}
                     >
                       {nav.icon}
                     </Button>
@@ -3356,9 +4476,10 @@ export default function SalesB2C() {
                 {[
                   { label: 'Sl', w: '3%' },
                   { label: 'Item Code', w: '6%' },
-                  { label: 'IMEI', w: '9%' },
-                  { label: 'Item Name', w: '19%' },
-                  { label: 'Unit', w: '8%' },
+                  { label: 'IMEI', w: '8%' },
+                  { label: 'Item Name', w: '18%' },
+                  { label: 'Rx', w: '4.5%' },
+                  { label: 'Unit', w: '7.5%' },
                   { label: 'QTY', w: '6%' },
                   { label: 'Price', w: '6%' },
                   { label: 'Gross', w: '8%' },
@@ -3371,7 +4492,7 @@ export default function SalesB2C() {
                   <TableCell key={ci} sx={{
                     bgcolor: isQuotationMode ? '#db2777' : '#0f766e', color: 'white', fontWeight: 700, fontSize: '0.65rem', width: col.w,
                     p: '4px 3px', textAlign: 'center', letterSpacing: 0.2, textTransform: 'uppercase',
-                    borderRight: ci < 12 ? '1px solid rgba(255,255,255,0.15)' : 'none',
+                    borderRight: ci < 13 ? '1px solid rgba(255,255,255,0.15)' : 'none',
                     borderBottom: isQuotationMode ? '2px solid #be185d' : '2px solid #0b534d',
                   }}>
                     {col.label}
@@ -3502,6 +4623,35 @@ export default function SalesB2C() {
                       sx={{ width: '100%' }}
                     />
                   </TableCell>
+                  <TableCell sx={{ p: '2px', borderRight: '1px solid #f0f0f0', borderBottom: '1px solid #cbd5e1', textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
+                    <Tooltip title={line.dosageInstructions?.summary ? `Rx: ${line.dosageInstructions.summary}` : (line.isRx ? "Prescription Item" : "Click to add Rx Instructions")}>
+                      <Button
+                        size="small"
+                        onClick={() => handleOpenMedicationDialog(line.id)}
+                        sx={{
+                          minWidth: 0,
+                          width: '100%',
+                          height: 24,
+                          px: 0.4,
+                          fontSize: '0.65rem',
+                          fontWeight: 700,
+                          textTransform: 'none',
+                          borderRadius: 0.8,
+                          border: line.dosageInstructions?.summary || line.isRx ? '1.5px solid #0f766e' : '1px solid #cbd5e1',
+                          bgcolor: line.dosageInstructions?.summary || line.isRx ? '#e6f4f2' : '#ffffff',
+                          color: line.dosageInstructions?.summary || line.isRx ? '#0f766e' : '#64748b',
+                          '&:hover': { bgcolor: '#d1fae5', borderColor: '#0f766e' },
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: 0.2,
+                        }}
+                      >
+                        <span>Rx</span>
+                        {(line.dosageInstructions?.summary || line.isRx) && <CheckCircleIcon sx={{ fontSize: 11, color: '#0f766e' }} />}
+                      </Button>
+                    </Tooltip>
+                  </TableCell>
                   <TableCell sx={{ p: '2px', borderRight: '1px solid #f0f0f0', borderBottom: '1px solid #cbd5e1' }} onClick={(e) => e.stopPropagation()}>
                     <TextField
                       size="small"
@@ -3620,16 +4770,16 @@ export default function SalesB2C() {
       </Paper>
 
       {/* ===== BOTTOM SECTION ===== */}
-      <Paper elevation={0} sx={{ p: 1.25, mb: 0.7, borderRadius: 1.5, bgcolor: 'white', border: '1px solid #e0e7ef' }}>
-        <Grid container spacing={1}>
+      <Paper elevation={0} sx={{ p: 0.85, mb: 0.5, borderRadius: 1.3, bgcolor: 'white', border: '1px solid #e0e7ef' }}>
+        <Grid container spacing={0.75}>
           {/* Left Column - Payment Details */}
           {!isQuotationMode && (
             <Grid item xs={12} md={5} lg={3.5}>
-              <Box sx={{ bgcolor: '#f8fafc', borderRadius: 1.5, border: '1px solid #e2e8f0', p: 1.25 }}>
-                <Typography sx={{ fontWeight: 700, fontSize: '0.78rem', color: '#0f766e', mb: 0.8, letterSpacing: 0.3, textTransform: 'uppercase' }}>
+              <Box sx={{ bgcolor: '#f8fafc', borderRadius: 1.3, border: '1px solid #e2e8f0', p: 0.85 }}>
+                <Typography sx={{ fontWeight: 700, fontSize: '0.72rem', color: '#0f766e', mb: 0.6, letterSpacing: 0.3, textTransform: 'uppercase' }}>
                   Payment Details
                 </Typography>
-                <Grid container spacing={0.85} alignItems="center">
+                <Grid container spacing={0.65} alignItems="center">
                   <Grid item xs={6}>
                     <TextField
                       size="small" label="Cash Received" type="number"
@@ -3641,10 +4791,8 @@ export default function SalesB2C() {
                       inputRef={cashReceivedRef}
                       inputProps={{ inputMode: 'decimal' }}
                       InputLabelProps={{ shrink: true }}
-                      InputProps={{ readOnly: paymentType === 'Credit' }}
-                      disabled={paymentType === 'Credit'}
                       fullWidth
-                      sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.2, height: 32, minHeight: 32 }, '& .MuiInputBase-input': { fontSize: '0.84rem', py: '4px !important' }, '& .MuiInputLabel-root': { fontSize: '0.78rem' } }}
+                      sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.1, height: 26, minHeight: 26 }, '& .MuiInputBase-input': { fontSize: '0.76rem', py: '2px !important' }, '& .MuiInputLabel-root': { fontSize: '0.70rem' } }}
                     />
                   </Grid>
                   <Grid item xs={6}>
@@ -3654,25 +4802,35 @@ export default function SalesB2C() {
                       onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'cardAmount', value: cardAmount === 0 ? '' : String(cardAmount) }); }}
                       onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'cardAmount' ? { ...prev, value: e.target.value } : prev)}
                       onBlur={() => { const raw = editingNumericCell?.field === 'cardAmount' ? editingNumericCell.value : ''; setCardAmount(parseNumericInput(raw)); setEditingNumericCell((prev) => prev?.field === 'cardAmount' ? null : prev); }}
-                      onKeyDown={(e) => { handleNumberKeyDown(e); if (e.key === 'Enter') { e.preventDefault(); setTimeout(() => narrationRef.current?.focus(), 50); } }}
+                      onKeyDown={(e) => { handleNumberKeyDown(e); if (e.key === 'Enter') { e.preventDefault(); setTimeout(() => cardReferenceRef.current?.focus(), 50); } }}
                       inputRef={cardPaymentRef}
                       inputProps={{ inputMode: 'decimal' }}
                       InputLabelProps={{ shrink: true }}
-                      InputProps={{ readOnly: paymentType === 'Credit' }}
-                      disabled={paymentType === 'Credit'}
                       fullWidth
-                      sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.2, height: 32, minHeight: 32 }, '& .MuiInputBase-input': { fontSize: '0.84rem', py: '4px !important' }, '& .MuiInputLabel-root': { fontSize: '0.78rem' } }}
+                      sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.1, height: 26, minHeight: 26 }, '& .MuiInputBase-input': { fontSize: '0.76rem', py: '2px !important' }, '& .MuiInputLabel-root': { fontSize: '0.70rem' } }}
                     />
                   </Grid>
-                  <Grid item xs={12}>
+                  <Grid item xs={6}>
                     <TextField
-                      size="small" label="Balance"
-                      value={calculations.balance.toFixed(2)}
-                      InputProps={{ readOnly: true, sx: { fontWeight: 700 } }}
+                      size="small" label="Card Ref / Auth"
+                      value={cardReference}
+                      onChange={(e) => setCardReference(e.target.value)}
+                      onFocus={handleTextFieldFocus}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); setTimeout(() => narrationRef.current?.focus(), 50); } }}
+                      inputRef={cardReferenceRef}
                       InputLabelProps={{ shrink: true }}
-                      disabled={paymentType === 'Credit'}
+                      placeholder="Auth/Ref code"
                       fullWidth
-                      sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.2, height: 32, minHeight: 32, bgcolor: '#f1f5f9' }, '& .MuiInputBase-input': { fontSize: '0.84rem', py: '4px !important' }, '& .MuiInputLabel-root': { fontSize: '0.78rem' } }}
+                      sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.1, height: 26, minHeight: 26 }, '& .MuiInputBase-input': { fontSize: '0.76rem', py: '2px !important' }, '& .MuiInputLabel-root': { fontSize: '0.70rem' } }}
+                    />
+                  </Grid>
+                  <Grid item xs={6}>
+                    <Autocomplete
+                      size="small" options={cardAccounts}
+                      getOptionLabel={(opt) => opt.name}
+                      value={cardAccounts.find((c) => c._id === cardAccountId) || null}
+                      onChange={(_, v) => setCardAccountId(v?._id || null)}
+                      renderInput={(params) => <TextField {...params} label="Card A/C" InputLabelProps={{ shrink: true }} sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.1, height: 26, minHeight: 26, py: '0 !important', px: '8px !important' }, '& .MuiInputBase-input': { fontSize: '0.76rem', py: '2px !important' }, '& .MuiAutocomplete-input': { py: '2px !important', fontSize: '0.76rem' }, '& .MuiInputLabel-root': { fontSize: '0.70rem' }, '& .MuiAutocomplete-endAdornment': { top: 'calc(50% - 9px)', right: 4 }, '& .MuiSvgIcon-root': { fontSize: '1rem' } }} />}
                     />
                   </Grid>
                   <Grid item xs={6}>
@@ -3682,17 +4840,17 @@ export default function SalesB2C() {
                       value={selectedCashAccount}
                       onChange={(_, v) => { setSelectedCashAccount(v); setCashAccountId(v?._id || null); }}
                       disabled
-                      renderInput={(params) => <TextField {...params} label="Cash A/C" InputLabelProps={{ shrink: true }} sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.2, height: 32, minHeight: 32 }, '& .MuiInputBase-input': { fontSize: '0.84rem', py: '4px !important' }, '& .MuiInputLabel-root': { fontSize: '0.78rem' } }} />}
+                      renderInput={(params) => <TextField {...params} label="Cash A/C" InputLabelProps={{ shrink: true }} sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.1, height: 26, minHeight: 26, py: '0 !important', px: '8px !important' }, '& .MuiInputBase-input': { fontSize: '0.76rem', py: '2px !important' }, '& .MuiAutocomplete-input': { py: '2px !important', fontSize: '0.76rem' }, '& .MuiInputLabel-root': { fontSize: '0.70rem' }, '& .MuiAutocomplete-endAdornment': { top: 'calc(50% - 9px)', right: 4 }, '& .MuiSvgIcon-root': { fontSize: '1rem' } }} />}
                     />
                   </Grid>
                   <Grid item xs={6}>
-                    <Autocomplete
-                      size="small" options={cardAccounts}
-                      getOptionLabel={(opt) => opt.name}
-                      value={cardAccounts.find((c) => c._id === cardAccountId) || null}
-                      onChange={(_, v) => setCardAccountId(v?._id || null)}
-                      disabled={paymentType === 'Credit'}
-                      renderInput={(params) => <TextField {...params} label="Card A/C" InputLabelProps={{ shrink: true }} sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.2, height: 32, minHeight: 32 }, '& .MuiInputBase-input': { fontSize: '0.84rem', py: '4px !important' }, '& .MuiInputLabel-root': { fontSize: '0.78rem' } }} />}
+                    <TextField
+                      size="small" label="Balance"
+                      value={calculations.balance.toFixed(2)}
+                      InputProps={{ readOnly: true, sx: { fontWeight: 700 } }}
+                      InputLabelProps={{ shrink: true }}
+                      fullWidth
+                      sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.1, height: 26, minHeight: 26, bgcolor: '#f1f5f9' }, '& .MuiInputBase-input': { fontSize: '0.76rem', py: '2px !important' }, '& .MuiInputLabel-root': { fontSize: '0.70rem' } }}
                     />
                   </Grid>
                   <Grid item xs={12}>
@@ -3704,21 +4862,21 @@ export default function SalesB2C() {
                       inputRef={narrationRef}
                       InputLabelProps={{ shrink: true }}
                       fullWidth
-                      sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.2, height: 32, minHeight: 32 }, '& .MuiInputBase-input': { fontSize: '0.84rem', py: '4px !important' }, '& .MuiInputLabel-root': { fontSize: '0.78rem' } }}
+                      sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.1, height: 26, minHeight: 26 }, '& .MuiInputBase-input': { fontSize: '0.76rem', py: '2px !important' }, '& .MuiInputLabel-root': { fontSize: '0.70rem' } }}
                     />
                   </Grid>
                 </Grid>
                 {/* Total Qty & Profit Chips */}
-                <Box sx={{ display: 'flex', gap: 1, mt: 1, flexWrap: 'wrap' }}>
+                <Box sx={{ display: 'flex', gap: 0.75, mt: 0.65, flexWrap: 'wrap' }}>
                   <Chip
                     label={`Qty: ${calculations.totalItems}`}
                     size="small"
-                    sx={{ fontWeight: 700, bgcolor: '#e0f2fe', color: '#0369a1', fontSize: '0.75rem', height: 24 }}
+                    sx={{ fontWeight: 700, bgcolor: '#e0f2fe', color: '#0369a1', fontSize: '0.70rem', height: 21, '& .MuiChip-label': { px: 0.9 } }}
                   />
                   <Chip
                     label={`Profit: ${calculations.totalProfit.toFixed(2)}`}
                     size="small"
-                    sx={{ fontWeight: 700, bgcolor: calculations.totalProfit >= 0 ? '#dcfce7' : '#fee2e2', color: calculations.totalProfit >= 0 ? '#15803d' : '#dc2626', fontSize: '0.75rem', height: 24 }}
+                    sx={{ fontWeight: 700, bgcolor: calculations.totalProfit >= 0 ? '#dcfce7' : '#fee2e2', color: calculations.totalProfit >= 0 ? '#15803d' : '#dc2626', fontSize: '0.70rem', height: 21, '& .MuiChip-label': { px: 0.9 } }}
                   />
                 </Box>
               </Box>
@@ -3727,33 +4885,64 @@ export default function SalesB2C() {
 
           {/* Middle Column - Adjustments */}
           <Grid item xs={12} md={isQuotationMode ? 3.5 : 3.5} lg={3.5}>
-            <Box sx={{ bgcolor: '#f8fafc', borderRadius: 1.5, border: '1px solid #e2e8f0', p: 1.25, height: '100%' }}>
-              <Typography sx={{ fontWeight: 700, fontSize: '0.78rem', color: '#475569', mb: 0.8, letterSpacing: 0.3, textTransform: 'uppercase' }}>
+            <Box sx={{ bgcolor: '#f8fafc', borderRadius: 1.3, border: '1px solid #e2e8f0', p: 0.85, height: '100%' }}>
+              <Typography sx={{ fontWeight: 700, fontSize: '0.72rem', color: '#475569', mb: 0.6, letterSpacing: 0.3, textTransform: 'uppercase' }}>
                 Adjustments
               </Typography>
-              <Grid container spacing={0.85}>
+              <Grid container spacing={0.65}>
                 <Grid item xs={6}>
-                  <TextField size="small" label="Other Disc %" type="number" value={editingNumericCell?.field === 'otherDiscPercent' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (otherDiscPercent === 0 ? '' : String(otherDiscPercent))} onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'otherDiscPercent', value: otherDiscPercent === 0 ? '' : String(otherDiscPercent) }); }} onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherDiscPercent' ? { ...prev, value: e.target.value } : prev)} onBlur={() => { const raw = editingNumericCell?.field === 'otherDiscPercent' ? editingNumericCell.value : ''; handleOtherDiscPercentChange(parseNumericInput(raw)); setEditingNumericCell((prev) => prev?.field === 'otherDiscPercent' ? null : prev); }} onKeyDown={handleNumberKeyDown} inputProps={{ inputMode: 'decimal', max: 100 }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.2, height: 32, minHeight: 32 }, '& .MuiInputBase-input': { fontSize: '0.84rem', py: '4px !important' }, '& .MuiInputLabel-root': { fontSize: '0.78rem' } }} />
+                  <TextField size="small" label="Other Disc %" type="number" value={editingNumericCell?.field === 'otherDiscPercent' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (otherDiscPercent === 0 ? '' : String(otherDiscPercent))} onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'otherDiscPercent', value: otherDiscPercent === 0 ? '' : String(otherDiscPercent) }); }} onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherDiscPercent' ? { ...prev, value: e.target.value } : prev)} onBlur={() => { const raw = editingNumericCell?.field === 'otherDiscPercent' ? editingNumericCell.value : ''; handleOtherDiscPercentChange(parseNumericInput(raw)); setEditingNumericCell((prev) => prev?.field === 'otherDiscPercent' ? null : prev); }} onKeyDown={handleNumberKeyDown} inputProps={{ inputMode: 'decimal', max: 100 }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.1, height: 26, minHeight: 26 }, '& .MuiInputBase-input': { fontSize: '0.76rem', py: '2px !important' }, '& .MuiInputLabel-root': { fontSize: '0.70rem' } }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField size="small" label="Other Discount" type="number" value={editingNumericCell?.field === 'otherDiscount' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (otherDiscount === 0 ? '' : String(otherDiscount))} onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'otherDiscount', value: otherDiscount === 0 ? '' : String(otherDiscount) }); }} onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherDiscount' ? { ...prev, value: e.target.value } : prev)} onBlur={() => { const raw = editingNumericCell?.field === 'otherDiscount' ? editingNumericCell.value : ''; setOtherDiscount(parseNumericInput(raw)); setOtherDiscPercent(0); setEditingNumericCell((prev) => prev?.field === 'otherDiscount' ? null : prev); }} onKeyDown={handleNumberKeyDown} inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.2, height: 32, minHeight: 32 }, '& .MuiInputBase-input': { fontSize: '0.84rem', py: '4px !important' }, '& .MuiInputLabel-root': { fontSize: '0.78rem' } }} />
+                  <TextField size="small" label="Other Discount" type="number" value={editingNumericCell?.field === 'otherDiscount' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (otherDiscount === 0 ? '' : String(otherDiscount))} onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'otherDiscount', value: otherDiscount === 0 ? '' : String(otherDiscount) }); }} onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherDiscount' ? { ...prev, value: e.target.value } : prev)} onBlur={() => { const raw = editingNumericCell?.field === 'otherDiscount' ? editingNumericCell.value : ''; setOtherDiscount(parseNumericInput(raw)); setOtherDiscPercent(0); setEditingNumericCell((prev) => prev?.field === 'otherDiscount' ? null : prev); }} onKeyDown={handleNumberKeyDown} inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.1, height: 26, minHeight: 26 }, '& .MuiInputBase-input': { fontSize: '0.76rem', py: '2px !important' }, '& .MuiInputLabel-root': { fontSize: '0.70rem' } }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField size="small" label="Other Charges" type="number" value={editingNumericCell?.field === 'otherCharges' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (otherCharges === 0 ? '' : String(otherCharges))} onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'otherCharges', value: otherCharges === 0 ? '' : String(otherCharges) }); }} onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherCharges' ? { ...prev, value: e.target.value } : prev)} onBlur={() => { const raw = editingNumericCell?.field === 'otherCharges' ? editingNumericCell.value : ''; setOtherCharges(parseNumericInput(raw)); setEditingNumericCell((prev) => prev?.field === 'otherCharges' ? null : prev); }} onKeyDown={handleNumberKeyDown} inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.2, height: 32, minHeight: 32 }, '& .MuiInputBase-input': { fontSize: '0.84rem', py: '4px !important' }, '& .MuiInputLabel-root': { fontSize: '0.78rem' } }} />
+                  <TextField size="small" label="Other Charges" type="number" value={editingNumericCell?.field === 'otherCharges' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (otherCharges === 0 ? '' : String(otherCharges))} onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'otherCharges', value: otherCharges === 0 ? '' : String(otherCharges) }); }} onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherCharges' ? { ...prev, value: e.target.value } : prev)} onBlur={() => { const raw = editingNumericCell?.field === 'otherCharges' ? editingNumericCell.value : ''; setOtherCharges(parseNumericInput(raw)); setEditingNumericCell((prev) => prev?.field === 'otherCharges' ? null : prev); }} onKeyDown={handleNumberKeyDown} inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.1, height: 26, minHeight: 26 }, '& .MuiInputBase-input': { fontSize: '0.76rem', py: '2px !important' }, '& .MuiInputLabel-root': { fontSize: '0.70rem' } }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField size="small" label="Freight Charge" type="number" value={editingNumericCell?.field === 'freightCharge' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (freightCharge === 0 ? '' : String(freightCharge))} onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'freightCharge', value: freightCharge === 0 ? '' : String(freightCharge) }); }} onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'freightCharge' ? { ...prev, value: e.target.value } : prev)} onBlur={() => { const raw = editingNumericCell?.field === 'freightCharge' ? editingNumericCell.value : ''; setFreightCharge(parseNumericInput(raw)); setEditingNumericCell((prev) => prev?.field === 'freightCharge' ? null : prev); }} onKeyDown={handleNumberKeyDown} inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.2, height: 32, minHeight: 32 }, '& .MuiInputBase-input': { fontSize: '0.84rem', py: '4px !important' }, '& .MuiInputLabel-root': { fontSize: '0.78rem' } }} />
+                  <TextField size="small" label="Freight Charge" type="number" value={editingNumericCell?.field === 'freightCharge' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (freightCharge === 0 ? '' : String(freightCharge))} onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'freightCharge', value: freightCharge === 0 ? '' : String(freightCharge) }); }} onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'freightCharge' ? { ...prev, value: e.target.value } : prev)} onBlur={() => { const raw = editingNumericCell?.field === 'freightCharge' ? editingNumericCell.value : ''; setFreightCharge(parseNumericInput(raw)); setEditingNumericCell((prev) => prev?.field === 'freightCharge' ? null : prev); }} onKeyDown={handleNumberKeyDown} inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.1, height: 26, minHeight: 26 }, '& .MuiInputBase-input': { fontSize: '0.76rem', py: '2px !important' }, '& .MuiInputLabel-root': { fontSize: '0.70rem' } }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField size="small" label="Travel Charge" type="number" value={editingNumericCell?.field === 'lendAddLess' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (lendAddLess === 0 ? '' : String(lendAddLess))} onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'lendAddLess', value: lendAddLess === 0 ? '' : String(lendAddLess) }); }} onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'lendAddLess' ? { ...prev, value: e.target.value } : prev)} onBlur={() => { const raw = editingNumericCell?.field === 'lendAddLess' ? editingNumericCell.value : ''; setLendAddLess(parseNumericInput(raw)); setEditingNumericCell((prev) => prev?.field === 'lendAddLess' ? null : prev); }} onKeyDown={handleNumberKeyDown} inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.2, height: 32, minHeight: 32 }, '& .MuiInputBase-input': { fontSize: '0.84rem', py: '4px !important' }, '& .MuiInputLabel-root': { fontSize: '0.78rem' } }} />
+                  <TextField size="small" label="Travel Charge" type="number" value={editingNumericCell?.field === 'lendAddLess' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (lendAddLess === 0 ? '' : String(lendAddLess))} onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'lendAddLess', value: lendAddLess === 0 ? '' : String(lendAddLess) }); }} onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'lendAddLess' ? { ...prev, value: e.target.value } : prev)} onBlur={() => { const raw = editingNumericCell?.field === 'lendAddLess' ? editingNumericCell.value : ''; setLendAddLess(parseNumericInput(raw)); setEditingNumericCell((prev) => prev?.field === 'lendAddLess' ? null : prev); }} onKeyDown={handleNumberKeyDown} inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.1, height: 26, minHeight: 26 }, '& .MuiInputBase-input': { fontSize: '0.76rem', py: '2px !important' }, '& .MuiInputLabel-root': { fontSize: '0.70rem' } }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField size="small" label="Round Off" type="number" value={editingNumericCell?.field === 'roundOff' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (roundOff === 0 ? '' : String(roundOff))} onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'roundOff', value: roundOff === 0 ? '' : String(roundOff) }); }} onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'roundOff' ? { ...prev, value: e.target.value } : prev)} onBlur={() => { const raw = editingNumericCell?.field === 'roundOff' ? editingNumericCell.value : ''; setRoundOff(parseNumericInput(raw)); setEditingNumericCell((prev) => prev?.field === 'roundOff' ? null : prev); }} onKeyDown={handleNumberKeyDown} inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.2, height: 32, minHeight: 32 }, '& .MuiInputBase-input': { fontSize: '0.84rem', py: '4px !important' }, '& .MuiInputLabel-root': { fontSize: '0.78rem' } }} />
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                    <TextField
+                      size="small"
+                      label="Round Off"
+                      type="number"
+                      value={editingNumericCell?.field === 'roundOff' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (roundOff === 0 ? '' : String(roundOff))}
+                      onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'roundOff', value: roundOff === 0 ? '' : String(roundOff) }); }}
+                      onChange={(e) => {
+                        setAutoRoundOff(false);
+                        setEditingNumericCell((prev) => prev?.field === 'roundOff' ? { ...prev, value: e.target.value } : prev);
+                      }}
+                      onBlur={() => { const raw = editingNumericCell?.field === 'roundOff' ? editingNumericCell.value : ''; setRoundOff(parseNumericInput(raw)); setEditingNumericCell((prev) => prev?.field === 'roundOff' ? null : prev); }}
+                      onKeyDown={handleNumberKeyDown}
+                      inputProps={{ inputMode: 'decimal' }}
+                      InputLabelProps={{ shrink: true }}
+                      fullWidth
+                      sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.1, height: 26, minHeight: 26 }, '& .MuiInputBase-input': { fontSize: '0.76rem', py: '2px !important' }, '& .MuiInputLabel-root': { fontSize: '0.70rem' } }}
+                    />
+                    <Tooltip title="Round Off Total (Auto Round)" arrow placement="top">
+                      <Checkbox
+                        size="small"
+                        checked={autoRoundOff}
+                        onChange={(e) => handleAutoRoundOffToggle(e.target.checked)}
+                        sx={{
+                          p: 0.2,
+                          color: '#94a3b8',
+                          '&.Mui-checked': { color: '#0f766e' },
+                          '& .MuiSvgIcon-root': { fontSize: '1.05rem' },
+                        }}
+                      />
+                    </Tooltip>
+                  </Box>
                 </Grid>
               </Grid>
               {/* If in Quotation Mode, render Narration, Qty & Profit chips here */}
               {isQuotationMode && (
-                <Box sx={{ mt: 1.5 }}>
+                <Box sx={{ mt: 0.8 }}>
                   <TextField
                     size="small" label="Narration" value={narration}
                     onChange={(e) => setNarration(e.target.value)}
@@ -3762,18 +4951,18 @@ export default function SalesB2C() {
                     inputRef={narrationRef}
                     InputLabelProps={{ shrink: true }}
                     fullWidth
-                    sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.2, height: 32, minHeight: 32 }, '& .MuiInputBase-input': { fontSize: '0.84rem', py: '4px !important' }, '& .MuiInputLabel-root': { fontSize: '0.78rem' }, mb: 1 }}
+                    sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.1, height: 26, minHeight: 26 }, '& .MuiInputBase-input': { fontSize: '0.76rem', py: '2px !important' }, '& .MuiInputLabel-root': { fontSize: '0.70rem' }, mb: 0.6 }}
                   />
-                  <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                  <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap' }}>
                     <Chip
                       label={`Qty: ${calculations.totalItems}`}
                       size="small"
-                      sx={{ fontWeight: 700, bgcolor: '#fdf2f8', color: '#be185d', fontSize: '0.75rem', height: 24 }}
+                      sx={{ fontWeight: 700, bgcolor: '#fdf2f8', color: '#be185d', fontSize: '0.70rem', height: 21, '& .MuiChip-label': { px: 0.9 } }}
                     />
                     <Chip
                       label={`Profit: ${calculations.totalProfit.toFixed(2)}`}
                       size="small"
-                      sx={{ fontWeight: 700, bgcolor: calculations.totalProfit >= 0 ? '#dcfce7' : '#fee2e2', color: calculations.totalProfit >= 0 ? '#15803d' : '#dc2626', fontSize: '0.75rem', height: 24 }}
+                      sx={{ fontWeight: 700, bgcolor: calculations.totalProfit >= 0 ? '#dcfce7' : '#fee2e2', color: calculations.totalProfit >= 0 ? '#15803d' : '#dc2626', fontSize: '0.70rem', height: 21, '& .MuiChip-label': { px: 0.9 } }}
                     />
                   </Box>
                 </Box>
@@ -3789,28 +4978,28 @@ export default function SalesB2C() {
                 background: isQuotationMode
                   ? 'linear-gradient(135deg, #db2777 0%, #be185d 100%)'
                   : 'linear-gradient(135deg, #0f766e 0%, #115e59 100%)',
-                borderRadius: 1.5, p: 1, mb: 0.8, textAlign: 'center',
+                borderRadius: 1.3, p: 0.65, mb: 0.55, textAlign: 'center',
               }}>
-                <Typography sx={{ color: 'rgba(255,255,255,0.7)', fontSize: '0.60rem', fontWeight: 600, letterSpacing: 1, textTransform: 'uppercase', mb: 0.1 }}>Grand Total</Typography>
-                <Typography sx={{ color: 'white', fontWeight: 900, fontSize: '1.55rem', lineHeight: 1.1, letterSpacing: -0.5 }}>
+                <Typography sx={{ color: 'rgba(255,255,255,0.7)', fontSize: '0.56rem', fontWeight: 600, letterSpacing: 1, textTransform: 'uppercase', mb: 0.08 }}>Grand Total</Typography>
+                <Typography sx={{ color: 'white', fontWeight: 900, fontSize: '1.25rem', lineHeight: 1.1, letterSpacing: -0.5 }}>
                   {calculations.grandTotal.toFixed(2)}
                 </Typography>
               </Box>
               {/* Bill breakdown */}
-              <Box sx={{ bgcolor: '#f8fafc', borderRadius: 1.5, border: '1px solid #e2e8f0', p: 1, flex: 1 }}>
-                <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
-                  <Typography sx={{ fontSize: '0.68rem', color: '#64748b', fontWeight: 500 }}>
+              <Box sx={{ bgcolor: '#f8fafc', borderRadius: 1.3, border: '1px solid #e2e8f0', p: 0.75, flex: 1 }}>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.35 }}>
+                  <Typography sx={{ fontSize: '0.64rem', color: '#64748b', fontWeight: 500 }}>
                     {isQuotationMode ? 'This Quotation' : 'This Bill'}
                   </Typography>
-                  <Typography sx={{ fontSize: '0.80rem', fontWeight: 800, color: '#1e293b' }}>{calculations.subTotal.toFixed(2)}</Typography>
+                  <Typography sx={{ fontSize: '0.75rem', fontWeight: 800, color: '#1e293b' }}>{calculations.subTotal.toFixed(2)}</Typography>
                 </Box>
-                <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
-                  <Typography sx={{ fontSize: '0.68rem', color: '#64748b', fontWeight: 500 }}>Before tax (incl. adjustments)</Typography>
-                  <Typography sx={{ fontSize: '0.80rem', fontWeight: 800, color: '#1e293b' }}>{(calculations.grandTotal - calculations.totalVat).toFixed(2)}</Typography>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.35 }}>
+                  <Typography sx={{ fontSize: '0.64rem', color: '#64748b', fontWeight: 500 }}>Before tax (incl. adjustments)</Typography>
+                  <Typography sx={{ fontSize: '0.75rem', fontWeight: 800, color: '#1e293b' }}>{(calculations.grandTotal - calculations.totalVat).toFixed(2)}</Typography>
                 </Box>
-                <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
-                  <Typography sx={{ fontSize: '0.68rem', color: '#64748b', fontWeight: 500 }}>Total VAT</Typography>
-                  <Typography sx={{ fontSize: '0.80rem', fontWeight: 800, color: '#1e293b' }}>{calculations.totalVat.toFixed(2)}</Typography>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.35 }}>
+                  <Typography sx={{ fontSize: '0.64rem', color: '#64748b', fontWeight: 500 }}>Total VAT</Typography>
+                  <Typography sx={{ fontSize: '0.75rem', fontWeight: 800, color: '#1e293b' }}>{calculations.totalVat.toFixed(2)}</Typography>
                 </Box>
                 {[
                   { label: 'Old Balance', value: oldBalance },
@@ -3820,9 +5009,9 @@ export default function SalesB2C() {
                   { label: 'Other Charges', value: otherCharges },
                   { label: 'Travel Chg', value: lendAddLess },
                 ].map((item) => (
-                  <Box key={item.label} sx={{ display: 'flex', justifyContent: 'space-between', py: 0.15 }}>
-                    <Typography sx={{ fontSize: '0.64rem', color: '#94a3b8' }}>{item.label}</Typography>
-                    <Typography sx={{ fontSize: '0.64rem', color: '#64748b', fontWeight: 500 }}>{item.value.toFixed(2)}</Typography>
+                  <Box key={item.label} sx={{ display: 'flex', justifyContent: 'space-between', py: 0.08 }}>
+                    <Typography sx={{ fontSize: '0.60rem', color: '#94a3b8' }}>{item.label}</Typography>
+                    <Typography sx={{ fontSize: '0.60rem', color: '#64748b', fontWeight: 500 }}>{item.value.toFixed(2)}</Typography>
                   </Box>
                 ))}
               </Box>
@@ -3831,9 +5020,13 @@ export default function SalesB2C() {
         </Grid>
       </Paper>
 
-      {/* ===== ACTION BUTTONS ===== */}
+      {/* ===== ACTION BUTTONS ROW ===== */}
       <Paper elevation={0} sx={{ p: 0.8, width: '100%', borderRadius: 1.5, bgcolor: 'white', border: '1px solid #e0e7ef' }}>
-        <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap', alignItems: 'center' }}>
+        <Box
+          ref={actionButtonsContainerRef}
+          onKeyDown={handleActionButtonKeyDown}
+          sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap', alignItems: 'center' }}
+        >
           {/* Primary Actions */}
           <Button
             ref={saveButtonRef}
@@ -3845,18 +5038,28 @@ export default function SalesB2C() {
               ...commonButtonStyles,
               bgcolor: isQuotationMode ? '#db2777' : '#16a34a',
               '&:hover': { bgcolor: isQuotationMode ? '#be185d' : '#000000' },
+              '&:focus, &:focus-visible': {
+                outline: '2px solid #000000',
+                outlineOffset: 1,
+              },
             }}
           >
             Save
           </Button>
           <Button
+            ref={printButtonRef}
             variant="contained"
             startIcon={<PrintIcon />}
+            onClick={() => window.print()}
             disabled={!isSaved}
             sx={{
               ...commonButtonStyles,
               bgcolor: isQuotationMode ? '#db2777' : '#16a34a',
               '&:hover': { bgcolor: isQuotationMode ? '#be185d' : '#000000' },
+              '&:focus, &:focus-visible': {
+                outline: '2px solid #000000',
+                outlineOffset: 1,
+              },
             }}
           >
             Print
@@ -3871,6 +5074,10 @@ export default function SalesB2C() {
                 ...commonButtonStyles,
                 bgcolor: '#db2777',
                 '&:hover': { bgcolor: '#be185d' },
+                '&:focus, &:focus-visible': {
+                  outline: '2px solid #000000',
+                  outlineOffset: 1,
+                },
               }}
             >
               Post to Sales
@@ -3879,18 +5086,25 @@ export default function SalesB2C() {
           <Button
             variant="contained"
             startIcon={<ClearIcon />}
-            onClick={handleClear}
+            onClick={async (e) => {
+              (e.currentTarget as HTMLElement)?.blur();
+              await handleClear();
+            }}
             sx={{
               ...commonButtonStyles,
               bgcolor: isQuotationMode ? '#db2777' : '#16a34a',
               '&:hover': { bgcolor: isQuotationMode ? '#be185d' : '#000000' },
+              '&:focus, &:focus-visible': {
+                outline: '2px solid #000000',
+                outlineOffset: 1,
+              },
             }}
           >
             Clear
           </Button>
 
           {/* Divider */}
-          <Divider orientation="vertical" flexItem sx={{ mx: 0.5 }} />
+          <Divider orientation="vertical" flexItem sx={{ mx: 0.3 }} />
 
           <Button
             variant="contained"
@@ -3904,6 +5118,10 @@ export default function SalesB2C() {
               '& .MuiSvgIcon-root': { fontSize: 16 },
               '&:hover': { bgcolor: isQuotationMode ? '#be185d' : '#000000' },
               '&.Mui-disabled': { bgcolor: '#d1d5db', color: '#9ca3af' },
+              '&:focus, &:focus-visible': {
+                outline: '2px solid #000000',
+                outlineOffset: 1,
+              },
             }}
           >
             Edit
@@ -3920,10 +5138,35 @@ export default function SalesB2C() {
               '& .MuiSvgIcon-root': { fontSize: 16 },
               '&:hover': { bgcolor: isQuotationMode ? '#be185d' : '#000000' },
               '&.Mui-disabled': { bgcolor: '#d1d5db', color: '#9ca3af' },
+              '&:focus, &:focus-visible': {
+                outline: '2px solid #000000',
+                outlineOffset: 1,
+              },
             }}
           >
             Delete
           </Button>
+          {!isB2BMode && !isQuotationMode && (
+            <Button
+              variant="contained"
+              startIcon={<LocalPharmacyIcon />}
+              onClick={() => setRiayatiDialogOpen(true)}
+              sx={{
+                ...commonButtonStyles,
+                minWidth: 85,
+                bgcolor: isRiayati ? '#0f766e' : '#16a34a',
+                color: '#ffffff',
+                fontWeight: 600,
+                '&:hover': { bgcolor: isRiayati ? '#0d5d57' : '#000000' },
+                '&:focus, &:focus-visible': {
+                  outline: '2px solid #000000',
+                  outlineOffset: 1,
+                },
+              }}
+            >
+              Riayati {isRiayati ? '(E-Rx)' : ''}
+            </Button>
+          )}
 
           {/* Spacer */}
           <Box sx={{ flex: 1 }} />
@@ -3938,6 +5181,10 @@ export default function SalesB2C() {
               bgcolor: isQuotationMode ? '#db2777' : '#16a34a', color: '#fff',
               '& .MuiSvgIcon-root': { fontSize: 16 },
               '&:hover': { bgcolor: isQuotationMode ? '#be185d' : '#000000' },
+              '&:focus, &:focus-visible': {
+                outline: '2px solid #000000',
+                outlineOffset: 1,
+              },
             }}
           >
             {isQuotationMode ? 'Search Quotation' : 'Search Invoice'}
@@ -3961,14 +5208,44 @@ export default function SalesB2C() {
       </Dialog>
 
       {/* Saved Success Dialog */}
-      <Dialog open={savedDialogOpen} onClose={() => setSavedDialogOpen(false)} disableRestoreFocus PaperProps={{ sx: { borderRadius: 2 } }}
-        TransitionProps={{ onEntered: (node) => { const btn = (node as HTMLElement).querySelector<HTMLButtonElement>('[data-confirm-btn]'); btn?.focus(); } }}>
+      <Dialog
+        open={savedDialogOpen}
+        onClose={() => {
+          setSavedDialogOpen(false);
+          focusPrintButton();
+        }}
+        disableRestoreFocus
+        PaperProps={{ sx: { borderRadius: 2 } }}
+        TransitionProps={{
+          onEntered: (node) => {
+            const btn = (node as HTMLElement).querySelector<HTMLButtonElement>('[data-confirm-btn]');
+            btn?.focus();
+          },
+          onExited: () => {
+            focusPrintButton();
+          },
+        }}
+      >
         <DialogTitle sx={{ fontWeight: 700, fontSize: '1rem', color: '#15803d' }}>Saved Successfully</DialogTitle>
         <DialogContent>
           <Typography sx={{ fontSize: '0.9rem', color: '#475569' }}>{isQuotationMode ? 'Quotation' : 'Invoice'} has been saved successfully.</Typography>
         </DialogContent>
         <DialogActions sx={{ px: 2, pb: 2 }}>
-          <Button variant="contained" data-confirm-btn onClick={() => setSavedDialogOpen(false)} sx={{ textTransform: 'none', borderRadius: 1.5, bgcolor: isQuotationMode ? '#db2777' : '#0f766e', '&:hover': { bgcolor: isQuotationMode ? '#be185d' : '#115e59' }, boxShadow: 'none' }}>
+          <Button
+            variant="contained"
+            data-confirm-btn
+            onClick={() => {
+              setSavedDialogOpen(false);
+              focusPrintButton();
+            }}
+            sx={{
+              textTransform: 'none',
+              borderRadius: 1.5,
+              bgcolor: isQuotationMode ? '#db2777' : '#0f766e',
+              '&:hover': { bgcolor: isQuotationMode ? '#be185d' : '#115e59' },
+              boxShadow: 'none',
+            }}
+          >
             OK
           </Button>
         </DialogActions>
@@ -4051,6 +5328,58 @@ export default function SalesB2C() {
               if (name) {
                 setPendingCustomerName(name);
                 navigate('/master/customer-create', { state: { prefillName: name, returnTo: isQuotationMode ? '/entry/quotation-sales' : (isB2BMode ? '/entry/sales-b2b' : '/entry/sales-b2c') } });
+              }
+            }}
+            sx={{ textTransform: 'none', borderRadius: 1.5, bgcolor: '#0f766e', '&:hover': { bgcolor: '#0d6561' }, boxShadow: 'none' }}
+          >
+            Yes
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Create Product Confirm Dialog */}
+      <Dialog
+        open={createProductConfirmOpen}
+        onClose={() => { setCreateProductConfirmOpen(false); setCreateProductConfirmName(null); pendingProductLineIdRef.current = null; }}
+        PaperProps={{ sx: { borderRadius: 2, minWidth: 360 } }}
+        TransitionProps={{
+          onEntered: (node) => {
+            const yesBtn = (node as HTMLElement).querySelector<HTMLButtonElement>('[data-create-product-yes]');
+            yesBtn?.focus();
+          },
+        }}
+      >
+        <DialogTitle sx={{ fontWeight: 700, fontSize: '1rem', color: '#0f766e' }}>Create product?</DialogTitle>
+        <DialogContent>
+          <Typography sx={{ fontSize: '0.9rem', color: '#475569' }}>
+            This product doesn&apos;t exist. Do you want to create it{createProductConfirmName ? ` for "${createProductConfirmName}"` : ''}?
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 2, pb: 2 }}>
+          <Button
+            onClick={() => { setCreateProductConfirmOpen(false); setCreateProductConfirmName(null); pendingProductLineIdRef.current = null; }}
+            sx={{ textTransform: 'none', borderRadius: 1.5, color: '#64748b' }}
+          >
+            No
+          </Button>
+          <Button
+            variant="contained"
+            data-create-product-yes
+            autoFocus
+            onClick={() => {
+              const name = createProductConfirmName;
+              const lineId = pendingProductLineIdRef.current;
+              setCreateProductConfirmOpen(false);
+              setCreateProductConfirmName(null);
+              pendingProductLineIdRef.current = null;
+              if (name) {
+                navigate('/master/products/create', {
+                  state: {
+                    prefillName: name,
+                    returnTo: isQuotationMode ? '/entry/quotation-sales' : (isB2BMode ? '/entry/sales-b2b' : '/entry/sales-b2c'),
+                    lineIdForProduct: lineId ?? undefined,
+                  },
+                });
               }
             }}
             sx={{ textTransform: 'none', borderRadius: 1.5, bgcolor: '#0f766e', '&:hover': { bgcolor: '#0d6561' }, boxShadow: 'none' }}
@@ -4213,7 +5542,19 @@ export default function SalesB2C() {
         onKeyDown={handleBatchDialogKeyDown}
         maxWidth="sm"
         fullWidth
+        autoFocus={false}
+        disableAutoFocus={true}
+        disableRestoreFocus
         PaperProps={{ sx: { borderRadius: 2 } }}
+        TransitionProps={{
+          onEntered: () => {
+            const firstRow = batchRowRefs.current[focusedBatchIndex] || batchRowRefs.current[0];
+            if (firstRow) {
+              firstRow.focus();
+              firstRow.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+          },
+        }}
       >
         <DialogTitle sx={{ bgcolor: '#f8fafc', borderBottom: '1px solid #e2e8f0', py: 1.5 }}>
           <Typography sx={{ fontWeight: 700, fontSize: '0.95rem', color: '#1e293b' }}>Select Batch</Typography>
@@ -4239,15 +5580,32 @@ export default function SalesB2C() {
                   <TableRow
                     key={batch.batchNumber}
                     ref={(el) => { batchRowRefs.current[index] = el; }}
+                    tabIndex={index === focusedBatchIndex ? 0 : -1}
                     hover
                     sx={{
                       cursor: 'pointer',
                       '&:hover': { bgcolor: '#f0fdfa' },
                       bgcolor: index === focusedBatchIndex ? '#ccfbf1 !important' : (index % 2 === 0 ? '#ffffff' : '#fafafa'),
-                      outline: index === focusedBatchIndex ? '2px solid #0f766e' : 'none',
+                      outline: index === focusedBatchIndex ? '2px solid #0f766e !important' : 'none',
+                      outlineOffset: -2,
                       transition: 'all 0.1s',
+                      '&:focus': {
+                        outline: '2px solid #0f766e !important',
+                        bgcolor: '#ccfbf1 !important',
+                      },
                     }}
-                    onClick={() => handleBatchSelect(batch)}
+                    onClick={() => {
+                      setFocusedBatchIndex(index);
+                      handleBatchSelect(batch);
+                    }}
+                    onFocus={() => setFocusedBatchIndex(index)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        handleBatchSelect(batch);
+                      }
+                    }}
                   >
                     <TableCell sx={{ fontSize: '0.8rem', color: '#334155', py: 0.75 }}>
                       {batch.batchNumber.length > 15 ? batch.batchNumber.substring(0, 15) + '...' : batch.batchNumber}
@@ -4257,7 +5615,7 @@ export default function SalesB2C() {
                     <TableCell align="right" sx={{ fontSize: '0.8rem', color: '#64748b', py: 0.75 }}>{batch.purchasePrice.toFixed(2)}</TableCell>
                     <TableCell align="right" sx={{ fontSize: '0.8rem', color: '#1e293b', py: 0.75, fontWeight: 600 }}>{(rateType === 'WSale' ? batch.wholesale : batch.retail).toFixed(2)}</TableCell>
                     <TableCell align="center" sx={{ py: 0.75 }}>
-                      <Button size="small" variant="contained"
+                      <Button size="small" variant="contained" tabIndex={-1}
                         onClick={(e) => { e.stopPropagation(); handleBatchSelect(batch); }}
                         sx={{ minWidth: 'auto', px: 1.5, py: 0.25, fontSize: '0.7rem', borderRadius: 1, boxShadow: 'none', bgcolor: '#0f766e', '&:hover': { bgcolor: '#115e59' } }}>
                         Select
@@ -4270,7 +5628,7 @@ export default function SalesB2C() {
           </TableContainer>
         </DialogContent>
         <DialogActions sx={{ bgcolor: '#f8fafc', borderTop: '1px solid #e2e8f0', px: 2, py: 1 }}>
-          <Button onClick={handleBatchDialogClose} sx={{ textTransform: 'none', borderRadius: 1.5, color: '#64748b' }}>Cancel</Button>
+          <Button tabIndex={-1} onClick={handleBatchDialogClose} sx={{ textTransform: 'none', borderRadius: 1.5, color: '#64748b' }}>Cancel</Button>
         </DialogActions>
       </Dialog>
 
@@ -4484,7 +5842,7 @@ export default function SalesB2C() {
                       >
                         <TableCell sx={{ fontSize: '0.78rem', color: '#94a3b8', textAlign: 'center', px: 1.2, py: 0.8 }}>{i + 1}</TableCell>
                         <TableCell sx={{ fontSize: '0.78rem', fontWeight: 700, color: '#0f766e', px: 1.2, py: 0.8 }}>{row.invoiceNo}</TableCell>
-                        <TableCell sx={{ fontSize: '0.78rem', color: '#64748b', px: 1.2, py: 0.8 }}>{row.date ? new Date(row.date).toLocaleDateString() : ''}</TableCell>
+                        <TableCell sx={{ fontSize: '0.78rem', color: '#64748b', px: 1.2, py: 0.8 }}>{row.date ? formatDateDisplay(row.date) : ''}</TableCell>
                         <TableCell sx={{ fontSize: '0.78rem', color: '#334155', px: 1.2, py: 0.8 }}>{row.customerName || 'Cash'}</TableCell>
                         <TableCell sx={{ fontSize: '0.78rem', color: '#64748b', textAlign: 'center', px: 1.2, py: 0.8 }}>{row.unitName || '-'}</TableCell>
                         <TableCell sx={{ fontSize: '0.78rem', textAlign: 'right', color: '#334155', fontWeight: 500, px: 1.2, py: 0.8 }}>{row.quantity.toFixed(2)}</TableCell>
@@ -4654,6 +6012,1596 @@ export default function SalesB2C() {
             Close
           </Button>
         </DialogActions>
+      </Dialog>
+
+      {/* ── MEDICATION INSTRUCTIONS DIALOG ── */}
+      <Dialog
+        open={medicationDialogOpen}
+        onClose={() => setMedicationDialogOpen(false)}
+        maxWidth="sm"
+        fullWidth
+        PaperProps={{
+          sx: {
+            borderRadius: '10px',
+            border: '1px solid #d3dcd9',
+            boxShadow: '0 10px 30px rgba(10,31,28,0.12)',
+            overflow: 'hidden',
+          },
+        }}
+      >
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', p: '10px 16px', bgcolor: '#f3f6f5', borderBottom: '1px solid #d3dcd9' }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <LocalPharmacyIcon sx={{ color: '#0f766e', fontSize: 20 }} />
+            <Typography sx={{ fontSize: 14, fontWeight: 700, color: '#15302e' }}>
+              Medication & Dosage Instructions
+            </Typography>
+          </Box>
+          <IconButton size="small" onClick={() => setMedicationDialogOpen(false)} sx={{ p: 0.5 }}>
+            <CloseIcon sx={{ fontSize: 18 }} />
+          </IconButton>
+        </Box>
+
+        <Box sx={{ p: '20px 22px 14px' }}>
+          {/* DURATION */}
+          <Box sx={{ mb: 1.8 }}>
+            <Typography sx={{ fontSize: 12.5, fontWeight: 600, color: '#5d716e', mb: 0.5 }}>
+              Duration of Treatment:
+            </Typography>
+            <Box sx={{ display: 'flex', gap: 1 }}>
+              <select
+                value={
+                  ['1', '2', '3', '5', '7', '10', '14', '21', '30', '60', '90'].includes(medDuration)
+                    ? medDuration
+                    : (medDuration ? 'custom' : '')
+                }
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (val !== 'custom') {
+                    setMedDuration(val);
+                  }
+                }}
+                style={{
+                  flex: 1,
+                  height: 38,
+                  padding: '0 11px',
+                  borderRadius: 7,
+                  border: '1px solid #d3dcd9',
+                  background: '#fff',
+                  font: 'inherit',
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: '#15302e',
+                  outline: 'none',
+                }}
+              >
+                <option value="">Select duration...</option>
+                <option value="1">1 Day</option>
+                <option value="2">2 Days</option>
+                <option value="3">3 Days</option>
+                <option value="5">5 Days</option>
+                <option value="7">7 Days</option>
+                <option value="10">10 Days</option>
+                <option value="14">14 Days</option>
+                <option value="21">21 Days</option>
+                <option value="30">30 Days</option>
+                <option value="60">60 Days</option>
+                <option value="90">90 Days</option>
+                {medDuration && !['1', '2', '3', '5', '7', '10', '14', '21', '30', '60', '90'].includes(medDuration) && (
+                  <option value="custom">Custom ({medDuration})</option>
+                )}
+              </select>
+
+              <input
+                type="text"
+                value={medDuration}
+                placeholder="Enter days (e.g. 30)"
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (val === '' || /^\d+$/.test(val)) {
+                    setMedDuration(val);
+                  }
+                }}
+                style={{
+                  flex: 1,
+                  height: 38,
+                  padding: '0 11px',
+                  borderRadius: 7,
+                  border: '1px solid #d3dcd9',
+                  background: '#fff',
+                  font: 'inherit',
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: '#15302e',
+                  outline: 'none',
+                }}
+              />
+            </Box>
+          </Box>
+
+          {/* MEDICINE TIMING */}
+          <Box sx={{ mb: 1.8 }}>
+            <Typography sx={{ fontSize: 12.5, fontWeight: 600, color: '#5d716e', mb: 0.5 }}>
+              Medicine Timing (Before Food / After Food):
+            </Typography>
+            <Box sx={{ display: 'flex', gap: 1 }}>
+              <select
+                value={
+                  ['Before Food', 'After Food', 'With Food', 'As Directed', 'Before Meals', 'After Meals', 'With Meals', 'On Empty Stomach', 'At Bedtime'].includes(medTiming)
+                    ? medTiming
+                    : (medTiming ? 'custom' : '')
+                }
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (val !== 'custom') {
+                    setMedTiming(val);
+                  }
+                }}
+                style={{
+                  flex: 1,
+                  height: 38,
+                  padding: '0 11px',
+                  borderRadius: 7,
+                  border: '1px solid #d3dcd9',
+                  background: '#fff',
+                  font: 'inherit',
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: '#15302e',
+                  outline: 'none',
+                }}
+              >
+                <option value="">Select timing...</option>
+                <option value="Before Food">Before Food</option>
+                <option value="After Food">After Food</option>
+                <option value="With Food">With Food</option>
+                <option value="As Directed">As Directed</option>
+                <option value="Before Meals">Before Meals</option>
+                <option value="After Meals">After Meals</option>
+                <option value="With Meals">With Meals</option>
+                <option value="On Empty Stomach">On Empty Stomach</option>
+                <option value="At Bedtime">At Bedtime</option>
+                {medTiming && !['Before Food', 'After Food', 'With Food', 'As Directed', 'Before Meals', 'After Meals', 'With Meals', 'On Empty Stomach', 'At Bedtime'].includes(medTiming) && (
+                  <option value="custom">Custom ({medTiming})</option>
+                )}
+              </select>
+
+              <input
+                type="text"
+                value={medTiming}
+                placeholder="Or type custom timing"
+                onChange={(e) => setMedTiming(e.target.value)}
+                style={{
+                  flex: 1,
+                  height: 38,
+                  padding: '0 11px',
+                  borderRadius: 7,
+                  border: '1px solid #d3dcd9',
+                  background: '#fff',
+                  font: 'inherit',
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: '#15302e',
+                  outline: 'none',
+                }}
+              />
+            </Box>
+          </Box>
+
+          {/* FREQUENCY / QTY PER DAY */}
+          <Box sx={{ mb: 2 }}>
+            <Typography sx={{ fontSize: 12.5, fontWeight: 600, color: '#5d716e', mb: 0.5 }}>
+              Frequency / Qty Per Day:
+            </Typography>
+            <Box sx={{ display: 'flex', gap: 1.5 }}>
+              <select
+                value={
+                  ['1', '2', '3', '4', '5', '6', '7', '8', '9'].includes(medFrequency)
+                    ? medFrequency
+                    : (medFrequency && parseFloat(medFrequency) > 9 ? 'more_than_9' : (medFrequency ? 'custom' : ''))
+                }
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (val === 'more_than_9') {
+                    setMedFrequency((prev) => {
+                      const n = parseFloat(prev);
+                      return !isNaN(n) && n > 9 ? prev : '10';
+                    });
+                  } else if (val === 'custom') {
+                    // keep current
+                  } else {
+                    setMedFrequency(val);
+                  }
+                }}
+                style={{
+                  flex: 1,
+                  height: 38,
+                  padding: '0 11px',
+                  borderRadius: 7,
+                  border: '1px solid #d3dcd9',
+                  background: '#fff',
+                  font: 'inherit',
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: '#15302e',
+                  outline: 'none',
+                }}
+              >
+                <option value="">Select frequency...</option>
+                <option value="1">1 time daily (q.d.)</option>
+                <option value="2">2 times daily (b.i.d.)</option>
+                <option value="3">3 times daily (t.i.d.)</option>
+                <option value="4">4 times daily (q.i.d.)</option>
+                <option value="5">5 times daily</option>
+                <option value="6">6 times daily</option>
+                <option value="7">7 times daily</option>
+                <option value="8">8 times daily</option>
+                <option value="9">9 times daily</option>
+                <option value="more_than_9">More than 9 (&gt; 9)</option>
+              </select>
+
+              <input
+                type="text"
+                value={medFrequency}
+                placeholder="Enter value (e.g. 1, 2, 2.5)"
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (val === '' || /^\d*\.?\d*$/.test(val)) {
+                    setMedFrequency(val);
+                  }
+                }}
+                style={{
+                  flex: 1,
+                  height: 38,
+                  padding: '0 11px',
+                  borderRadius: 7,
+                  border: '1px solid #d3dcd9',
+                  background: '#fff',
+                  font: 'inherit',
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: '#15302e',
+                  outline: 'none',
+                }}
+              />
+            </Box>
+          </Box>
+
+          {/* INSTRUCTION SUMMARY CARD */}
+          <Box
+            sx={{
+              bgcolor: '#f8faf9',
+              border: '1px solid #d3dcd9',
+              borderRadius: '8px',
+              p: '12px 14px',
+            }}
+          >
+            <Typography sx={{ fontSize: 11.5, fontWeight: 600, color: '#5d716e', mb: 0.3 }}>
+              Instruction Summary:
+            </Typography>
+            <Typography sx={{ fontSize: 13.5, fontWeight: 700, color: '#15302e' }}>
+              {medInstructionSummary}
+            </Typography>
+          </Box>
+        </Box>
+
+        {/* DIALOG ACTIONS FOOTER */}
+        <Box
+          sx={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            p: '12px 20px',
+            borderTop: '1px solid #d3dcd9',
+            bgcolor: '#f3f6f5',
+          }}
+        >
+          <Button
+            variant="contained"
+            onClick={handleSaveMedInstructions}
+            sx={{
+              bgcolor: '#0f766e',
+              textTransform: 'none',
+              fontWeight: 700,
+              fontSize: 13.5,
+              height: 38,
+              px: 3,
+              borderRadius: '7px',
+              '&:hover': { bgcolor: '#0b5650' },
+            }}
+          >
+            Save Instructions
+          </Button>
+
+          <Box sx={{ display: 'flex', gap: 1 }}>
+            <Button
+              variant="outlined"
+              onClick={handleClearMedInstructions}
+              sx={{
+                textTransform: 'none',
+                fontWeight: 600,
+                borderColor: '#fca5a5',
+                color: '#ef4444',
+                height: 38,
+                px: 2.2,
+                borderRadius: '7px',
+                '&:hover': { borderColor: '#ef4444', bgcolor: '#fef2f2' },
+              }}
+            >
+              Clear
+            </Button>
+            <Button
+              variant="outlined"
+              onClick={() => setMedicationDialogOpen(false)}
+              sx={{
+                textTransform: 'none',
+                fontWeight: 600,
+                borderColor: '#d3dcd9',
+                color: '#5d716e',
+                height: 38,
+                px: 2.2,
+                borderRadius: '7px',
+                '&:hover': { borderColor: '#b7c5c2', bgcolor: '#fff' },
+              }}
+            >
+              Cancel
+            </Button>
+          </Box>
+        </Box>
+      </Dialog>
+
+      {/* ── RIAYATI E-PRESCRIPTION & SUBMISSION DIALOG ── */}
+      <Dialog
+        open={riayatiDialogOpen}
+        onClose={() => setRiayatiDialogOpen(false)}
+        maxWidth="sm"
+        fullWidth
+        PaperProps={{
+          sx: {
+            borderRadius: '10px',
+            border: '1px solid #d3dcd9',
+            boxShadow: '0 10px 30px rgba(10,31,28,0.12)',
+            overflow: 'hidden',
+          },
+        }}
+      >
+        {/* Header */}
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', p: '10px 16px', bgcolor: '#f3f6f5', borderBottom: '1px solid #d3dcd9' }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <LocalPharmacyIcon sx={{ color: '#0f766e', fontSize: 22 }} />
+            <Typography sx={{ fontSize: 14, fontWeight: 700, color: '#15302e' }}>
+              Riayati e-Prescription & Submission
+            </Typography>
+          </Box>
+          <IconButton size="small" onClick={() => setRiayatiDialogOpen(false)} sx={{ p: 0.5 }}>
+            <CloseIcon sx={{ fontSize: 18 }} />
+          </IconButton>
+        </Box>
+
+        {/* Content */}
+        <Box sx={{ p: '18px 22px' }}>
+          {/* Riayati Enablement Banner */}
+          <Box
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              p: 1.5,
+              mb: 2.5,
+              borderRadius: 2,
+              bgcolor: isRiayati ? '#f0fdfa' : '#f8fafc',
+              border: isRiayati ? '1.5px solid #0f766e' : '1px solid #cbd5e1',
+              cursor: 'pointer',
+              transition: 'all 0.2s ease',
+            }}
+            onClick={() => setIsRiayati(!isRiayati)}
+          >
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.2 }}>
+              <input
+                type="checkbox"
+                checked={isRiayati}
+                onChange={(e) => setIsRiayati(e.target.checked)}
+                style={{ cursor: 'pointer', accentColor: '#0f766e', width: 18, height: 18 }}
+              />
+              <Box>
+                <Typography sx={{ fontSize: '0.88rem', fontWeight: 700, color: isRiayati ? '#0f766e' : '#334155' }}>
+                  Enable Riayati HL7 e-Rx Submission
+                </Typography>
+                <Typography sx={{ fontSize: '0.74rem', color: '#64748b' }}>
+                  Transmits ADT^A04 (patient admission), RDS^O13 (dispense order), and ADT^A03 upon invoice save.
+                </Typography>
+              </Box>
+            </Box>
+            <Chip
+              label={isRiayati ? 'E-Rx ACTIVE' : 'OFF'}
+              size="small"
+              sx={{
+                fontWeight: 700,
+                fontSize: '0.70rem',
+                bgcolor: isRiayati ? '#0f766e' : '#e2e8f0',
+                color: isRiayati ? '#ffffff' : '#64748b',
+              }}
+            />
+          </Box>
+
+          <Grid container spacing={2}>
+            {/* Emirates ID */}
+            <Grid item xs={12}>
+              <TextField
+                fullWidth
+                size="small"
+                label="Emirates ID"
+                placeholder="784-YYYY-NNNNNNN-C"
+                value={emiratesId}
+                onChange={(e) => handleEmiratesIdChange(e.target.value)}
+                onKeyDown={handleEmiratesIdKeyDown}
+                inputProps={{ maxLength: 18 }}
+                InputLabelProps={{ shrink: true }}
+                InputProps={{
+                  endAdornment: patSearchLoading ? (
+                    <InputAdornment position="end">
+                      <CircularProgress size={16} sx={{ color: '#0f766e' }} />
+                    </InputAdornment>
+                  ) : (
+                    <InputAdornment position="end">
+                      <Tooltip title="Search Patient by Emirates ID">
+                        <IconButton size="small" onClick={() => handleSearchPatientByEid(emiratesId)}>
+                          <SearchIcon sx={{ fontSize: 18 }} />
+                        </IconButton>
+                      </Tooltip>
+                    </InputAdornment>
+                  ),
+                }}
+                helperText="Format: 784-YYYY-NNNNNNN-C (Auto-formatted, press Enter or click search to lookup)"
+              />
+            </Grid>
+
+            {/* Patient Name */}
+            <Grid item xs={12}>
+              <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                <Autocomplete
+                  fullWidth
+                  size="small"
+                  freeSolo
+                  options={patients.map((p) => p.fullName)}
+                  value={selectedPatient}
+                  onChange={(_, val) => handlePatientSelect(val)}
+                  onInputChange={(_, val, reason) => {
+                    if (reason === 'input') {
+                      setSelectedPatient(val);
+                      const found = patients.find(
+                        (p) =>
+                          (p.fullName || '').toLowerCase() === val.toLowerCase() ||
+                          `${p.firstName || ''} ${p.familyName || ''}`.trim().toLowerCase() === val.toLowerCase()
+                      );
+                      if (found) {
+                        if (found.emiratesId) setEmiratesId(formatEmiratesId(found.emiratesId));
+                        setIsRiayati(true);
+                      }
+                    } else if (reason === 'reset' && val) {
+                      handlePatientSelect(val);
+                    }
+                  }}
+                  renderInput={(params) => (
+                    <TextField
+                      {...params}
+                      label="Patient Name"
+                      placeholder="Select or enter patient name"
+                      InputLabelProps={{ shrink: true }}
+                    />
+                  )}
+                />
+                <Tooltip title="Add / Edit Patient Details">
+                  <IconButton
+                    size="small"
+                    onClick={handleOpenPatientDialog}
+                    sx={{
+                      p: 0.9,
+                      borderRadius: 1.5,
+                      border: '1px solid #cbd5e1',
+                      bgcolor: '#f8fafc',
+                      color: '#0f766e',
+                      '&:hover': { bgcolor: '#e2ece9' },
+                    }}
+                  >
+                    <AddIcon sx={{ fontSize: 20 }} />
+                  </IconButton>
+                </Tooltip>
+              </Box>
+            </Grid>
+
+            {/* Prescribing Doctor */}
+            <Grid item xs={12}>
+              <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                <Autocomplete
+                  fullWidth
+                  size="small"
+                  freeSolo
+                  options={doctors.map((d) => d.name)}
+                  value={selectedDoctor}
+                  onInputChange={(_, val) => setSelectedDoctor(val)}
+                  renderInput={(params) => (
+                    <TextField
+                      {...params}
+                      label="Prescribing Doctor"
+                      placeholder="Select or enter doctor name"
+                      InputLabelProps={{ shrink: true }}
+                    />
+                  )}
+                />
+                <Tooltip title="Add / Edit Doctor Details">
+                  <IconButton
+                    size="small"
+                    onClick={handleOpenDoctorDialog}
+                    sx={{
+                      p: 0.9,
+                      borderRadius: 1.5,
+                      border: '1px solid #cbd5e1',
+                      bgcolor: '#f8fafc',
+                      color: '#0f766e',
+                      '&:hover': { bgcolor: '#e2ece9' },
+                    }}
+                  >
+                    <AddIcon sx={{ fontSize: 20 }} />
+                  </IconButton>
+                </Tooltip>
+              </Box>
+            </Grid>
+
+            {/* Prescription No & Date */}
+            <Grid item xs={12} sm={6}>
+              <TextField
+                fullWidth
+                size="small"
+                label="Prescription No."
+                placeholder="e.g. RX-1002"
+                value={prescriptionNumber}
+                onChange={(e) => setPrescriptionNumber(e.target.value)}
+                InputLabelProps={{ shrink: true }}
+              />
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <DateInput
+                fullWidth
+                size="small"
+                label="Prescription Date"
+                value={prescriptionDate || date || getCurrentDate()}
+                onChange={(d) => setPrescriptionDate(d)}
+              />
+            </Grid>
+
+            {/* Prescription Items Summary */}
+            <Grid item xs={12}>
+              <Box sx={{ p: 1.5, borderRadius: 1.5, bgcolor: '#f8fafc', border: '1px solid #e2e8f0' }}>
+                <Typography sx={{ fontSize: '0.80rem', fontWeight: 700, color: '#334155', mb: 0.5 }}>
+                  Prescription (Rx) Items in Invoice ({lines.filter((l) => l.isRx).length}):
+                </Typography>
+                {lines.filter((l) => l.isRx).length === 0 ? (
+                  <Typography sx={{ fontSize: '0.74rem', color: '#94a3b8', fontStyle: 'italic' }}>
+                    No items marked as Rx yet. Click the "Rx" button next to any item in the grid to configure dosage instructions.
+                  </Typography>
+                ) : (
+                  <Box sx={{ display: 'flex', gap: 0.6, flexWrap: 'wrap', mt: 0.5 }}>
+                    {lines
+                      .filter((l) => l.isRx)
+                      .map((l, idx) => (
+                        <Chip
+                          key={l.id || idx}
+                          label={`${l.name || 'Item'} (${l.quantity} ${l.unitName || 'Units'}) · ${l.duration || '30'} ${l.dosageInstructions?.durationUnit || 'Days'} · ${l.timing || 'Before Food'} · ${l.frequency || '1'}x`}
+                          size="small"
+                          sx={{ fontSize: '0.70rem', bgcolor: '#ecfdf5', color: '#065f46', borderColor: '#a7f3d0' }}
+                          variant="outlined"
+                        />
+                      ))}
+                  </Box>
+                )}
+              </Box>
+            </Grid>
+          </Grid>
+        </Box>
+
+        {/* Dialog Actions Footer */}
+        <Box
+          sx={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            p: '12px 20px',
+            borderTop: '1px solid #d3dcd9',
+            bgcolor: '#f3f6f5',
+          }}
+        >
+          <Button
+            variant="contained"
+            onClick={() => setRiayatiDialogOpen(false)}
+            sx={{
+              bgcolor: '#0f766e',
+              textTransform: 'none',
+              fontWeight: 700,
+              fontSize: 13.5,
+              height: 38,
+              px: 3,
+              borderRadius: '7px',
+              '&:hover': { bgcolor: '#0b5650' },
+            }}
+          >
+            Apply & Done
+          </Button>
+
+          <Box sx={{ display: 'flex', gap: 1 }}>
+            <Button
+              variant="outlined"
+              onClick={() => {
+                setEmiratesId('');
+                setSelectedPatient('');
+                setSelectedDoctor('');
+                setPrescriptionNumber('');
+                setPrescriptionDate('');
+                setIsRiayati(false);
+              }}
+              sx={{
+                textTransform: 'none',
+                fontWeight: 600,
+                borderColor: '#fca5a5',
+                color: '#ef4444',
+                height: 38,
+                px: 2,
+                borderRadius: '7px',
+                '&:hover': { borderColor: '#ef4444', bgcolor: '#fef2f2' },
+              }}
+            >
+              Clear Riayati
+            </Button>
+            <Button
+              variant="outlined"
+              onClick={() => setRiayatiDialogOpen(false)}
+              sx={{
+                textTransform: 'none',
+                fontWeight: 600,
+                borderColor: '#d3dcd9',
+                color: '#5d716e',
+                height: 38,
+                px: 2,
+                borderRadius: '7px',
+                '&:hover': { borderColor: '#b7c5c2', bgcolor: '#fff' },
+              }}
+            >
+              Close
+            </Button>
+          </Box>
+        </Box>
+      </Dialog>
+
+      {/* ── DOCTOR DETAILS DIALOG ── */}
+      <Dialog
+        open={doctorDialogOpen}
+        onClose={handleCloseDoctorDialog}
+        maxWidth="sm"
+        fullWidth
+        PaperProps={{
+          sx: {
+            borderRadius: '10px',
+            border: '1px solid #d3dcd9',
+            boxShadow: '0 10px 30px rgba(10,31,28,0.12)',
+            overflow: 'hidden',
+          },
+        }}
+      >
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', p: '8px 12px', bgcolor: '#f3f6f5', borderBottom: '1px solid #d3dcd9' }}>
+          <Typography sx={{ fontSize: 12.5, fontWeight: 600, color: '#5d716e' }}>Doctor Details</Typography>
+          <IconButton size="small" onClick={handleCloseDoctorDialog} sx={{ p: 0.5 }}>
+            <CloseIcon sx={{ fontSize: 18 }} />
+          </IconButton>
+        </Box>
+
+        <Box sx={{ p: '20px 22px 14px' }}>
+          <Typography sx={{ fontSize: 20, fontWeight: 700, color: '#15302e', letterSpacing: '-0.01em' }}>
+            Prescribing doctor
+          </Typography>
+          <Typography sx={{ fontSize: 13, color: '#5d716e', mb: 2 }}>
+            Choose a saved doctor or add a new one.
+          </Typography>
+
+          {/* Segment Toggle */}
+          <Box sx={{ display: 'inline-flex', p: '3px', bgcolor: '#f3f6f5', border: '1px solid #d3dcd9', borderRadius: '8px', mb: 2 }}>
+            <button
+              type="button"
+              onClick={() => setDocTab('saved')}
+              style={{
+                all: 'unset',
+                cursor: 'pointer',
+                padding: '5px 14px',
+                borderRadius: 6,
+                fontWeight: 600,
+                fontSize: 13,
+                background: docTab === 'saved' ? '#fff' : 'transparent',
+                color: docTab === 'saved' ? '#15302e' : '#5d716e',
+                boxShadow: docTab === 'saved' ? '0 1px 3px rgba(10,31,28,0.18)' : 'none',
+              }}
+            >
+              Saved doctor
+            </button>
+            <button
+              type="button"
+              onClick={() => setDocTab('new')}
+              style={{
+                all: 'unset',
+                cursor: 'pointer',
+                padding: '5px 14px',
+                borderRadius: 6,
+                fontWeight: 600,
+                fontSize: 13,
+                background: docTab === 'new' ? '#fff' : 'transparent',
+                color: docTab === 'new' ? '#15302e' : '#5d716e',
+                boxShadow: docTab === 'new' ? '0 1px 3px rgba(10,31,28,0.18)' : 'none',
+              }}
+            >
+              New doctor
+            </button>
+          </Box>
+
+          {docTab === 'saved' ? (
+            <Box sx={{ mb: 1.5 }}>
+              <Typography sx={{ fontSize: 12.5, fontWeight: 500, color: '#5d716e', mb: 0.5 }}>Doctor</Typography>
+              <select
+                value={docFormSavedSelect}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setDocFormSavedSelect(val);
+                  if (!val) {
+                    setDocFormName('');
+                    setDocFormLic('');
+                    setDocFormPhone('');
+                    setDocFormSpecialty('');
+                    return;
+                  }
+                  const found = doctors.find((d) => d.name === val);
+                  if (found) {
+                    setDocFormName(found.name);
+                    setDocFormLic(found.licenseNumber);
+                    if (found.licensingAuthority) setDocFormProv(found.licensingAuthority as any);
+                    setDocFormPhone(found.phone || '');
+                    setDocFormSpecialty(found.specialty || '');
+                  }
+                }}
+                style={{
+                  width: '100%',
+                  height: 38,
+                  padding: '0 11px',
+                  borderRadius: 7,
+                  border: '1px solid #d3dcd9',
+                  background: '#fff',
+                  font: 'inherit',
+                  color: '#15302e',
+                  outline: 'none',
+                }}
+              >
+                <option value="">{doctors.length === 0 ? 'No saved doctors' : 'Select a doctor'}</option>
+                {doctors.map((d) => (
+                  <option key={d.name} value={d.name}>
+                    {d.name} ({d.licensingAuthority || 'MOHAP'}: {d.licenseNumber})
+                  </option>
+                ))}
+              </select>
+
+              {docFormSavedSelect && (() => {
+                const found = doctors.find((d) => d.name === docFormSavedSelect);
+                if (!found) return null;
+                return (
+                  <Box sx={{ mt: 1.5, p: 1.5, bgcolor: '#f8faf9', border: '1px solid #e2ece9', borderRadius: 1.5 }}>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <Typography sx={{ fontSize: 13, fontWeight: 700, color: '#0f6b62' }}>{found.name}</Typography>
+                    </Box>
+                    <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 0.75, mt: 0.75, fontSize: 12, color: '#4b5f5c' }}>
+                      <div><strong>License:</strong> {found.licensingAuthority || 'MOHAP'}: {found.licenseNumber}</div>
+                      {found.specialty && <div><strong>Specialty:</strong> {found.specialty}</div>}
+                      {found.phone && <div><strong>Phone:</strong> {found.phone}</div>}
+                    </Box>
+                  </Box>
+                );
+              })()}
+            </Box>
+          ) : (
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5, mb: 1.5 }}>
+              <Box>
+                <Typography sx={{ fontSize: 12.5, fontWeight: 500, color: '#5d716e', mb: 0.5 }}>
+                  Doctor name <span style={{ color: '#b42318' }}>*</span>
+                </Typography>
+                <input
+                  value={docFormName}
+                  onChange={(e) => {
+                    setDocFormName(e.target.value);
+                    setSelectedDoctor(e.target.value);
+                    setDocIsOpenAsUnsaved(true);
+                  }}
+                  placeholder="e.g. Dr. Rashid Khan"
+                  style={{
+                    width: '100%',
+                    height: 38,
+                    padding: '0 11px',
+                    borderRadius: 7,
+                    border: '1px solid #d3dcd9',
+                    background: '#fff',
+                    font: 'inherit',
+                    color: '#15302e',
+                    boxSizing: 'border-box',
+                    outline: 'none',
+                  }}
+                />
+              </Box>
+
+              <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.5 }}>
+                <Box>
+                  <Typography sx={{ fontSize: 12.5, fontWeight: 500, color: '#5d716e', mb: 0.5 }}>
+                    License number <span style={{ color: '#b42318' }}>*</span>
+                  </Typography>
+                  <input
+                    value={docFormLic}
+                    onChange={(e) => setDocFormLic(e.target.value)}
+                    placeholder="e.g. 84920"
+                    style={{
+                      width: '100%',
+                      height: 38,
+                      padding: '0 11px',
+                      borderRadius: 7,
+                      border: '1px solid #d3dcd9',
+                      background: '#fff',
+                      font: 'inherit',
+                      color: '#15302e',
+                      boxSizing: 'border-box',
+                      outline: 'none',
+                    }}
+                  />
+                </Box>
+
+                <Box>
+                  <Typography sx={{ fontSize: 12.5, fontWeight: 500, color: '#5d716e', mb: 0.5 }}>
+                    Licensing authority
+                  </Typography>
+                  <select
+                    value={docFormProv}
+                    onChange={(e) => setDocFormProv(e.target.value as any)}
+                    style={{
+                      width: '100%',
+                      height: 38,
+                      padding: '0 11px',
+                      borderRadius: 7,
+                      border: '1px solid #d3dcd9',
+                      background: '#fff',
+                      font: 'inherit',
+                      color: '#15302e',
+                      outline: 'none',
+                    }}
+                  >
+                    <option value="MOHAP">MOHAP</option>
+                    <option value="DHA">DHA</option>
+                    <option value="DOH">DOH</option>
+                  </select>
+                </Box>
+              </Box>
+
+              <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.5 }}>
+                <Box>
+                  <Typography sx={{ fontSize: 12.5, fontWeight: 500, color: '#5d716e', mb: 0.5 }}>
+                    Phone (Optional)
+                  </Typography>
+                  <input
+                    value={docFormPhone}
+                    onChange={(e) => setDocFormPhone(e.target.value)}
+                    placeholder="+971 5X XXX XXXX"
+                    style={{
+                      width: '100%',
+                      height: 38,
+                      padding: '0 11px',
+                      borderRadius: 7,
+                      border: '1px solid #d3dcd9',
+                      background: '#fff',
+                      font: 'inherit',
+                      color: '#15302e',
+                      boxSizing: 'border-box',
+                      outline: 'none',
+                    }}
+                  />
+                </Box>
+
+                <Box>
+                  <Typography sx={{ fontSize: 12.5, fontWeight: 500, color: '#5d716e', mb: 0.5 }}>
+                    Specialty (Optional)
+                  </Typography>
+                  <input
+                    value={docFormSpecialty}
+                    onChange={(e) => setDocFormSpecialty(e.target.value)}
+                    placeholder="e.g. General Medicine, Cardiology"
+                    style={{
+                      width: '100%',
+                      height: 38,
+                      padding: '0 11px',
+                      borderRadius: 7,
+                      border: '1px solid #d3dcd9',
+                      background: '#fff',
+                      font: 'inherit',
+                      color: '#15302e',
+                      boxSizing: 'border-box',
+                      outline: 'none',
+                    }}
+                  />
+                </Box>
+              </Box>
+            </Box>
+          )}
+        </Box>
+
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', p: '14px 22px', borderTop: '1px solid #d3dcd9', bgcolor: '#f3f6f5' }}>
+          <Typography sx={{ fontSize: 12.5, color: '#5d716e' }}>
+            {docTab === 'saved'
+              ? (docFormSavedSelect ? 'Doctor selected. Ready to choose.' : (doctors.length === 0 ? 'No saved doctors found.' : 'Select a doctor.'))
+              : (!docFormName.trim() || !docFormLic.trim() ? 'Fill in doctor name and license number to save.' : 'Ready to save.')}
+          </Typography>
+          <Box sx={{ display: 'flex', gap: 1 }}>
+            {docTab === 'saved' ? (
+              <>
+                <Button
+                  onClick={handleCloseDoctorDialog}
+                  sx={{
+                    textTransform: 'none',
+                    height: 38,
+                    borderRadius: '7px',
+                    px: 2,
+                    fontSize: 13,
+                    fontWeight: 600,
+                    border: '1px solid #d3dcd9',
+                    bgcolor: '#fff',
+                    color: '#5d716e',
+                    boxShadow: 'none',
+                    '&:hover': { bgcolor: '#f3f6f5', borderColor: '#d3dcd9' },
+                  }}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  disabled={!docFormSavedSelect}
+                  onClick={handleSelectSavedDoctor}
+                  sx={{
+                    textTransform: 'none',
+                    height: 38,
+                    borderRadius: '7px',
+                    px: 2,
+                    fontSize: 13,
+                    fontWeight: 600,
+                    border: '1px solid #0f766e',
+                    bgcolor: '#0f766e',
+                    color: '#fff',
+                    boxShadow: 'none',
+                    '&:hover': { bgcolor: '#0b5650', borderColor: '#0b5650' },
+                  }}
+                >
+                  Select doctor
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button
+                  onClick={() => {
+                    setDocFormName('');
+                    setDocFormLic('');
+                    setDocFormPhone('');
+                    setDocFormSpecialty('');
+                  }}
+                  sx={{
+                    textTransform: 'none',
+                    height: 38,
+                    borderRadius: '7px',
+                    px: 2,
+                    fontSize: 13,
+                    fontWeight: 600,
+                    border: '1px solid #d3dcd9',
+                    bgcolor: '#fff',
+                    color: '#15302e',
+                    boxShadow: 'none',
+                    '&:hover': { bgcolor: '#f3f6f5', borderColor: '#d3dcd9' },
+                  }}
+                >
+                  Clear
+                </Button>
+                <Button
+                  onClick={handleCloseDoctorDialog}
+                  sx={{
+                    textTransform: 'none',
+                    height: 38,
+                    borderRadius: '7px',
+                    px: 2,
+                    fontSize: 13,
+                    fontWeight: 600,
+                    border: '1px solid #d3dcd9',
+                    bgcolor: '#fff',
+                    color: '#5d716e',
+                    boxShadow: 'none',
+                    '&:hover': { bgcolor: '#f3f6f5', borderColor: '#d3dcd9' },
+                  }}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleSaveDoctor}
+                  disabled={!docFormName.trim() || !docFormLic.trim()}
+                  sx={{
+                    textTransform: 'none',
+                    height: 38,
+                    borderRadius: '7px',
+                    px: 2,
+                    fontSize: 13,
+                    fontWeight: 600,
+                    border: '1px solid #0f766e',
+                    bgcolor: '#0f766e',
+                    color: '#fff',
+                    boxShadow: 'none',
+                    '&:hover': { bgcolor: '#0b5650', borderColor: '#0b5650' },
+                  }}
+                >
+                  Save doctor
+                </Button>
+              </>
+            )}
+          </Box>
+        </Box>
+      </Dialog>
+
+      {/* ── PATIENT DETAILS DIALOG ── */}
+      <Dialog
+        open={patientDialogOpen}
+        onClose={handleClosePatientDialog}
+        maxWidth="md"
+        fullWidth
+        PaperProps={{
+          sx: {
+            borderRadius: '10px',
+            border: '1px solid #d3dcd9',
+            boxShadow: '0 10px 30px rgba(10,31,28,0.12)',
+            overflow: 'hidden',
+          },
+        }}
+      >
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', p: '8px 12px', bgcolor: '#f3f6f5', borderBottom: '1px solid #d3dcd9' }}>
+          <Typography sx={{ fontSize: 12.5, fontWeight: 600, color: '#5d716e' }}>Patient Details</Typography>
+          <IconButton size="small" onClick={handleClosePatientDialog} sx={{ p: 0.5 }}>
+            <CloseIcon sx={{ fontSize: 18 }} />
+          </IconButton>
+        </Box>
+
+        <Box sx={{ p: '20px 22px 14px', maxHeight: '72vh', overflowY: 'auto' }}>
+          <Typography sx={{ fontSize: 20, fontWeight: 700, color: '#15302e', letterSpacing: '-0.01em' }}>
+            Patient details
+          </Typography>
+          <Typography sx={{ fontSize: 13, color: '#5d716e', mb: 2 }}>
+            Choose a saved patient or enter new patient details.
+          </Typography>
+
+          {/* Segment Toggle */}
+          <Box sx={{ display: 'inline-flex', p: '3px', bgcolor: '#f3f6f5', border: '1px solid #d3dcd9', borderRadius: '8px', mb: 2 }}>
+            <button
+              type="button"
+              onClick={() => setPatTab('saved')}
+              style={{
+                all: 'unset',
+                cursor: 'pointer',
+                padding: '5px 14px',
+                borderRadius: 6,
+                fontWeight: 600,
+                fontSize: 13,
+                background: patTab === 'saved' ? '#fff' : 'transparent',
+                color: patTab === 'saved' ? '#15302e' : '#5d716e',
+                boxShadow: patTab === 'saved' ? '0 1px 3px rgba(10,31,28,0.18)' : 'none',
+              }}
+            >
+              Saved patient
+            </button>
+            <button
+              type="button"
+              onClick={() => setPatTab('new')}
+              style={{
+                all: 'unset',
+                cursor: 'pointer',
+                padding: '5px 14px',
+                borderRadius: 6,
+                fontWeight: 600,
+                fontSize: 13,
+                background: patTab === 'new' ? '#fff' : 'transparent',
+                color: patTab === 'new' ? '#15302e' : '#5d716e',
+                boxShadow: patTab === 'new' ? '0 1px 3px rgba(10,31,28,0.18)' : 'none',
+              }}
+            >
+              New patient
+            </button>
+          </Box>
+
+          {patTab === 'saved' ? (
+            <Box sx={{ mb: 1.5 }}>
+              <Typography sx={{ fontSize: 12.5, fontWeight: 500, color: '#5d716e', mb: 0.5 }}>Select Patient</Typography>
+              <select
+                value={patFormSavedSelect}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setPatFormSavedSelect(val);
+                  if (!val) {
+                    setPatFormEid('');
+                    setPatFormFirst('');
+                    setPatFormFamily('');
+                    setPatFormDob('');
+                    setPatFormGender('Unknown');
+                    setPatFormMrn('');
+                    setPatFormPhone('');
+                    setPatFormLang('English');
+                    setPatFormEmirate('');
+                    setPatFormCity('');
+                    setPatFormStreet('');
+                    setPatFormCountry('United Arab Emirates');
+                    return;
+                  }
+                  const found = patients.find((p) => p.fullName === val);
+                  if (found) {
+                    setPatFormEid(found.emiratesId || '');
+                    setPatFormFirst(found.firstName || found.fullName);
+                    setPatFormFamily(found.familyName || '');
+                    setPatFormDob(found.dob || '');
+                    setPatFormGender(found.gender || 'Unknown');
+                    setPatFormMrn(found.mrn || '');
+                    setPatFormPhone(found.phone || '');
+                    setPatFormLang(found.language || 'English');
+                    setPatFormEmirate(found.emirate || '');
+                    setPatFormCity(found.city || '');
+                    setPatFormStreet(found.street || '');
+                    setPatFormCountry(found.country || 'United Arab Emirates');
+                  }
+                }}
+                style={{
+                  width: '100%',
+                  height: 38,
+                  padding: '0 11px',
+                  borderRadius: 7,
+                  border: '1px solid #d3dcd9',
+                  background: '#fff',
+                  font: 'inherit',
+                  color: '#15302e',
+                  outline: 'none',
+                }}
+              >
+                <option value="">Select a saved patient</option>
+                {patients.map((p) => (
+                  <option key={p.fullName} value={p.fullName}>
+                    {p.fullName} {p.emiratesId ? `(EID: ${p.emiratesId})` : ''} {p.mrn ? `· MRN: ${p.mrn}` : ''}
+                  </option>
+                ))}
+              </select>
+
+              {patFormSavedSelect && (() => {
+                const found = patients.find((p) => p.fullName === patFormSavedSelect);
+                if (!found) return null;
+                return (
+                  <Box sx={{ mt: 1.5, p: 2, bgcolor: '#f8faf9', border: '1px solid #e2ece9', borderRadius: 1.5 }}>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 0.5 }}>
+                      <Typography sx={{ fontSize: 14, fontWeight: 700, color: '#0f6b62' }}>
+                        {found.fullName}
+                      </Typography>
+                      <Button
+                        size="small"
+                        onClick={() => {
+                          setPatFormEid(found.emiratesId || '');
+                          setPatFormFirst(found.firstName || found.fullName);
+                          setPatFormFamily(found.familyName || '');
+                          setPatFormDob(found.dob || '');
+                          setPatFormGender(found.gender || 'Unknown');
+                          setPatFormMrn(found.mrn || '');
+                          setPatFormPhone(found.phone || '');
+                          setPatFormLang(found.language || 'English');
+                          setPatFormEmirate(found.emirate || '');
+                          setPatFormCity(found.city || '');
+                          setPatFormStreet(found.street || '');
+                          setPatFormCountry(found.country || 'United Arab Emirates');
+                          setPatTab('new');
+                        }}
+                        startIcon={<EditOutlinedIcon sx={{ fontSize: 13 }} />}
+                        sx={{
+                          textTransform: 'none',
+                          fontSize: 11.5,
+                          fontWeight: 600,
+                          color: '#0f766e',
+                          bgcolor: '#fff',
+                          border: '1px solid #d3dcd9',
+                          borderRadius: '6px',
+                          height: 26,
+                          px: 1,
+                          '&:hover': { bgcolor: '#f3f6f5' },
+                        }}
+                      >
+                        Edit
+                      </Button>
+                    </Box>
+                    <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 1, fontSize: 12.5, color: '#4b5f5c' }}>
+                      <div><strong>Emirates ID:</strong> {found.emiratesId || 'N/A'}</div>
+                      <div><strong>MRN:</strong> {found.mrn || 'N/A'}</div>
+                      <div><strong>Phone:</strong> {found.phone || 'N/A'}</div>
+                      <div><strong>Gender / DOB:</strong> {found.gender || 'Unknown'}{found.dob ? ` (${found.dob})` : ''}</div>
+                      <div><strong>Language:</strong> {found.language || 'English'}</div>
+                      <div><strong>City / Emirate:</strong> {[found.city, found.emirate].filter(Boolean).join(', ') || 'N/A'}</div>
+                    </Box>
+                  </Box>
+                );
+              })()}
+            </Box>
+          ) : (
+            <>
+              {/* Fieldset: Identity */}
+              <Box component="fieldset" sx={{ border: 'none', p: 0, m: '0 0 16px' }}>
+                <Typography component="legend" sx={{ fontWeight: 600, fontSize: 13, color: '#15302e', mb: 1 }}>
+                  Identity
+                </Typography>
+                <Box sx={{ mb: 1.5 }}>
+                  <Typography sx={{ fontSize: 12.5, fontWeight: 500, color: '#5d716e', mb: 0.4 }}>
+                    Emirates ID
+                  </Typography>
+                  <Box sx={{ display: 'flex', gap: 1 }}>
+                    <input
+                      value={patFormEid}
+                      onChange={(e) => handleEmiratesIdChange(e.target.value)}
+                      onKeyDown={handleEmiratesIdKeyDown}
+                      placeholder="784-0000-0000000-0"
+                      maxLength={18}
+                      style={{
+                        flex: 1,
+                        height: 38,
+                        padding: '0 11px',
+                        borderRadius: 7,
+                        border: '1px solid #d3dcd9',
+                        background: '#fff',
+                        font: 'inherit',
+                        outline: 'none',
+                      }}
+                    />
+                    <Button
+                      variant="outlined"
+                      onClick={handleSearchPatientByEid}
+                      disabled={patSearchLoading}
+                      sx={{ textTransform: 'none', fontWeight: 600, borderColor: '#d3dcd9', color: '#15302e', height: 38 }}
+                    >
+                      {patSearchLoading ? <CircularProgress size={16} /> : 'Search'}
+                    </Button>
+                  </Box>
+                </Box>
+
+                <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.5, mb: 1.5 }}>
+                  <Box>
+                    <Typography sx={{ fontSize: 12.5, fontWeight: 500, color: '#5d716e', mb: 0.4 }}>
+                      First name <span style={{ color: '#b42318' }}>*</span>
+                    </Typography>
+                    <input
+                      value={patFormFirst}
+                      onChange={(e) => {
+                        setPatFormFirst(e.target.value);
+                        setSelectedPatient(e.target.value);
+                        setPatIsOpenAsUnsaved(true);
+                      }}
+                      style={{
+                        width: '100%',
+                        height: 38,
+                        padding: '0 11px',
+                        borderRadius: 7,
+                        border: '1px solid #d3dcd9',
+                        boxSizing: 'border-box',
+                        outline: 'none',
+                      }}
+                    />
+                  </Box>
+                  <Box>
+                    <Typography sx={{ fontSize: 12.5, fontWeight: 500, color: '#5d716e', mb: 0.4 }}>
+                      Family name
+                    </Typography>
+                    <input
+                      value={patFormFamily}
+                      onChange={(e) => setPatFormFamily(e.target.value)}
+                      style={{
+                        width: '100%',
+                        height: 38,
+                        padding: '0 11px',
+                        borderRadius: 7,
+                        border: '1px solid #d3dcd9',
+                        boxSizing: 'border-box',
+                        outline: 'none',
+                      }}
+                    />
+                  </Box>
+                </Box>
+
+                <Box sx={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr 1fr', gap: 1.5 }}>
+                  <Box>
+                    <Typography sx={{ fontSize: 12.5, fontWeight: 500, color: '#5d716e', mb: 0.4 }}>Date of birth</Typography>
+                    <input
+                      type="date"
+                      value={patFormDob}
+                      onChange={(e) => setPatFormDob(e.target.value)}
+                      style={{ width: '100%', height: 38, padding: '0 11px', borderRadius: 7, border: '1px solid #d3dcd9', boxSizing: 'border-box', outline: 'none' }}
+                    />
+                  </Box>
+                  <Box>
+                    <Typography sx={{ fontSize: 12.5, fontWeight: 500, color: '#5d716e', mb: 0.4 }}>Gender</Typography>
+                    <select
+                      value={patFormGender}
+                      onChange={(e) => setPatFormGender(e.target.value as any)}
+                      style={{ width: '100%', height: 38, padding: '0 11px', borderRadius: 7, border: '1px solid #d3dcd9', outline: 'none' }}
+                    >
+                      <option value="Unknown">Unknown</option>
+                      <option value="Female">Female</option>
+                      <option value="Male">Male</option>
+                    </select>
+                  </Box>
+                  <Box>
+                    <Typography sx={{ fontSize: 12.5, fontWeight: 500, color: '#5d716e', mb: 0.4 }}>MRN</Typography>
+                    <input
+                      value={patFormMrn}
+                      onChange={(e) => setPatFormMrn(e.target.value)}
+                      style={{ width: '100%', height: 38, padding: '0 11px', borderRadius: 7, border: '1px solid #d3dcd9', boxSizing: 'border-box', outline: 'none' }}
+                    />
+                  </Box>
+                </Box>
+              </Box>
+
+              {/* Fieldset: Contact & Address */}
+              <Box component="fieldset" sx={{ border: 'none', p: 0, m: 0 }}>
+                <Typography component="legend" sx={{ fontWeight: 600, fontSize: 13, color: '#15302e', mb: 1 }}>
+                  Contact and address
+                </Typography>
+                <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.5, mb: 1.5 }}>
+                  <Box>
+                    <Typography sx={{ fontSize: 12.5, fontWeight: 500, color: '#5d716e', mb: 0.4 }}>Phone</Typography>
+                    <input
+                      type="tel"
+                      placeholder="+971 5X XXX XXXX"
+                      value={patFormPhone}
+                      onChange={(e) => setPatFormPhone(e.target.value)}
+                      style={{ width: '100%', height: 38, padding: '0 11px', borderRadius: 7, border: '1px solid #d3dcd9', boxSizing: 'border-box', outline: 'none' }}
+                    />
+                  </Box>
+                  <Box>
+                    <Typography sx={{ fontSize: 12.5, fontWeight: 500, color: '#5d716e', mb: 0.4 }}>Language</Typography>
+                    <select
+                      value={patFormLang}
+                      onChange={(e) => setPatFormLang(e.target.value)}
+                      style={{ width: '100%', height: 38, padding: '0 11px', borderRadius: 7, border: '1px solid #d3dcd9', outline: 'none' }}
+                    >
+                      <option value="Arabic">Arabic</option>
+                      <option value="English">English</option>
+                      <option value="Urdu">Urdu</option>
+                      <option value="Hindi">Hindi</option>
+                    </select>
+                  </Box>
+                </Box>
+
+                <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.5, mb: 1.5 }}>
+                  <Box>
+                    <Typography sx={{ fontSize: 12.5, fontWeight: 500, color: '#5d716e', mb: 0.4 }}>Emirate</Typography>
+                    <select
+                      value={patFormEmirate}
+                      onChange={(e) => setPatFormEmirate(e.target.value)}
+                      style={{ width: '100%', height: 38, padding: '0 11px', borderRadius: 7, border: '1px solid #d3dcd9', outline: 'none' }}
+                    >
+                      <option value="">Select</option>
+                      <option value="Abu Dhabi">Abu Dhabi</option>
+                      <option value="Dubai">Dubai</option>
+                      <option value="Sharjah">Sharjah</option>
+                      <option value="Ajman">Ajman</option>
+                      <option value="Umm Al Quwain">Umm Al Quwain</option>
+                      <option value="Ras Al Khaimah">Ras Al Khaimah</option>
+                      <option value="Fujairah">Fujairah</option>
+                    </select>
+                  </Box>
+                  <Box>
+                    <Typography sx={{ fontSize: 12.5, fontWeight: 500, color: '#5d716e', mb: 0.4 }}>City</Typography>
+                    <input
+                      value={patFormCity}
+                      onChange={(e) => setPatFormCity(e.target.value)}
+                      style={{ width: '100%', height: 38, padding: '0 11px', borderRadius: 7, border: '1px solid #d3dcd9', boxSizing: 'border-box', outline: 'none' }}
+                    />
+                  </Box>
+                </Box>
+
+                <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.5 }}>
+                  <Box>
+                    <Typography sx={{ fontSize: 12.5, fontWeight: 500, color: '#5d716e', mb: 0.4 }}>Street address</Typography>
+                    <input
+                      value={patFormStreet}
+                      onChange={(e) => setPatFormStreet(e.target.value)}
+                      style={{ width: '100%', height: 38, padding: '0 11px', borderRadius: 7, border: '1px solid #d3dcd9', boxSizing: 'border-box', outline: 'none' }}
+                    />
+                  </Box>
+                  <Box>
+                    <Typography sx={{ fontSize: 12.5, fontWeight: 500, color: '#5d716e', mb: 0.4 }}>Country</Typography>
+                    <select
+                      value={patFormCountry}
+                      onChange={(e) => setPatFormCountry(e.target.value)}
+                      style={{ width: '100%', height: 38, padding: '0 11px', borderRadius: 7, border: '1px solid #d3dcd9', outline: 'none' }}
+                    >
+                      <option value="United Arab Emirates">United Arab Emirates</option>
+                      <option value="Other">Other</option>
+                    </select>
+                  </Box>
+                </Box>
+              </Box>
+            </>
+          )}
+        </Box>
+
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', p: '14px 22px', borderTop: '1px solid #d3dcd9', bgcolor: '#f3f6f5' }}>
+          <Typography sx={{ fontSize: 12.5, color: '#5d716e' }}>
+            {patTab === 'saved'
+              ? (patFormSavedSelect ? 'Patient selected. Ready to choose or edit.' : 'Select a patient or edit details.')
+              : (!patFormFirst.trim() ? 'First name is required to save.' : 'Ready to save.')}
+          </Typography>
+          <Box sx={{ display: 'flex', gap: 1 }}>
+            {patTab === 'saved' ? (
+              <>
+                <Button
+                  onClick={handleClosePatientDialog}
+                  sx={{
+                    textTransform: 'none',
+                    height: 38,
+                    borderRadius: '7px',
+                    px: 2,
+                    fontSize: 13,
+                    fontWeight: 600,
+                    border: '1px solid #d3dcd9',
+                    bgcolor: '#fff',
+                    color: '#5d716e',
+                    boxShadow: 'none',
+                    '&:hover': { bgcolor: '#f3f6f5', borderColor: '#d3dcd9' },
+                  }}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  disabled={!patFormSavedSelect}
+                  onClick={() => {
+                    const found = patients.find((p) => p.fullName === patFormSavedSelect);
+                    if (found) {
+                      setPatFormEid(found.emiratesId || '');
+                      setPatFormFirst(found.firstName || found.fullName);
+                      setPatFormFamily(found.familyName || '');
+                      setPatFormDob(found.dob || '');
+                      setPatFormGender(found.gender || 'Unknown');
+                      setPatFormMrn(found.mrn || '');
+                      setPatFormPhone(found.phone || '');
+                      setPatFormLang(found.language || 'English');
+                      setPatFormEmirate(found.emirate || '');
+                      setPatFormCity(found.city || '');
+                      setPatFormStreet(found.street || '');
+                      setPatFormCountry(found.country || 'United Arab Emirates');
+                      setPatTab('new');
+                    }
+                  }}
+                  startIcon={<EditOutlinedIcon sx={{ fontSize: 16 }} />}
+                  sx={{
+                    textTransform: 'none',
+                    height: 38,
+                    borderRadius: '7px',
+                    px: 2,
+                    fontSize: 13,
+                    fontWeight: 600,
+                    border: '1px solid #d3dcd9',
+                    bgcolor: '#fff',
+                    color: '#15302e',
+                    boxShadow: 'none',
+                    '&:hover': { bgcolor: '#f3f6f5', borderColor: '#c6d2cf' },
+                  }}
+                >
+                  Edit patient
+                </Button>
+                <Button
+                  disabled={!patFormSavedSelect}
+                  onClick={handleSelectSavedPatient}
+                  sx={{
+                    textTransform: 'none',
+                    height: 38,
+                    borderRadius: '7px',
+                    px: 2,
+                    fontSize: 13,
+                    fontWeight: 600,
+                    border: '1px solid #0f766e',
+                    bgcolor: '#0f766e',
+                    color: '#fff',
+                    boxShadow: 'none',
+                    '&:hover': { bgcolor: '#0b5650', borderColor: '#0b5650' },
+                  }}
+                >
+                  Select patient
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button
+                  onClick={() => {
+                    setPatFormFirst('');
+                    setPatFormFamily('');
+                    setPatFormEid('');
+                    setPatFormDob('');
+                    setPatFormMrn('');
+                    setPatFormPhone('');
+                    setPatFormCity('');
+                    setPatFormStreet('');
+                  }}
+                  sx={{
+                    textTransform: 'none',
+                    height: 38,
+                    borderRadius: '7px',
+                    px: 2,
+                    fontSize: 13,
+                    fontWeight: 600,
+                    border: '1px solid #d3dcd9',
+                    bgcolor: '#fff',
+                    color: '#15302e',
+                    boxShadow: 'none',
+                    '&:hover': { bgcolor: '#f3f6f5', borderColor: '#d3dcd9' },
+                  }}
+                >
+                  Clear
+                </Button>
+                <Button
+                  onClick={handleClosePatientDialog}
+                  sx={{
+                    textTransform: 'none',
+                    height: 38,
+                    borderRadius: '7px',
+                    px: 2,
+                    fontSize: 13,
+                    fontWeight: 600,
+                    border: '1px solid #d3dcd9',
+                    bgcolor: '#fff',
+                    color: '#5d716e',
+                    boxShadow: 'none',
+                    '&:hover': { bgcolor: '#f3f6f5', borderColor: '#d3dcd9' },
+                  }}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleEditPatient}
+                  disabled={!patFormFirst.trim()}
+                  startIcon={<EditOutlinedIcon sx={{ fontSize: 16 }} />}
+                  sx={{
+                    textTransform: 'none',
+                    height: 38,
+                    borderRadius: '7px',
+                    px: 2,
+                    fontSize: 13,
+                    fontWeight: 600,
+                    border: '1px solid #d3dcd9',
+                    bgcolor: '#fff',
+                    color: '#15302e',
+                    boxShadow: 'none',
+                    '&:hover': { bgcolor: '#f3f6f5', borderColor: '#c6d2cf' },
+                  }}
+                >
+                  Edit patient
+                </Button>
+                <Button
+                  onClick={handleSavePatient}
+                  disabled={!patFormFirst.trim()}
+                  sx={{
+                    textTransform: 'none',
+                    height: 38,
+                    borderRadius: '7px',
+                    px: 2,
+                    fontSize: 13,
+                    fontWeight: 600,
+                    border: '1px solid #0f766e',
+                    bgcolor: '#0f766e',
+                    color: '#fff',
+                    boxShadow: 'none',
+                    '&:hover': { bgcolor: '#0b5650', borderColor: '#0b5650' },
+                  }}
+                >
+                  Save patient
+                </Button>
+              </>
+            )}
+          </Box>
+        </Box>
       </Dialog>
     </Box>
   );

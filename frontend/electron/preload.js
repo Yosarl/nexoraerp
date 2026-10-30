@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     minimizeWindow: function () { return ipcRenderer.send('minimize-window'); },
     maximizeWindow: function () { return ipcRenderer.send('maximize-window'); },
     closeWindow: function () { return ipcRenderer.send('close-window'); },
+    getPrinters: function () { return ipcRenderer.invoke('get-printers'); },
     // IPC communication
     send: function (channel) {
         var args = [];

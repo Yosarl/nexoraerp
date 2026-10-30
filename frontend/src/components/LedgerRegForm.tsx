@@ -62,6 +62,8 @@ interface FormData {
   serviceItem: boolean;
   taxable: boolean;
   againstRef: boolean;
+  reconciliation: boolean;
+  isCardAccount: boolean;
 
   // Bank Details
   accountHolderName: string;
@@ -108,6 +110,8 @@ const defaultFormValues: FormData = {
   serviceItem: false,
   taxable: false,
   againstRef: true,
+  reconciliation: true,
+  isCardAccount: false,
 
   accountHolderName: '',
   accountNumber: '',
@@ -117,7 +121,7 @@ const defaultFormValues: FormData = {
   branch: '',
 
   vatRegistrationType: '',
-  vatRegistrationDate: '',
+  vatRegistrationDate: new Date().toISOString().slice(0, 10),
 
   mailingName: '',
   mailingBank: '',
@@ -182,6 +186,19 @@ export default function LedgerRegForm({
   const savedLedgerNameRef = useRef<string | null>(null);
   const ledgerNameInputRef = useRef<HTMLInputElement>(null);
   const underInputRef = useRef<HTMLInputElement>(null);
+  const shouldFocusOnResetRef = useRef(false);
+
+  const highlightedLedgerOptionRef = useRef<LedgerOption | null>(null);
+  const [ledgerOpen, setLedgerOpen] = useState(false);
+  const highlightedUnderOptionRef = useRef<UnderOption | null>(null);
+  const [underOpen, setUnderOpen] = useState(false);
+
+  const regDateInputRef = useRef<HTMLInputElement>(null);
+  const againstRefInputRef = useRef<HTMLInputElement>(null);
+  const aliasNameInputRef = useRef<HTMLInputElement>(null);
+  const emirateSelectRef = useRef<HTMLSelectElement>(null);
+  const emirateBankSelectRef = useRef<HTMLSelectElement>(null);
+  const openingBalanceDrRef = useRef<HTMLInputElement>(null);
 
   // Change Led Name Dialog
   const [changeNameDialogOpen, setChangeNameDialogOpen] = useState(false);
@@ -197,11 +214,7 @@ export default function LedgerRegForm({
   const groupIdValue = watch('groupId');
   const isEditMode = !!selectedId;
 
-  const isUnderLocked =
-    ledgerType === 'Customer' ||
-    ledgerType === 'Supplier' ||
-    currentLedgerType === 'Customer' ||
-    currentLedgerType === 'Supplier';
+  const isUnderLocked = false;
 
   const selectedUnderOption = underOptions.find((o) => o._id === groupIdValue);
   const isBankSelected = Boolean(
@@ -267,21 +280,38 @@ export default function LedgerRegForm({
     }
   }, [deleteConfirmOpen]);
 
-  // Focus Ledger Name on initial load or when company changes
+  // Focus Ledger Name on initial load, route/window change, or when company changes
   useEffect(() => {
     if (!companyId) return;
     const focusInput = () => {
-      if (ledgerNameInputRef.current) {
+      if (ledgerNameInputRef.current && !ledgerNameInputRef.current.disabled) {
         ledgerNameInputRef.current.focus();
       }
     };
-    const t1 = setTimeout(focusInput, 80);
-    const t2 = setTimeout(focusInput, 250);
+    const t1 = setTimeout(focusInput, 60);
+    const t2 = setTimeout(focusInput, 150);
+    const t3 = setTimeout(focusInput, 300);
+    const t4 = setTimeout(focusInput, 600);
     return () => {
       clearTimeout(t1);
       clearTimeout(t2);
+      clearTimeout(t3);
+      clearTimeout(t4);
     };
-  }, [companyId]);
+  }, [companyId, routeLocation.pathname, routeLocation.key]);
+
+  // Focus Ledger Name immediately when an edit mode is cleared and input is enabled
+  useEffect(() => {
+    if (!selectedId && shouldFocusOnResetRef.current) {
+      shouldFocusOnResetRef.current = false;
+      const t = setTimeout(() => {
+        if (ledgerNameInputRef.current && !ledgerNameInputRef.current.disabled) {
+          ledgerNameInputRef.current.focus();
+        }
+      }, 50);
+      return () => clearTimeout(t);
+    }
+  }, [selectedId]);
 
   // Query all visible, enabled interactive fields in form order
   const getNavigableFields = useCallback((): HTMLElement[] => {
@@ -316,6 +346,37 @@ export default function LedgerRegForm({
           const parentInput = currentElement.closest<HTMLElement>('input, select, textarea');
           if (parentInput) {
             currentIndex = fields.indexOf(parentInput);
+          }
+        }
+      }
+
+      if (currentElement === emirateSelectRef.current || currentElement === emirateBankSelectRef.current) {
+        setAdditionalDetailsOpen(true);
+        setTimeout(() => {
+          if (openingBalanceDrRef.current) {
+            openingBalanceDrRef.current.focus();
+            openingBalanceDrRef.current.select?.();
+          }
+        }, 50);
+        return;
+      }
+
+      if (currentIndex === -1) {
+        // If currentElement itself is disabled or not in navigable fields,
+        // find the first navigable field that appears after currentElement in DOM order
+        const allElements = Array.from(
+          formRef.current?.querySelectorAll<HTMLElement>('input, select, textarea') || []
+        );
+        const domIndex = allElements.indexOf(currentElement);
+        if (domIndex !== -1) {
+          const subsequent = allElements.slice(domIndex + 1);
+          const nextEnabled = subsequent.find((el) => fields.includes(el));
+          if (nextEnabled) {
+            nextEnabled.focus();
+            if (nextEnabled instanceof HTMLInputElement || nextEnabled instanceof HTMLTextAreaElement) {
+              nextEnabled.select?.();
+            }
+            return;
           }
         }
       }
@@ -578,6 +639,8 @@ export default function LedgerRegForm({
       setValue('serviceItem', Boolean(ledger.serviceItem));
       setValue('taxable', Boolean(ledger.taxable));
       setValue('againstRef', ledger.againstRef !== undefined ? Boolean(ledger.againstRef) : true);
+      setValue('reconciliation', ledger.reconciliation !== false);
+      setValue('isCardAccount', Boolean(ledger.isCardAccount || (ledger as any).cardAccount));
 
       // Bank Details
       setValue('accountHolderName', String(ledger.accountHolderName ?? ''));
@@ -607,6 +670,11 @@ export default function LedgerRegForm({
     setCurrentLedgerType(null);
     setMessage('');
     setLedgerSearch('');
+    highlightedLedgerOptionRef.current = null;
+    setLedgerOpen(false);
+    highlightedUnderOptionRef.current = null;
+    setUnderOpen(false);
+    shouldFocusOnResetRef.current = true;
     reset({
       ...defaultFormValues,
     });
@@ -615,9 +683,16 @@ export default function LedgerRegForm({
     } else if (ledgerType === 'Supplier' && payablesId) {
       setValue('groupId', payablesId);
     }
-    setTimeout(() => {
-      ledgerNameInputRef.current?.focus();
-    }, 80);
+    const focusLedgerInput = () => {
+      if (ledgerNameInputRef.current) {
+        ledgerNameInputRef.current.disabled = false;
+        ledgerNameInputRef.current.focus();
+        ledgerNameInputRef.current.select?.();
+      }
+    };
+    setTimeout(focusLedgerInput, 40);
+    setTimeout(focusLedgerInput, 120);
+    setTimeout(focusLedgerInput, 250);
   }, [reset, setValue, ledgerType, receivablesId, payablesId]);
 
   // Support ?edit=<id> query parameter
@@ -642,7 +717,13 @@ export default function LedgerRegForm({
       prefillAppliedRef.current = state.prefillName;
       clearForm();
       setValue('name', state.prefillName);
+      setValue('aliasName', state.prefillName);
+      setValue('mailingName', state.prefillName);
       setLedgerSearch(state.prefillName);
+      setTimeout(() => {
+        ledgerNameInputRef.current?.focus();
+        ledgerNameInputRef.current?.select();
+      }, 100);
     }
   }, [routeLocation.state, clearForm, setValue]);
 
@@ -651,22 +732,38 @@ export default function LedgerRegForm({
       setSelectedId(null);
       setCurrentLedgerType(null);
       setValue('name', '');
+      setValue('aliasName', '');
+      setValue('mailingName', '');
       setLedgerSearch('');
+      setTimeout(() => {
+        ledgerNameInputRef.current?.focus();
+      }, 50);
       return;
     }
     if (typeof value === 'string') {
       setSelectedId(null);
       setCurrentLedgerType(null);
       setValue('name', value);
+      setValue('aliasName', value);
+      setValue('mailingName', value);
       setLedgerSearch(value);
       return;
     }
     if (!companyId) return;
+
+    // Immediately reflect selected option into fields and state
+    setSelectedId(value._id);
+    setLedgerSearch(value.name);
+    setValue('name', value.name);
+    setValue('aliasName', value.name);
+    setValue('mailingName', value.name);
+    if (value.code) setValue('code', value.code);
+
     ledgerAccountApi.get(value._id, companyId).then((res) => {
       const ledger = res.data.data as Record<string, unknown>;
       if (ledger) {
         setSelectedId(value._id);
-        setLedgerSearch(value.name);
+        setLedgerSearch(String(ledger.name || value.name));
         populateForm(ledger);
       }
     });
@@ -675,6 +772,16 @@ export default function LedgerRegForm({
   const handleGroupChange = (newGroupId: string) => {
     if (isUnderLocked) return;
     setValue('groupId', newGroupId, { shouldValidate: true });
+    const selectedGroup = underOptions.find((o) => o._id === newGroupId);
+    const isBank = Boolean(
+      selectedGroup?.isBank ||
+      (bankGroupId && newGroupId === bankGroupId) ||
+      selectedGroup?.name?.toLowerCase().includes('bank')
+    );
+    if (isBank) {
+      setValue('isCardAccount', false);
+      setValue('reconciliation', true);
+    }
   };
 
   const onSubmit = (data: FormData) => {
@@ -756,6 +863,9 @@ export default function LedgerRegForm({
           serviceItem: data.serviceItem,
           taxable: data.taxable,
           againstRef: data.againstRef,
+          reconciliation: data.reconciliation !== false,
+          isCardAccount: Boolean(data.isCardAccount),
+          cardAccount: Boolean(data.isCardAccount),
           area: data.area || undefined,
           route: data.route || undefined,
           agency: data.agency || undefined,
@@ -814,6 +924,9 @@ export default function LedgerRegForm({
           serviceItem: data.serviceItem,
           taxable: data.taxable,
           againstRef: data.againstRef,
+          reconciliation: data.reconciliation !== false,
+          isCardAccount: Boolean(data.isCardAccount),
+          cardAccount: Boolean(data.isCardAccount),
           area: data.area || undefined,
           route: data.route || undefined,
           agency: data.agency || undefined,
@@ -889,13 +1002,15 @@ export default function LedgerRegForm({
     setBottomBanner(msg);
 
     const state = routeLocation.state as { returnTo?: string } | null;
+    window.dispatchEvent(new CustomEvent('app:ledgers-updated'));
     if (action === 'saved' && state?.returnTo) {
       prefillAppliedRef.current = null;
       const createdName = savedLedgerNameRef.current;
       savedLedgerNameRef.current = null;
       setTimeout(() => {
+        window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
         routeNavigate(state.returnTo!, { state: createdName ? { createdLedgerName: createdName } : undefined });
-      }, 700);
+      }, 350);
       return;
     }
 
@@ -1179,6 +1294,13 @@ export default function LedgerRegForm({
           color: #334155 !important;
           cursor: not-allowed;
         }
+        .bank-reg-container .MuiAutocomplete-root .MuiOutlinedInput-root {
+          padding-right: 28px !important;
+          position: relative !important;
+        }
+        .bank-reg-container .MuiAutocomplete-root.MuiAutocomplete-hasPopupIcon.MuiAutocomplete-hasClearIcon .MuiOutlinedInput-root {
+          padding-right: 48px !important;
+        }
         .bank-reg-container .MuiAutocomplete-inputRoot {
           padding: 0 6px !important;
         }
@@ -1187,14 +1309,50 @@ export default function LedgerRegForm({
           font-size: 12px !important;
         }
         .bank-reg-container .MuiAutocomplete-endAdornment {
-          top: calc(50% - 10px) !important;
+          position: absolute !important;
+          top: 50% !important;
+          transform: translateY(-50%) !important;
           right: 4px !important;
+          display: flex !important;
+          align-items: center !important;
+          justify-content: center !important;
+          gap: 2px !important;
         }
-        .bank-reg-container .MuiAutocomplete-endAdornment .MuiSvgIcon-root {
-          font-size: 16px !important;
-        }
-        .bank-reg-container .MuiAutocomplete-endAdornment .MuiIconButton-root {
+        .bank-reg-container .MuiAutocomplete-clearIndicator {
+          width: 20px !important;
+          height: 20px !important;
+          min-width: 20px !important;
+          min-height: 20px !important;
           padding: 2px !important;
+          margin: 0 !important;
+          display: inline-flex !important;
+          align-items: center !important;
+          justify-content: center !important;
+          color: #94a3b8 !important;
+          border-radius: 4px !important;
+          transition: all 0.15s ease !important;
+        }
+        .bank-reg-container .MuiAutocomplete-clearIndicator:hover {
+          color: #ef4444 !important;
+          background-color: #fee2e2 !important;
+        }
+        .bank-reg-container .MuiAutocomplete-clearIndicator .MuiSvgIcon-root {
+          font-size: 14px !important;
+        }
+        .bank-reg-container .MuiAutocomplete-popupIndicator {
+          width: 20px !important;
+          height: 20px !important;
+          min-width: 20px !important;
+          min-height: 20px !important;
+          padding: 2px !important;
+          margin: 0 !important;
+          display: inline-flex !important;
+          align-items: center !important;
+          justify-content: center !important;
+          color: #64748b !important;
+        }
+        .bank-reg-container .MuiAutocomplete-popupIndicator .MuiSvgIcon-root {
+          font-size: 16px !important;
         }
         .bank-reg-container .MuiIconButton-root {
           padding: 2px !important;
@@ -1272,12 +1430,43 @@ export default function LedgerRegForm({
                   <Autocomplete
                     size="small"
                     freeSolo
+                    openOnFocus
+                    open={ledgerOpen}
+                    onOpen={() => setLedgerOpen(true)}
+                    onClose={() => {
+                      setLedgerOpen(false);
+                      highlightedLedgerOptionRef.current = null;
+                    }}
+                    onHighlightChange={(_, option) => {
+                      highlightedLedgerOptionRef.current = option;
+                    }}
+                    filterOptions={(options, state) => {
+                      const q = (state.inputValue || '').trim().toLowerCase();
+                      if (!q) return options;
+                      return options.filter(
+                        (o) =>
+                          (o.name && o.name.toLowerCase().includes(q)) ||
+                          (o.code && o.code.toLowerCase().includes(q))
+                      );
+                    }}
                     disabled={!!selectedId}
                     options={ledgerOptions}
                     getOptionLabel={(opt) => (typeof opt === 'string' ? opt : opt?.name ?? '')}
-                    value={selectedId ? ledgerOptions.find((o) => o._id === selectedId) ?? null : ledgerSearch || null}
+                    isOptionEqualToValue={(option, val) => (typeof val === 'string' ? option.name === val : option._id === val._id)}
+                    value={
+                      selectedId
+                        ? ledgerOptions.find((o) => o._id === selectedId) ??
+                          (watch('name')
+                            ? { _id: selectedId, name: watch('name'), code: watch('code') || '' }
+                            : null)
+                        : ledgerSearch || null
+                    }
                     inputValue={ledgerSearch}
-                    onChange={onLedgerSelect}
+                    onChange={(event, newVal) => {
+                      setLedgerOpen(false);
+                      highlightedLedgerOptionRef.current = null;
+                      onLedgerSelect(event, newVal);
+                    }}
                     onInputChange={(_, v, reason) => {
                       setLedgerSearch(v);
                       if (reason === 'input' && !selectedId) {
@@ -1285,6 +1474,38 @@ export default function LedgerRegForm({
                         setValue('aliasName', v);
                         setValue('mailingName', v);
                       }
+                    }}
+                    slotProps={{
+                      paper: {
+                        sx: {
+                          boxShadow: '0 4px 16px rgba(0,0,0,0.12)',
+                          borderRadius: '6px',
+                          border: '1px solid #e2e8f0',
+                          mt: 0.5,
+                        },
+                      },
+                    }}
+                    ListboxProps={{
+                      sx: {
+                        maxHeight: 250,
+                        py: 0.5,
+                        '& .MuiAutocomplete-option': {
+                          px: 1.5,
+                          py: 0.7,
+                          fontSize: '0.8rem',
+                          '&[data-focus="true"], &.Mui-focused': {
+                            bgcolor: '#eff6ff !important',
+                            color: '#1d4ed8 !important',
+                          },
+                          '&[aria-selected="true"]': {
+                            bgcolor: '#dbeafe !important',
+                            color: '#1e40af !important',
+                          },
+                          '&:hover': {
+                            bgcolor: '#f1f5f9 !important',
+                          },
+                        },
+                      },
                     }}
                     renderInput={(params) => (
                       <TextField
@@ -1298,14 +1519,40 @@ export default function LedgerRegForm({
                             if (e.key === 'Enter') {
                               e.preventDefault();
                               e.stopPropagation();
-                              params.inputProps?.onKeyDown?.(e);
-                              setTimeout(() => {
-                                if (ledgerNameInputRef.current) {
-                                  focusNextField(ledgerNameInputRef.current);
+                              if (highlightedLedgerOptionRef.current) {
+                                const selected = highlightedLedgerOptionRef.current;
+                                highlightedLedgerOptionRef.current = null;
+                                setLedgerOpen(false);
+                                onLedgerSelect(e, selected);
+                                setTimeout(() => {
+                                  if (underInputRef.current && !underInputRef.current.disabled) {
+                                    underInputRef.current.focus();
+                                    underInputRef.current.select?.();
+                                  } else if (ledgerNameInputRef.current) {
+                                    focusNextField(ledgerNameInputRef.current);
+                                  }
+                                }, 80);
+                              } else {
+                                setLedgerOpen(false);
+                                const typed = ledgerSearch.trim();
+                                if (typed && !selectedId) {
+                                  setValue('name', typed);
+                                  setValue('aliasName', typed);
+                                  setValue('mailingName', typed);
                                 }
-                              }, 50);
-                            } else {
-                              params.inputProps?.onKeyDown?.(e);
+                                setTimeout(() => {
+                                  if (underInputRef.current && !underInputRef.current.disabled) {
+                                    underInputRef.current.focus();
+                                    underInputRef.current.select?.();
+                                  } else if (ledgerNameInputRef.current) {
+                                    focusNextField(ledgerNameInputRef.current);
+                                  }
+                                }, 60);
+                              }
+                            } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                              if (!ledgerOpen) {
+                                setLedgerOpen(true);
+                              }
                             }
                           },
                         }}
@@ -1320,14 +1567,35 @@ export default function LedgerRegForm({
                         }}
                       />
                     )}
-                    renderOption={(props, option) => (
-                      <li {...props} key={option._id} style={{ padding: '5px 8px', fontSize: '0.8rem' }}>
-                        <Box>
-                          <Typography variant="body2" fontWeight={600} fontSize="0.8rem" color="#1a2332">{option.name}</Typography>
-                          <Typography variant="caption" fontSize="0.72rem" color="#64748b">{option.code}</Typography>
-                        </Box>
-                      </li>
-                    )}
+                    renderOption={(props, option) => {
+                      const { key, ...otherProps } = props;
+                      return (
+                        <li key={option._id || key} {...otherProps} style={{ padding: '6px 10px', fontSize: '0.8rem' }}>
+                          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+                            <Typography variant="body2" fontWeight={600} fontSize="0.8rem" color="inherit">
+                              {option.name}
+                            </Typography>
+                            {option.code && (
+                              <Typography
+                                variant="caption"
+                                sx={{
+                                  fontSize: '0.7rem',
+                                  color: 'inherit',
+                                  opacity: 0.75,
+                                  bgcolor: 'rgba(0,0,0,0.05)',
+                                  px: 0.6,
+                                  py: 0.2,
+                                  borderRadius: '3px',
+                                  ml: 1,
+                                }}
+                              >
+                                {option.code}
+                              </Typography>
+                            )}
+                          </Box>
+                        </li>
+                      );
+                    }}
                   />
                 </div>
 
@@ -1360,6 +1628,15 @@ export default function LedgerRegForm({
                   <Autocomplete
                     size="small"
                     autoHighlight
+                    open={underOpen}
+                    onOpen={() => setUnderOpen(true)}
+                    onClose={() => {
+                      setUnderOpen(false);
+                      highlightedUnderOptionRef.current = null;
+                    }}
+                    onHighlightChange={(_, option) => {
+                      highlightedUnderOptionRef.current = option;
+                    }}
                     disabled={isUnderLocked}
                     options={underOptions}
                     getOptionLabel={(opt) => (typeof opt === 'string' ? opt : opt?.name ?? '')}
@@ -1373,6 +1650,8 @@ export default function LedgerRegForm({
                       ) || null
                     }
                     onChange={(_, selectedOption) => {
+                      setUnderOpen(false);
+                      highlightedUnderOptionRef.current = null;
                       handleGroupChange(selectedOption?._id || '');
                     }}
                     renderInput={(params) => (
@@ -1388,14 +1667,34 @@ export default function LedgerRegForm({
                             if (e.key === 'Enter') {
                               e.preventDefault();
                               e.stopPropagation();
-                              params.inputProps?.onKeyDown?.(e);
-                              setTimeout(() => {
-                                if (underInputRef.current) {
-                                  focusNextField(underInputRef.current);
-                                }
-                              }, 60);
-                            } else {
-                              params.inputProps?.onKeyDown?.(e);
+                              if (highlightedUnderOptionRef.current) {
+                                const selected = highlightedUnderOptionRef.current;
+                                highlightedUnderOptionRef.current = null;
+                                setUnderOpen(false);
+                                handleGroupChange(selected._id || '');
+                                setTimeout(() => {
+                                  if (regDateInputRef.current) {
+                                    regDateInputRef.current.focus();
+                                    regDateInputRef.current.select?.();
+                                  } else if (underInputRef.current) {
+                                    focusNextField(underInputRef.current);
+                                  }
+                                }, 80);
+                              } else {
+                                setUnderOpen(false);
+                                setTimeout(() => {
+                                  if (regDateInputRef.current) {
+                                    regDateInputRef.current.focus();
+                                    regDateInputRef.current.select?.();
+                                  } else if (underInputRef.current) {
+                                    focusNextField(underInputRef.current);
+                                  }
+                                }, 60);
+                              }
+                            } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                              if (!underOpen && !isUnderLocked) {
+                                setUnderOpen(true);
+                              }
                             }
                           },
                         }}
@@ -1469,6 +1768,18 @@ export default function LedgerRegForm({
                         onChange={field.onChange}
                         size="small"
                         fullWidth
+                        inputRef={regDateInputRef}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            if (againstRefInputRef.current) {
+                              againstRefInputRef.current.focus();
+                            } else {
+                              focusNextField(e.currentTarget as HTMLElement);
+                            }
+                          }
+                        }}
                       />
                     )}
                   />
@@ -1488,19 +1799,74 @@ export default function LedgerRegForm({
                 </div>
               </div>
 
-              {/* Against Ref */}
-              <div className="bank-reg-form-grid" style={{ marginTop: 4, marginBottom: 4 }}>
-                <div className="bank-reg-form-group" style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              {/* Checkboxes: Against Ref, Reconciliation, Card Account */}
+              <div
+                className="bank-reg-form-grid"
+                style={{
+                  marginTop: 6,
+                  marginBottom: 6,
+                  display: 'flex',
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 24,
+                  flexWrap: 'wrap',
+                }}
+              >
+                <div className="bank-reg-form-group" style={{ flexDirection: 'row', alignItems: 'center', gap: 6, margin: 0 }}>
                   <input
                     type="checkbox"
                     id="chk-against-ref"
-                    style={{ width: 14, height: 14, accentColor: '#3b82f6', cursor: 'pointer' }}
+                    style={{ width: 15, height: 15, accentColor: '#3b82f6', cursor: 'pointer' }}
                     {...register('againstRef')}
+                    ref={(el) => {
+                      register('againstRef').ref(el);
+                      (againstRefInputRef as any).current = el;
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (aliasNameInputRef.current) {
+                          aliasNameInputRef.current.focus();
+                          aliasNameInputRef.current.select?.();
+                        } else {
+                          focusNextField(e.currentTarget);
+                        }
+                      }
+                    }}
                   />
                   <label htmlFor="chk-against-ref" className="bank-reg-form-label" style={{ margin: 0, cursor: 'pointer', fontWeight: 600 }}>
                     Against Ref
                   </label>
                 </div>
+
+                {isBankSelected && (
+                  <>
+                    <div className="bank-reg-form-group" style={{ flexDirection: 'row', alignItems: 'center', gap: 6, margin: 0 }}>
+                      <input
+                        type="checkbox"
+                        id="chk-reconciliation"
+                        style={{ width: 15, height: 15, accentColor: '#3b82f6', cursor: 'pointer' }}
+                        {...register('reconciliation')}
+                      />
+                      <label htmlFor="chk-reconciliation" className="bank-reg-form-label" style={{ margin: 0, cursor: 'pointer', fontWeight: 600 }}>
+                        Reconciliation
+                      </label>
+                    </div>
+
+                    <div className="bank-reg-form-group" style={{ flexDirection: 'row', alignItems: 'center', gap: 6, margin: 0 }}>
+                      <input
+                        type="checkbox"
+                        id="chk-card-account"
+                        style={{ width: 15, height: 15, accentColor: '#3b82f6', cursor: 'pointer' }}
+                        {...register('isCardAccount')}
+                      />
+                      <label htmlFor="chk-card-account" className="bank-reg-form-label" style={{ margin: 0, cursor: 'pointer', fontWeight: 600 }}>
+                        Card Account
+                      </label>
+                    </div>
+                  </>
+                )}
               </div>
 
               {/* Cash Selected: Only show Basic Information section and Debit and Credit amount fields */}
@@ -1618,10 +1984,18 @@ export default function LedgerRegForm({
                     </div>
                     <div className="bank-reg-form-group">
                       <label className="bank-reg-form-label">Date of VAT Registration</label>
-                      <input
-                        type="date"
-                        className="bank-reg-input"
-                        {...register('vatRegistrationDate')}
+                      <Controller
+                        name="vatRegistrationDate"
+                        control={control}
+                        render={({ field }) => (
+                          <DateInput
+                            label=""
+                            value={field.value || ''}
+                            onChange={field.onChange}
+                            size="small"
+                            fullWidth
+                          />
+                        )}
                       />
                     </div>
                     <div className="bank-reg-form-group">
@@ -1674,7 +2048,27 @@ export default function LedgerRegForm({
                   <div className="bank-reg-form-grid">
                     <div className="bank-reg-form-group">
                       <label className="bank-reg-form-label">Emirate</label>
-                      <select className="bank-reg-select" {...register('state')}>
+                      <select
+                        className="bank-reg-select"
+                        {...register('state')}
+                        ref={(el) => {
+                          register('state').ref(el);
+                          (emirateBankSelectRef as any).current = el;
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setAdditionalDetailsOpen(true);
+                            setTimeout(() => {
+                              if (openingBalanceDrRef.current) {
+                                openingBalanceDrRef.current.focus();
+                                openingBalanceDrRef.current.select?.();
+                              }
+                            }, 50);
+                          }
+                        }}
+                      >
                         <option value="">Select emirate</option>
                         {UAE_EMIRATES.map((em) => (
                           <option key={em} value={em}>
@@ -1733,6 +2127,10 @@ export default function LedgerRegForm({
                         className="bank-reg-input"
                         placeholder="Alias name"
                         {...register('aliasName')}
+                        ref={(el) => {
+                          register('aliasName').ref(el);
+                          (aliasNameInputRef as any).current = el;
+                        }}
                       />
                     </div>
                     <div className="bank-reg-form-group">
@@ -1769,7 +2167,27 @@ export default function LedgerRegForm({
                     </div>
                     <div className="bank-reg-form-group">
                       <label className="bank-reg-form-label">Emirate</label>
-                      <select className="bank-reg-select" {...register('state')}>
+                      <select
+                        className="bank-reg-select"
+                        {...register('state')}
+                        ref={(el) => {
+                          register('state').ref(el);
+                          (emirateSelectRef as any).current = el;
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setAdditionalDetailsOpen(true);
+                            setTimeout(() => {
+                              if (openingBalanceDrRef.current) {
+                                openingBalanceDrRef.current.focus();
+                                openingBalanceDrRef.current.select?.();
+                              }
+                            }, 50);
+                          }
+                        }}
+                      >
                         <option value="">Select emirate</option>
                         {UAE_EMIRATES.map((em) => (
                           <option key={em} value={em}>
@@ -1811,6 +2229,10 @@ export default function LedgerRegForm({
                           className="bank-reg-input"
                           placeholder="0.00"
                           {...register('openingBalanceDr')}
+                          ref={(el) => {
+                            register('openingBalanceDr').ref(el);
+                            (openingBalanceDrRef as any).current = el;
+                          }}
                         />
                       </div>
                       <div className="bank-reg-form-group">
@@ -1982,7 +2404,12 @@ export default function LedgerRegForm({
               <button
                 ref={clearBtnRef}
                 type="button"
-                onClick={clearForm}
+                onClick={() => {
+                  clearForm();
+                  setTimeout(() => {
+                    ledgerNameInputRef.current?.focus();
+                  }, 50);
+                }}
                 className="bank-reg-btn bank-reg-btn-clear"
               >
                 <span className="bank-reg-icon">×</span> Clear
@@ -2169,8 +2596,15 @@ export default function LedgerRegForm({
               size="small"
               value={changeNameValue}
               onChange={(e) => setChangeNameValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && changeNameValue.trim() && !changeNameSaving) {
+                  e.preventDefault();
+                  handleChangeNameSave();
+                }
+              }}
               required
               autoFocus
+              inputProps={{ 'data-autofocus': 'true' }}
             />
           </Box>
         </DialogContent>
@@ -2180,7 +2614,6 @@ export default function LedgerRegForm({
             variant="contained"
             onClick={handleChangeNameSave}
             disabled={changeNameSaving || !changeNameValue.trim()}
-            autoFocus
             sx={{ textTransform: 'none', borderRadius: '8px', bgcolor: '#0284c7', '&:hover': { bgcolor: '#0369a1' } }}
           >
             {changeNameSaving ? 'Updating...' : 'Update'}

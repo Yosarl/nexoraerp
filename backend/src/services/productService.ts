@@ -85,6 +85,18 @@ export interface CreateProductInput {
   specialPrice?: number;
   specialPrice2?: number;
   imageUrl?: string;
+  officialCode?: string;
+  genericName?: string;
+  medCodeProvider?: string;
+  strength?: string;
+  strengthUnit?: string;
+  dosageForm?: string;
+  manufacturer?: string;
+  packageUnit?: string;
+  packageSize?: string;
+  routeOfAdmin?: string;
+  isControlledSubstance?: boolean;
+  controlledSubstance?: string;
   allowBatches?: boolean;
   multiUnits?: MultiUnitInput[];
   sellingPrice?: number;
@@ -190,6 +202,18 @@ export async function createProduct(input: CreateProductInput): Promise<IProduct
     specialPrice: input.specialPrice,
     specialPrice2: input.specialPrice2,
     imageUrl: input.imageUrl,
+    officialCode: input.officialCode?.trim(),
+    genericName: input.genericName?.trim(),
+    medCodeProvider: input.medCodeProvider?.trim(),
+    strength: input.strength?.trim(),
+    strengthUnit: input.strengthUnit?.trim(),
+    dosageForm: input.dosageForm?.trim(),
+    manufacturer: input.manufacturer?.trim(),
+    packageUnit: input.packageUnit?.trim(),
+    packageSize: input.packageSize?.trim(),
+    routeOfAdmin: input.routeOfAdmin?.trim(),
+    isControlledSubstance: Boolean(input.isControlledSubstance),
+    controlledSubstance: input.controlledSubstance?.trim(),
     allowBatches: input.allowBatches ?? true,
     multiUnits,
     sellingPrice: input.sellingPrice ?? input.retailPrice ?? 0,
@@ -266,15 +290,13 @@ export async function findByImei(companyId: string, imei: string): Promise<{ pro
     return { product: typedProduct };
   }
   
-  // Check if multi-unit IMEI matches (only if allowBatches is disabled)
-  if ((typedProduct as any).allowBatches === false) {
-    const matchedMultiUnit = typedProduct.multiUnits?.find((mu) => {
-      const muImei = mu.imei ? String(mu.imei).trim() : '';
-      return muImei === trim;
-    });
-    if (matchedMultiUnit) {
-      return { product: typedProduct, matchedMultiUnitId: matchedMultiUnit.multiUnitId };
-    }
+  // Check if multi-unit IMEI matches
+  const matchedMultiUnit = typedProduct.multiUnits?.find((mu) => {
+    const muImei = mu.imei ? String(mu.imei).trim() : '';
+    return muImei === trim;
+  });
+  if (matchedMultiUnit) {
+    return { product: typedProduct, matchedMultiUnitId: matchedMultiUnit.multiUnitId };
   }
   
   // Fallback - return product without matched multi-unit
@@ -700,6 +722,18 @@ export interface UpdateProductInput {
   specialPrice?: number;
   specialPrice2?: number;
   imageUrl?: string;
+  officialCode?: string;
+  genericName?: string;
+  medCodeProvider?: string;
+  strength?: string;
+  strengthUnit?: string;
+  dosageForm?: string;
+  manufacturer?: string;
+  packageUnit?: string;
+  packageSize?: string;
+  routeOfAdmin?: string;
+  isControlledSubstance?: boolean;
+  controlledSubstance?: string;
   allowBatches?: boolean;
   multiUnits?: MultiUnitInput[];
   updatedBy?: string;
@@ -806,6 +840,18 @@ export async function updateProduct(
     ...(input.specialPrice !== undefined && { specialPrice: input.specialPrice }),
     ...(input.specialPrice2 !== undefined && { specialPrice2: input.specialPrice2 }),
     ...(input.imageUrl !== undefined && { imageUrl: input.imageUrl }),
+    ...(input.officialCode !== undefined && { officialCode: input.officialCode?.trim() }),
+    ...(input.genericName !== undefined && { genericName: input.genericName?.trim() }),
+    ...(input.medCodeProvider !== undefined && { medCodeProvider: input.medCodeProvider?.trim() }),
+    ...(input.strength !== undefined && { strength: input.strength?.trim() }),
+    ...(input.strengthUnit !== undefined && { strengthUnit: input.strengthUnit?.trim() }),
+    ...(input.dosageForm !== undefined && { dosageForm: input.dosageForm?.trim() }),
+    ...(input.manufacturer !== undefined && { manufacturer: input.manufacturer?.trim() }),
+    ...(input.packageUnit !== undefined && { packageUnit: input.packageUnit?.trim() }),
+    ...(input.packageSize !== undefined && { packageSize: input.packageSize?.trim() }),
+    ...(input.routeOfAdmin !== undefined && { routeOfAdmin: input.routeOfAdmin?.trim() }),
+    ...(input.isControlledSubstance !== undefined && { isControlledSubstance: Boolean(input.isControlledSubstance) }),
+    ...(input.controlledSubstance !== undefined && { controlledSubstance: input.controlledSubstance?.trim() }),
     ...(input.allowBatches !== undefined && { allowBatches: input.allowBatches }),
     ...(input.multiUnits !== undefined && {
       multiUnits: input.multiUnits.map((u) => ({

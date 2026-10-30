@@ -53,6 +53,9 @@ export async function getBankReconciliationData(
   if (!account) {
     throw new AppError('Bank account not found', 404);
   }
+  if (account.reconciliation === false) {
+    throw new AppError('Bank reconciliation is disabled for this account', 400);
+  }
 
   const ob = account.openingBalances.find(
     (b) => b.financialYearId.toString() === financialYearId

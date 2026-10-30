@@ -92,52 +92,76 @@ function getBackendCwd() {
 }
 // ── Start the Express backend using Electron's utilityProcess ───────
 function startBackend() {
-    return new Promise(function (resolve, reject) {
-        var _a, _b;
-        var entry = getBackendEntry();
-        var cwd = getBackendCwd();
-        console.log("[electron] Starting backend: ".concat(entry));
-        console.log("[electron] Backend cwd: ".concat(cwd));
-        // Verify the backend entry file exists before attempting to start
-        if (!fs.existsSync(entry)) {
-            reject(new Error("Backend entry not found: ".concat(entry)));
-            return;
-        }
-        // Use Electron's utilityProcess.fork() — it's designed for spawning
-        // Node.js child processes inside packaged Electron apps and avoids
-        // the process.execPath quoting issues that child_process.fork() has
-        // on Windows when the exe path contains special characters.
-        // Use a writable location for uploads and data.
-        // C:\Program Files\ is read-only, so redirect to the user's app data dir.
-        var userDataDir = app.getPath('userData');
-        var uploadsDir = path.join(userDataDir, 'data');
-        backendChild = utilityProcess.fork(entry, [], {
-            stdio: 'pipe',
-            env: __assign(__assign({}, process.env), { NODE_ENV: 'production', PORT: String(BACKEND_PORT), 
-                // Pass cwd as an env var since utilityProcess doesn't support cwd option.
-                BACKEND_CWD: cwd, 
-                // Writable directory for uploads and any data the backend writes
-                UPLOAD_DIR: uploadsDir }),
-        });
-        (_a = backendChild.stdout) === null || _a === void 0 ? void 0 : _a.on('data', function (data) {
-            console.log("[backend] ".concat(data.toString().trim()));
-        });
-        (_b = backendChild.stderr) === null || _b === void 0 ? void 0 : _b.on('data', function (data) {
-            console.error("[backend:err] ".concat(data.toString().trim()));
-        });
-        backendChild.on('exit', function (code) {
-            console.log("[electron] Backend process exited with code ".concat(code));
-            backendChild = null;
-        });
-        // Poll until the backend is accepting connections
-        waitForServer("http://localhost:".concat(BACKEND_PORT, "/api/health"), 30000)
-            .then(function () {
-            console.log('[electron] Backend is ready');
-            resolve();
-        })
-            .catch(function (err) {
-            console.error('[electron] Backend did not become ready in time');
-            reject(err);
+    return __awaiter(this, void 0, void 0, function () {
+        var alreadyRunning;
+        return __generator(this, function (_a) {
+            switch (_a.label) {
+                case 0: return [4 /*yield*/, new Promise(function (resolve) {
+                        var req = http.get("http://localhost:".concat(BACKEND_PORT, "/api/health"), function (res) {
+                            res.resume();
+                            resolve(res.statusCode === 200);
+                        });
+                        req.on('error', function () { return resolve(false); });
+                        req.setTimeout(1000, function () {
+                            req.destroy();
+                            resolve(false);
+                        });
+                    })];
+                case 1:
+                    alreadyRunning = _a.sent();
+                    if (alreadyRunning) {
+                        console.log("[electron] Backend is already running on port ".concat(BACKEND_PORT));
+                        return [2 /*return*/];
+                    }
+                    return [2 /*return*/, new Promise(function (resolve, reject) {
+                            var _a, _b;
+                            var entry = getBackendEntry();
+                            var cwd = getBackendCwd();
+                            console.log("[electron] Starting backend: ".concat(entry));
+                            console.log("[electron] Backend cwd: ".concat(cwd));
+                            // Verify the backend entry file exists before attempting to start
+                            if (!fs.existsSync(entry)) {
+                                reject(new Error("Backend entry not found: ".concat(entry)));
+                                return;
+                            }
+                            // Use Electron's utilityProcess.fork() — it's designed for spawning
+                            // Node.js child processes inside packaged Electron apps and avoids
+                            // the process.execPath quoting issues that child_process.fork() has
+                            // on Windows when the exe path contains special characters.
+                            // Use a writable location for uploads and data.
+                            // C:\Program Files\ is read-only, so redirect to the user's app data dir.
+                            var userDataDir = app.getPath('userData');
+                            var uploadsDir = path.join(userDataDir, 'data');
+                            backendChild = utilityProcess.fork(entry, [], {
+                                stdio: 'pipe',
+                                env: __assign(__assign({}, process.env), { NODE_ENV: 'production', PORT: String(BACKEND_PORT), 
+                                    // Pass cwd as an env var since utilityProcess doesn't support cwd option.
+                                    BACKEND_CWD: cwd, 
+                                    // Writable directory for uploads and any data the backend writes
+                                    UPLOAD_DIR: uploadsDir }),
+                            });
+                            (_a = backendChild.stdout) === null || _a === void 0 ? void 0 : _a.on('data', function (data) {
+                                console.log("[backend] ".concat(data.toString().trim()));
+                            });
+                            (_b = backendChild.stderr) === null || _b === void 0 ? void 0 : _b.on('data', function (data) {
+                                console.error("[backend:err] ".concat(data.toString().trim()));
+                            });
+                            backendChild.on('exit', function (code) {
+                                console.log("[electron] Backend process exited with code ".concat(code));
+                                backendChild = null;
+                            });
+                            // Poll until the backend is accepting connections
+                            waitForServer("http://localhost:".concat(BACKEND_PORT, "/api/health"), 30000)
+                                .then(function () {
+                                console.log('[electron] Backend is ready');
+                                resolve();
+                            })
+                                .catch(function (err) {
+                                console.error('[electron] Backend did not become ready in time');
+                                reject(err);
+                            });
+                        })];
+            }
         });
     });
 }
@@ -215,6 +239,26 @@ ipcMain.on('minimize-window', function () {
 ipcMain.on('close-window', function () {
     mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.close();
 });
+ipcMain.handle('get-printers', function () { return __awaiter(void 0, void 0, void 0, function () {
+    var err_1;
+    return __generator(this, function (_a) {
+        switch (_a.label) {
+            case 0:
+                if (!mainWindow)
+                    return [2 /*return*/, []];
+                _a.label = 1;
+            case 1:
+                _a.trys.push([1, 3, , 4]);
+                return [4 /*yield*/, mainWindow.webContents.getPrintersAsync()];
+            case 2: return [2 /*return*/, _a.sent()];
+            case 3:
+                err_1 = _a.sent();
+                console.error('[electron] Failed to get printers', err_1);
+                return [2 /*return*/, []];
+            case 4: return [2 /*return*/];
+        }
+    });
+}); });
 // ── App lifecycle ───────────────────────────────────────────────────
 app.on('window-all-closed', function () {
     mainWindow = null;
@@ -230,7 +274,7 @@ app.on('activate', function () {
     }
 });
 app.whenReady().then(function () { return __awaiter(void 0, void 0, void 0, function () {
-    var err_1;
+    var err_2;
     return __generator(this, function (_a) {
         switch (_a.label) {
             case 0:
@@ -241,9 +285,9 @@ app.whenReady().then(function () { return __awaiter(void 0, void 0, void 0, func
                 createWindow();
                 return [3 /*break*/, 3];
             case 2:
-                err_1 = _a.sent();
-                console.error('[electron] Fatal: could not start backend', err_1);
-                dialog.showErrorBox('Startup Error', "Could not start the backend server.\n\n".concat(String(err_1), "\n\nMake sure MongoDB is running and try again."));
+                err_2 = _a.sent();
+                console.error('[electron] Fatal: could not start backend', err_2);
+                dialog.showErrorBox('Startup Error', "Could not start the backend server.\n\n".concat(String(err_2), "\n\nMake sure MongoDB is running and try again."));
                 app.quit();
                 return [3 /*break*/, 3];
             case 3: return [2 /*return*/];

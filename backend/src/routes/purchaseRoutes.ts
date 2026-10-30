@@ -22,6 +22,9 @@ router.get('/search', purchaseController.searchPurchase);
 // Get batches for a product
 router.get('/product-batches/:productId', purchaseController.getProductBatches);
 
+// Purchase Report
+router.get('/report', purchaseController.getPurchaseReport);
+
 // Get single purchase by ID
 router.get('/:id', purchaseController.getPurchaseById);
 

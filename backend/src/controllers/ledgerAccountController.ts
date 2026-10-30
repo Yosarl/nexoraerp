@@ -13,11 +13,13 @@ export async function list(
     const companyId = req.query.companyId as string;
     const type = req.query.type as string | undefined;
     const search = req.query.search as string | undefined;
+    const financialYearId = req.query.financialYearId as string | undefined;
+    const lite = req.query.lite === '1' || req.query.lite === 'true';
     if (!companyId) {
       res.status(400).json({ success: false, message: 'Company ID required' });
       return;
     }
-    const data = await ledgerAccountService.listByCompany(companyId, { type, search });
+    const data = await ledgerAccountService.listByCompany(companyId, { type, search, financialYearId, lite });
     res.json({ success: true, data });
   } catch (err) {
     next(err);

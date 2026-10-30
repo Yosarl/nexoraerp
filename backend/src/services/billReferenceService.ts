@@ -89,10 +89,18 @@ export async function createAgstRef(input: CreateAgstRefInput) {
     });
 }
 
-// ─── Delete all refs for a source document (when invoice/voucher is deleted) ───
-
-export async function deleteRefsBySource(referenceType: string, referenceId: string) {
-    await BillReference.deleteMany({ referenceType, referenceId });
+export async function deleteRefsBySource(referenceType: string, referenceId: string | mongoose.Types.ObjectId) {
+    const isOid = mongoose.Types.ObjectId.isValid(referenceId);
+    const filter: Record<string, any> = { referenceType };
+    if (isOid) {
+        filter.$or = [
+            { referenceId: new mongoose.Types.ObjectId(referenceId) },
+            { referenceId: referenceId.toString() }
+        ];
+    } else {
+        filter.referenceId = referenceId;
+    }
+    await BillReference.deleteMany(filter);
 }
 
 // ─── Get outstanding bills for a party ───

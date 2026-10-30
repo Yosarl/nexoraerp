@@ -25,7 +25,24 @@ api.interceptors.request.use((config) => {
 });
 
 api.interceptors.response.use(
-  (res) => res,
+  (res) => {
+    try {
+      const method = res.config?.method?.toLowerCase();
+      if (method && ['post', 'put', 'patch', 'delete'].includes(method)) {
+        const url = res.config?.url || '';
+        if (url.includes('/products')) {
+          window.dispatchEvent(new CustomEvent('app:products-updated', { detail: { url, method } }));
+        }
+        if (url.includes('/ledger') || url.includes('/customer') || url.includes('/supplier')) {
+          window.dispatchEvent(new CustomEvent('app:ledgers-updated', { detail: { url, method } }));
+        }
+        window.dispatchEvent(new CustomEvent('app:database-updated', { detail: { url, method } }));
+      }
+    } catch {
+      // ignore
+    }
+    return res;
+  },
   (err) => {
     // Don't redirect on 401 from login endpoint — let the Login page show the error
     const isLoginRequest = err.config?.url?.includes('/auth/login');
@@ -231,6 +248,11 @@ export const openingStockApi = {
   },
 };
 
+export const openingPurchaseApi = openingStockApi;
+export type OpeningPurchaseBatchPayload = OpeningStockBatchPayload;
+export type OpeningPurchaseEntryData = OpeningStockEntryData;
+export type OpeningPurchaseListItem = OpeningStockListItem;
+
 export interface B2CLineItem {
   productId: string;
   productCode?: string;
@@ -244,6 +266,13 @@ export interface B2CLineItem {
   multiUnitId?: string;
   unitId?: string;
   unitName?: string;
+  batchNumber?: string;
+  expiryDate?: string;
+  isRx?: boolean;
+  dosageInstructions?: any;
+  duration?: string;
+  timing?: string;
+  frequency?: string;
 }
 
 export interface B2CPayment {
@@ -257,7 +286,7 @@ export interface B2CInvoiceInput {
   companyId: string;
   financialYearId: string;
   date?: string;
-  type?: 'B2C' | 'B2B' | 'Quotation';
+  type?: 'B2C' | 'B2B' | 'Quotation' | 'POS';
   items: B2CLineItem[];
   customerId?: string;
   customerName?: string;
@@ -269,6 +298,7 @@ export interface B2CInvoiceInput {
   vatType?: 'Vat' | 'NonVat';
   taxMode?: 'inclusive' | 'exclusive';
   cashAccountId?: string;
+  cardAccountId?: string;
   otherDiscount?: number;
   otherCharges?: number;
   freightCharge?: number;
@@ -282,34 +312,97 @@ export interface B2CInvoiceInput {
   shippingAddress?: string;
   shippingPhone?: string;
   shippingContactPerson?: string;
+  patientName?: string;
+  doctorName?: string;
+  doctorLicenseNo?: string;
+  emiratesId?: string;
+  prescriptionNumber?: string;
+  prescriptionDate?: string;
+  isRiayati?: boolean;
+  visitNumber?: string;
 }
 
 export const salesApi = {
+  getNextPOSInvoiceNo: (companyId: string, financialYearId: string) =>
+    api.get<{ success: boolean; data: { invoiceNo: string } }>('/sales/pos/next-invoice-no', {
+      params: { companyId, financialYearId },
+    }),
+
   createPOS: (data: {
     companyId: string;
     financialYearId: string;
-    items: Array<{ productId: string; quantity: number; unitPrice: number; discount?: number }>;
-    paymentDetails: Array<{ mode: string; amount: number }>;
+    items: Array<{
+      productId: string;
+      quantity: number;
+      unitPrice: number;
+      discount?: number;
+      vatRate?: number;
+      batchNumber?: string;
+      expiryDate?: string;
+      multiUnitId?: string;
+      dosageInstructions?: any;
+      duration?: string;
+      timing?: string;
+      frequency?: string;
+    }>;
+    paymentDetails: Array<{ mode: string; amount: number; reference?: string; accountId?: string }>;
+    paymentType?: 'Cash' | 'Credit';
+    cashReceived?: number;
     billDiscount?: number;
-  }) => api.post<{ success: boolean; data: { invoiceId: string; invoiceNo: string } }>('/sales/pos', data),
+    roundOff?: number;
+    customerId?: string;
+    customerName?: string;
+    cashAccountId?: string;
+    cardAccountId?: string;
+    salesmanId?: string;
+    emiratesId?: string;
+    patientName?: string;
+    doctorName?: string;
+    doctorLicenseNo?: string;
+    prescriptionNumber?: string;
+    prescriptionDate?: string;
+    visitNumber?: string;
+    isRiayati?: boolean;
+  }) => api.post<{ success: boolean; data: { invoiceId: string; invoiceNo: string; riayatiSubmission?: any } }>('/sales/pos', data),
+
+  // Doctors
+  getDoctors: (companyId: string) =>
+    api.get<{ success: boolean; data: Array<{ _id: string; name: string; licenseNumber: string; licensingAuthority?: string; phone?: string; specialty?: string }> }>(
+      '/sales/doctors',
+      { params: { companyId } }
+    ),
+  createDoctor: (data: { companyId: string; name: string; licenseNumber: string; licensingAuthority?: string; phone?: string; specialty?: string }) =>
+    api.post<{ success: boolean; data: any }>('/sales/doctors', data),
+
+  // Patients
+  getPatients: (companyId: string, search?: string) =>
+    api.get<{ success: boolean; data: any[] }>('/sales/patients', { params: { companyId, search } }),
+  findPatientByEmiratesId: (companyId: string, emiratesId: string) =>
+    api.get<{ success: boolean; data: any }>('/sales/patients/by-emirates-id', { params: { companyId, emiratesId } }),
+  createPatient: (data: any) =>
+    api.post<{ success: boolean; data: any }>('/sales/patients', data),
 
   // B2C endpoints
-  getNextB2CInvoiceNo: (companyId: string, financialYearId: string, type?: 'B2C' | 'B2B' | 'Quotation') =>
+  getNextB2CInvoiceNo: (companyId: string, financialYearId: string, type?: 'B2C' | 'B2B' | 'Quotation' | 'POS') =>
     api.get<{ success: boolean; data: { invoiceNo: string } }>('/sales/b2c/next-invoice-no', {
       params: { companyId, financialYearId, type },
     }),
-  listB2C: (companyId: string, financialYearId: string, params?: { search?: string; fromDate?: string; toDate?: string; page?: number; limit?: number; type?: 'B2C' | 'B2B' | 'Quotation' }) =>
+  listB2C: (companyId: string, financialYearId: string, params?: { search?: string; fromDate?: string; toDate?: string; page?: number; limit?: number; type?: 'B2C' | 'B2B' | 'Quotation' | 'POS' }) =>
     api.get<{ success: boolean; data: { invoices: unknown[]; total: number } }>('/sales/b2c', {
       params: { companyId, financialYearId, ...params },
     }),
-  getB2C: (id: string, companyId: string, type?: 'B2C' | 'B2B' | 'Quotation', excludeReturnId?: string) =>
+  listB2CIds: (companyId: string, financialYearId: string, type?: 'B2C' | 'B2B' | 'Quotation' | 'POS') =>
+    api.get<{ success: boolean; data: { invoices: Array<{ _id: string }>; total: number } }>('/sales/b2c', {
+      params: { companyId, financialYearId, type, idsOnly: 1, limit: 10000 },
+    }),
+  getB2C: (id: string, companyId: string, type?: 'B2C' | 'B2B' | 'Quotation' | 'POS', excludeReturnId?: string) =>
     api.get<{ success: boolean; data: unknown }>(`/sales/b2c/${id}`, { params: { companyId, type, excludeReturnId } }),
-  searchB2CByInvoiceNo: (companyId: string, invoiceNo: string, type?: 'B2C' | 'B2B' | 'Quotation', excludeReturnId?: string) =>
+  searchB2CByInvoiceNo: (companyId: string, invoiceNo: string, type?: 'B2C' | 'B2B' | 'Quotation' | 'POS', excludeReturnId?: string) =>
     api.get<{ success: boolean; data: unknown }>('/sales/b2c/search', { params: { companyId, invoiceNo, type, excludeReturnId } }),
   createB2C: (data: B2CInvoiceInput) =>
-    api.post<{ success: boolean; data: { invoiceId: string; invoiceNo: string } }>('/sales/b2c', data),
+    api.post<{ success: boolean; data: { invoiceId: string; invoiceNo: string; riayatiSubmission?: any } }>('/sales/b2c', data),
   updateB2C: (id: string, data: B2CInvoiceInput) =>
-    api.put<{ success: boolean; data: { invoiceId: string; invoiceNo: string } }>(`/sales/b2c/${id}`, data),
+    api.put<{ success: boolean; data: { invoiceId: string; invoiceNo: string; riayatiSubmission?: any } }>(`/sales/b2c/${id}`, data),
   deleteB2C: (id: string, companyId: string) =>
     api.delete(`/sales/b2c/${id}`, { params: { companyId } }),
   getProductCustomerHistory: (companyId: string, productId: string, customerId?: string, type?: 'POS' | 'B2C' | 'B2B' | 'Quotation') =>
@@ -317,6 +410,25 @@ export const salesApi = {
       `/sales/b2c/product-history/${productId}`,
       { params: { companyId, ...(customerId ? { customerId } : {}), type } }
     ),
+  getSalesReport: (params: {
+    companyId: string;
+    financialYearId?: string;
+    filterType?: 'default' | 'product' | 'product_total' | 'month' | 'daily' | 'monthly';
+    salesType?: 'ALL' | 'B2C' | 'B2B' | 'POS' | 'Return' | 'Quotation' | string;
+    productId?: string;
+    fromDate?: string;
+    toDate?: string;
+    search?: string;
+  }) =>
+    api.get<{
+      success: boolean;
+      data: {
+        filterType: 'default' | 'product' | 'product_total' | 'month' | 'daily' | 'monthly';
+        isSpecificProduct?: boolean;
+        months?: Array<{ key: string; label: string }>;
+        rows: any[];
+      };
+    }>('/sales/report', { params }),
 
   // Sales Return
   getNextReturnInvoiceNo: (companyId: string, financialYearId: string) =>
@@ -405,6 +517,26 @@ export const salesApi = {
     api.delete(`/sales/return/${invoiceId}`, { params: { companyId } }),
 };
 
+export interface StockMovementItem {
+  id: string;
+  sl?: number;
+  productId: string;
+  itemCode: string;
+  itemName: string;
+  category?: string;
+  brand?: string;
+  opening: number;
+  purchase: number;
+  returnQty: number; // Return
+  stockAdjPlus: number; // SA+ (Stock Adj +)
+  stockAdjMinus: number; // SA- (Stock Adj -)
+  damage: number; // Damage
+  qty: number; // Qty (Closing)
+  purchaseRate: number;
+  stockValue: number; // Cost Value
+  grossValue: number; // Gross Value (without VAT)
+}
+
 export const stockApi = {
   getReport: (companyId: string, params?: { search?: string; searchField?: string; page?: number; limit?: number; mode?: string }) =>
     api.get<{
@@ -422,6 +554,7 @@ export const stockApi = {
           qtyAvailable: number;
           purchaseRate: number;
           totalPurchaseRate: number;
+          grossValue: number;
           sellingPrice: number;
           retailPrice: number;
           wholesalePrice: number;
@@ -435,8 +568,176 @@ export const stockApi = {
       };
     }>('/stock/report', { params: { companyId, ...params } }),
 
+  getMovement: (
+    companyId: string,
+    params?: {
+      financialYearId?: string;
+      productId?: string;
+      fromDate?: string;
+      toDate?: string;
+      type?: string;
+      category?: string;
+      brand?: string;
+      search?: string;
+    }
+  ) =>
+    api.get<{
+      success: boolean;
+      data: {
+        items: StockMovementItem[];
+        summary: {
+          totalOpening: number;
+          totalPurchase: number;
+          totalReturn: number;
+          totalStockAdjPlus: number;
+          totalStockAdjMinus: number;
+          totalDamage: number;
+          totalQty: number;
+          totalStockValue: number;
+          totalGrossValue: number;
+          count: number;
+        };
+      };
+    }>('/stock/movement', { params: { companyId, ...params } }),
+
   getProductStock: (companyId: string, productId: string) =>
     api.get<{ success: boolean; data: { stock: number } }>(`/stock/product-stock/${productId}`, {
+      params: { companyId },
+    }),
+
+  getProductTransactions: (
+    productId: string,
+    companyId: string,
+    params?: { fromDate?: string; toDate?: string; type?: string; financialYearId?: string }
+  ) =>
+    api.get<{ success: boolean; data: ProductTransactionsResponse }>(
+      `/stock/product-transactions/${productId}`,
+      { params: { companyId, ...params } }
+    ),
+};
+
+export interface ProductTransactionDetail {
+  id: string;
+  date: string;
+  type: string;
+  voucherName: string;
+  voucherNo: string;
+  referenceType: string;
+  referenceId: string;
+  invoiceType?: string;
+  batchNumber?: string;
+  quantityIn: number;
+  quantityOut: number;
+  rate: number;
+  amount: number;
+  runningBalance: number;
+  partyName?: string;
+  partyId?: string;
+  partyType?: 'Customer' | 'Supplier' | 'Other';
+  narration?: string;
+}
+
+export interface ProductTransactionsResponse {
+  product: {
+    id: string;
+    name: string;
+    sku: string;
+    code?: string;
+    barcode?: string;
+    unit?: string;
+    sellingPrice: number;
+    purchasePrice: number;
+    currentStock: number;
+  };
+  openingBalance: number;
+  totalIn: number;
+  totalOut: number;
+  closingBalance: number;
+  totalValueIn: number;
+  totalValueOut: number;
+  transactions: ProductTransactionDetail[];
+}
+
+
+export interface StockAdjustmentItemPayload {
+  productId: string;
+  productCode?: string;
+  productName?: string;
+  barcode?: string;
+  batchNumber?: string;
+  adjustmentType: 'ADD' | 'REDUCE';
+  quantity: number;
+  costPrice?: number;
+  reason?: string;
+}
+
+export interface StockAdjustmentPayload {
+  companyId: string;
+  financialYearId: string;
+  adjustmentNo?: string;
+  entryType?: 'ADJUSTMENT' | 'DAMAGE';
+  prefix?: string;
+  date: string;
+  reason: string;
+  narration?: string;
+  items: StockAdjustmentItemPayload[];
+}
+
+export interface StockAdjustmentData {
+  _id: string;
+  companyId: string;
+  financialYearId: string;
+  adjustmentNo: string;
+  entryType?: 'ADJUSTMENT' | 'DAMAGE';
+  date: string;
+  reason: string;
+  narration?: string;
+  items: Array<{
+    productId: string;
+    productCode: string;
+    productName: string;
+    barcode?: string;
+    batchNumber?: string;
+    currentStock: number;
+    adjustmentType: 'ADD' | 'REDUCE';
+    quantity: number;
+    newStock: number;
+    costPrice: number;
+    totalValue: number;
+    reason?: string;
+  }>;
+  totalItems: number;
+  totalLossValue: number;
+  totalGainValue: number;
+  netAdjustmentValue: number;
+  voucherId?: { _id: string; voucherNo: string } | string;
+  createdBy?: { _id: string; username?: string; fullName?: string };
+  createdAt: string;
+}
+
+export const stockAdjustmentApi = {
+  getNextNo: (companyId: string, financialYearId: string, params?: { entryType?: string; prefix?: string }) =>
+    api.get<{ success: boolean; data: { adjustmentNo: string } }>('/stock-adjustments/next-no', {
+      params: { companyId, financialYearId, ...params },
+    }),
+  create: (data: StockAdjustmentPayload) =>
+    api.post<{ success: boolean; data: StockAdjustmentData }>('/stock-adjustments', data),
+  update: (id: string, data: StockAdjustmentPayload) =>
+    api.put<{ success: boolean; data: StockAdjustmentData }>(`/stock-adjustments/${id}`, data),
+  list: (
+    companyId: string,
+    financialYearId: string,
+    params?: { search?: string; page?: number; limit?: number; fromDate?: string; toDate?: string; entryType?: string; prefix?: string; productId?: string }
+  ) =>
+    api.get<{ success: boolean; data: { list: StockAdjustmentData[]; total: number } }>('/stock-adjustments', {
+      params: { companyId, financialYearId, ...params },
+    }),
+  getById: (id: string, companyId: string) =>
+    api.get<{ success: boolean; data: StockAdjustmentData }>(`/stock-adjustments/${id}`, {
+      params: { companyId },
+    }),
+  delete: (id: string, companyId: string) =>
+    api.delete<{ success: boolean; message: string }>(`/stock-adjustments/${id}`, {
       params: { companyId },
     }),
 };
@@ -604,6 +905,27 @@ export const purchaseApi = {
     }>(`/purchases/product-batches/${productId}`, {
       params: { companyId },
     }),
+
+  getPurchaseReport: (params: {
+    companyId: string;
+    financialYearId?: string;
+    filterType?: 'default' | 'product' | 'product_total' | 'month' | 'daily' | 'monthly';
+    purchaseType?: 'Purchase' | 'PurchaseOrder' | 'PurchaseReturn' | 'OpeningStock' | string;
+    productId?: string;
+    fromDate?: string;
+    toDate?: string;
+    search?: string;
+  }) =>
+    api.get<{
+      success: boolean;
+      data: {
+        filterType: 'default' | 'product' | 'product_total' | 'month' | 'daily' | 'monthly';
+        purchaseType?: string;
+        isSpecificProduct?: boolean;
+        months?: Array<{ key: string; label: string }>;
+        rows: any[];
+      };
+    }>('/purchases/report', { params }),
 };
 
 // ─── Purchase Order API ─────────────────────────────────────
@@ -848,6 +1170,119 @@ export const purchaseReturnApi = {
     api.delete(`/purchase-returns/${id}`, { params: { companyId } }),
 };
 
+export interface ProfitLossLedgerItem {
+  id: string;
+  code: string;
+  name: string;
+  debit: number;
+  credit: number;
+  amount: number;
+}
+
+export interface ProfitLossGroupNode {
+  groupId: string;
+  groupName: string;
+  groupCode?: string;
+  category: 'Direct' | 'Indirect';
+  type: 'Income' | 'Expense';
+  totalAmount: number;
+  totalDebit: number;
+  totalCredit: number;
+  accounts: ProfitLossLedgerItem[];
+}
+
+export interface ProfitLossData {
+  income: number;
+  expenses: number;
+  netProfit: number;
+  grossProfit: number;
+  directIncome: number;
+  indirectIncome: number;
+  directExpenses: number;
+  indirectExpenses: number;
+  tree: {
+    income: ProfitLossGroupNode[];
+    expenses: ProfitLossGroupNode[];
+  };
+  groups: Array<{ type: string; name: string; amount: number; groupName?: string; code?: string; category?: string }>;
+}
+
+export interface BalanceSheetLedgerItem {
+  id: string;
+  code: string;
+  name: string;
+  debit: number;
+  credit: number;
+  amount: number;
+  groupName?: string;
+  groupCode?: string;
+  parentName?: string;
+}
+
+export interface BalanceSheetGroupNode {
+  groupId: string;
+  groupName: string;
+  groupCode?: string;
+  parentName?: string;
+  type: 'Asset' | 'Liability' | 'Equity';
+  totalAmount: number;
+  totalDebit: number;
+  totalCredit: number;
+  accounts: BalanceSheetLedgerItem[];
+}
+
+export interface BalanceSheetParentNode {
+  parentId: string;
+  parentName: string;
+  parentCode?: string;
+  type: 'Asset' | 'Liability' | 'Equity';
+  totalAmount: number;
+  totalDebit: number;
+  totalCredit: number;
+  groups: BalanceSheetGroupNode[];
+}
+
+export interface BalanceSheetData {
+  assets: number;
+  liabilities: number;
+  equity: number;
+  netProfit: number;
+  balanced: boolean;
+  tree: {
+    assets: BalanceSheetParentNode[];
+    liabilities: BalanceSheetParentNode[];
+    equity: BalanceSheetParentNode[];
+  };
+  groups: Array<{
+    id?: string;
+    code?: string;
+    name: string;
+    type: string;
+    groupName?: string;
+    groupCode?: string;
+    parentName?: string;
+    amount: number;
+  }>;
+}
+
+export interface TrialBalanceRow {
+  ledgerAccountId: string;
+  name: string;
+  code: string;
+  debit: number;
+  credit: number;
+  groupName?: string;
+  groupCode?: string;
+  groupType?: string;
+}
+
+export interface TrialBalanceData {
+  rows: TrialBalanceRow[];
+  totalDebit: number;
+  totalCredit: number;
+  balanced: boolean;
+}
+
 export const ledgerApi = {
   entriesByVoucher: (voucherId: string) =>
     api.get<{ success: boolean; data: Array<{ ledgerAccountCode: string; ledgerAccountName: string; debitAmount: number; creditAmount: number; narration?: string }> }>(
@@ -855,7 +1290,7 @@ export const ledgerApi = {
       { params: { voucherId } }
     ),
   trialBalance: (companyId: string, financialYearId: string, asAtDate?: string) =>
-    api.get<{ success: boolean; data: { rows: unknown[]; totalDebit: number; totalCredit: number; balanced: boolean } }>(
+    api.get<{ success: boolean; data: TrialBalanceData }>(
       '/ledger/trial-balance',
       { params: { companyId, financialYearId, asAtDate } }
     ),
@@ -869,15 +1304,44 @@ export const ledgerApi = {
       params: { companyId, financialYearId, ledgerAccountId, fromDate, toDate },
     }),
   profitLoss: (companyId: string, financialYearId: string, fromDate?: string, toDate?: string) =>
-    api.get<{ success: boolean; data: { income: number; expenses: number; netProfit: number; groups: unknown[] } }>(
+    api.get<{ success: boolean; data: ProfitLossData }>(
       '/ledger/profit-loss',
       { params: { companyId, financialYearId, fromDate, toDate } }
     ),
+  exportProfitLoss: (companyId: string, financialYearId: string, fromDate?: string, toDate?: string) =>
+    api.get('/ledger/profit-loss/export', {
+      params: { companyId, financialYearId, fromDate, toDate },
+      responseType: 'blob',
+    }),
   balanceSheet: (companyId: string, financialYearId: string, asAtDate?: string) =>
-    api.get<{ success: boolean; data: { assets: number; liabilities: number; equity: number; balanced: boolean; groups: unknown[] } }>(
+    api.get<{ success: boolean; data: BalanceSheetData }>(
       '/ledger/balance-sheet',
       { params: { companyId, financialYearId, asAtDate } }
     ),
+  dayBook: (companyId: string, financialYearId: string, params?: { fromDate?: string; toDate?: string; voucherType?: string; search?: string; page?: number; limit?: number }) =>
+    api.get<{
+      success: boolean;
+      data: {
+        vouchers: any[];
+        totalCount: number;
+        page: number;
+        limit: number;
+        totalPages: number;
+        summary: {
+          totalTransactions: number;
+          totalDebit: number;
+          totalCredit: number;
+          netMovement: number;
+          typeCounts: Record<string, number>;
+          typeTotals: Record<string, { debit: number; credit: number; count: number }>;
+        };
+      };
+    }>('/ledger/day-book', { params: { companyId, financialYearId, ...params } }),
+  exportDayBook: (companyId: string, financialYearId: string, params?: { fromDate?: string; toDate?: string; voucherType?: string; search?: string }) =>
+    api.get('/ledger/day-book/export', {
+      params: { companyId, financialYearId, ...params },
+      responseType: 'blob',
+    }),
 };
 
 export interface BankReconciliationItem {
@@ -935,8 +1399,8 @@ export const bankReconciliationApi = {
 };
 
 export const ledgerAccountApi = {
-  list: (companyId: string, type?: string, search?: string) =>
-    api.get<{ success: boolean; data: unknown[] }>('/ledger-accounts', { params: { companyId, type, search } }),
+  list: (companyId: string, type?: string, search?: string, financialYearId?: string, lite?: boolean) =>
+    api.get<{ success: boolean; data: unknown[] }>('/ledger-accounts', { params: { companyId, type, search, financialYearId, lite: lite ? 1 : undefined } }),
   get: (id: string, companyId: string) =>
     api.get<{ success: boolean; data: unknown }>(`/ledger-accounts/${id}`, { params: { companyId } }),
   create: (data: Record<string, unknown>) =>
@@ -987,9 +1451,45 @@ export const userApi = {
     api.post(`/users/${id}/reset-password`, { newPassword }),
 };
 
+export interface AuditLogItem {
+  _id: string;
+  timestamp: string;
+  form?: string;
+  entityType: string;
+  entityId?: string;
+  action: string;
+  userId?: { _id?: string; username: string; fullName: string; role?: string } | string;
+  details?: string;
+  entryNo?: string;
+  salesType?: string;
+  voucherType?: string;
+  editedDate?: string;
+  editedTime?: string;
+  eventTime?: string;
+  oldAmount?: number | null;
+  newAmount?: number | null;
+  systemName?: string;
+  ip?: string;
+  userAgent?: string;
+  before?: Record<string, unknown>;
+  after?: Record<string, unknown>;
+}
+
 export const auditLogApi = {
-  list: (params?: { companyId?: string; userId?: string; entityType?: string; action?: string; fromDate?: string; toDate?: string; page?: number; limit?: number }) =>
-    api.get<{ success: boolean; data: { logs: unknown[]; total: number } }>('/audit-logs', { params }),
+  list: (params?: {
+    companyId?: string;
+    userId?: string;
+    entityType?: string;
+    form?: string;
+    action?: string;
+    entryNo?: string;
+    search?: string;
+    fromDate?: string;
+    toDate?: string;
+    page?: number;
+    limit?: number;
+  }) =>
+    api.get<{ success: boolean; data: { logs: AuditLogItem[]; total: number } }>('/audit-logs', { params }),
 };
 
 export interface OutstandingBill {
@@ -1026,3 +1526,93 @@ export const billReferenceApi = {
     }>;
   }) => api.post<{ success: boolean; data: unknown }>('/bill-references/settle', data),
 };
+
+export interface Hl7ListenerStatusData {
+  isRunning: boolean;
+  port: number;
+  totalReceived: number;
+  activeConnections: number;
+  startedAt?: string;
+  endpointConfig?: {
+    host: string;
+    port: number;
+    sendingApp: string;
+    facilityCode: string;
+    facilityName: string;
+    processingId: string;
+  };
+}
+
+export interface Hl7LogEntry {
+  id: string;
+  timestamp: string;
+  type: 'INFO' | 'INCOMING' | 'OUTGOING' | 'ERROR';
+  messageType?: string;
+  controlId?: string;
+  summary: string;
+  rawMessage?: string;
+  rawResponse?: string;
+}
+
+export interface RiayatiInvoiceItem {
+  _id: string;
+  invoiceNo: string;
+  invoiceDate: string;
+  type?: string;
+  customerName?: string;
+  patientName?: string;
+  emiratesId?: string;
+  doctorName?: string;
+  doctorLicenseNo?: string;
+  doctorLicenseProvider?: string;
+  totalAmount: number;
+  isRiayati?: boolean;
+  riayatiStatus: 'Success' | 'Failed' | 'Partial' | 'Offline' | 'Pending' | 'NotApplicable';
+  riayatiVisitNumber?: string;
+  riayatiAckCode?: string;
+  riayatiError?: string;
+  riayatiSubmittedAt?: string;
+  itemCount?: number;
+}
+
+export interface RiayatiStatusKpis {
+  total: number;
+  success: number;
+  failed: number;
+  pending: number;
+  offline: number;
+}
+
+export const riayatiApi = {
+  getStatus: () => api.get<{ success: boolean; data: Hl7ListenerStatusData }>('/riayati/listener/status'),
+  startListener: (port: number) => api.post<{ success: boolean; data: any }>('/riayati/listener/start', { port }),
+  stopListener: () => api.post<{ success: boolean; data: any }>('/riayati/listener/stop'),
+  getLogs: (limit = 100) => api.get<{ success: boolean; data: Hl7LogEntry[] }>('/riayati/listener/logs', { params: { limit } }),
+  clearLogs: () => api.post<{ success: boolean; message: string }>('/riayati/listener/clear-logs'),
+  testSendSample: (payload: { messageType?: string; emiratesId?: string; doctorLicense?: string; invoiceNo?: string }) =>
+    api.post<{ success: boolean; data: any }>('/riayati/test/send-sample', payload),
+  queryPatientDemographics: (emiratesId: string) =>
+    api.post<{ success: boolean; data: any }>('/riayati/query-demographics', { emiratesId }),
+  getInvoices: (params?: {
+    status?: string;
+    search?: string;
+    fromDate?: string;
+    toDate?: string;
+    page?: number;
+    limit?: number;
+  }) =>
+    api.get<{
+      success: boolean;
+      data: {
+        invoices: RiayatiInvoiceItem[];
+        kpis: RiayatiStatusKpis;
+        pagination: { total: number; page: number; pages: number };
+      };
+    }>('/riayati/invoices', { params }),
+  resendSubmission: (invoiceId: string) =>
+    api.post<{ success: boolean; message?: string; data: any }>(`/riayati/resend/${invoiceId}`),
+  resendAllFailed: () =>
+    api.post<{ success: boolean; message?: string; data: any }>('/riayati/resend-all-failed'),
+};
+
+
