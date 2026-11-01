@@ -54,7 +54,7 @@ import InputAdornment from '@mui/material/InputAdornment';
 import SearchIcon from '@mui/icons-material/Search';
 import { useAppDispatch, useAppSelector } from '../store/hooks';
 import { logout } from '../store/slices/authSlice';
-import { toggleDrawer, setDrawerOpen } from '../store/slices/appSlice';
+import { toggleDrawer, setDrawerOpen, setCompany } from '../store/slices/appSlice';
 import { NexoraSymbol } from '../components/NexoraLogo';
 import {
   AMBER,
@@ -334,6 +334,15 @@ export default function MainLayout() {
   const hasCompany = (user?.companyAccess?.length ?? 0) > 0;
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const wasOpenRef = useRef(open);
+
+  // Auto-initialize selectedCompanyId if missing but user has company access
+  useEffect(() => {
+    if (!cid && user?.companyAccess && user.companyAccess.length > 0) {
+      const saved = localStorage.getItem('selectedCompanyId');
+      const targetId = (saved && user.companyAccess.includes(saved)) ? saved : user.companyAccess[0];
+      dispatch(setCompany(targetId));
+    }
+  }, [cid, user?.companyAccess, dispatch]);
 
   // When drawer closes, move focus to menu button before paint so focus is not inside
   // an element that gets aria-hidden (avoids "Blocked aria-hidden" a11y warning).

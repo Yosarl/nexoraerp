@@ -21,7 +21,6 @@ import {
 } from '@mui/icons-material';
 import { useAppSelector } from '../store/hooks';
 import { ledgerAccountApi, ledgerGroupApi } from '../services/api';
-import { isPrimaryHead } from '../pages/GroupCreate';
 import DateInput from './DateInput';
 
 type Group = {
@@ -157,7 +156,8 @@ export default function LedgerRegForm({
   ledgerType: 'Customer' | 'Supplier' | null;
   title?: string;
 }) {
-  const companyId = useAppSelector((s) => s.app.selectedCompanyId);
+  const reduxCompanyId = useAppSelector((s) => s.app.selectedCompanyId);
+  const companyId = reduxCompanyId || localStorage.getItem('selectedCompanyId') || '';
   const financialYearId = useAppSelector((s) => s.app.selectedFinancialYearId);
   const routeLocation = useLocation();
   const routeNavigate = useNavigate();
@@ -537,40 +537,49 @@ export default function LedgerRegForm({
     });
   }, [companyId, listType, ledgerSearch]);
 
-  // Load ledger groups for "Under" / "Ledger Group" dropdown - ONLY account groups
+  // Load ledger groups for "Under" / "Ledger Group" dropdown
   useEffect(() => {
     if (!companyId) return;
     ledgerGroupApi.list(companyId).then((res) => {
       const list = (res.data.data as Group[]) ?? [];
 
-      // Filter out primary category heads so only operational account groups remain
-      const accountGroups = list.filter((g) => !isPrimaryHead(g));
+      // Make all ledger groups available for classification (Expenses, Assets, Taxes, etc.)
+      const options: UnderOption[] = list.map((g) => ({
+        _id: g._id,
+        name: g.name,
+        code: g.code,
+        type: g.type,
+        isBank: Boolean(g.isBank || g.code?.toUpperCase() === 'BANK' || g.name?.toLowerCase().includes('bank')),
+      }));
+
+      // Sort account groups alphabetically by name
+      options.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
 
       // Match Customer / Receivables group with explicit priority:
       const recv =
-        accountGroups.find((g) => {
+        list.find((g) => {
           const n = (g.name || '').trim().toLowerCase();
           return n === 'customer' || n === 'customers';
         }) ||
-        accountGroups.find((g) => (g.name || '').toLowerCase().includes('customer')) ||
-        accountGroups.find((g) => g.isReceivables === true) ||
-        accountGroups.find((g) => g.code?.toUpperCase() === 'RECV') ||
-        accountGroups.find((g) => (g.name || '').toLowerCase().includes('debtor')) ||
-        accountGroups.find((g) => (g.name || '').toLowerCase().includes('receiv'));
+        list.find((g) => (g.name || '').toLowerCase().includes('customer')) ||
+        list.find((g) => g.isReceivables === true) ||
+        list.find((g) => g.code?.toUpperCase() === 'RECV') ||
+        list.find((g) => (g.name || '').toLowerCase().includes('debtor')) ||
+        list.find((g) => (g.name || '').toLowerCase().includes('receiv'));
 
       // Match Supplier / Payables group with explicit priority:
       const pay =
-        accountGroups.find((g) => {
+        list.find((g) => {
           const n = (g.name || '').trim().toLowerCase();
           return n === 'supplier' || n === 'suppliers';
         }) ||
-        accountGroups.find((g) => (g.name || '').toLowerCase().includes('supplier')) ||
-        accountGroups.find((g) => g.isPayables === true) ||
-        accountGroups.find((g) => g.code?.toUpperCase() === 'PAY') ||
-        accountGroups.find((g) => (g.name || '').toLowerCase().includes('creditor')) ||
-        accountGroups.find((g) => (g.name || '').toLowerCase().includes('payab'));
+        list.find((g) => (g.name || '').toLowerCase().includes('supplier')) ||
+        list.find((g) => g.isPayables === true) ||
+        list.find((g) => g.code?.toUpperCase() === 'PAY') ||
+        list.find((g) => (g.name || '').toLowerCase().includes('creditor')) ||
+        list.find((g) => (g.name || '').toLowerCase().includes('payab'));
 
-      const bnk = accountGroups.find(
+      const bnk = list.find(
         (g) =>
           g.isBank === true ||
           (g.code && g.code.toUpperCase() === 'BANK') ||
@@ -584,23 +593,12 @@ export default function LedgerRegForm({
       setPayablesId(payId);
       setBankGroupId(bnkId);
 
-      const options: UnderOption[] = accountGroups.map((g) => ({
-        _id: g._id,
-        name: g.name,
-        code: g.code,
-        type: g.type,
-        isBank: Boolean(g.isBank || g.code?.toUpperCase() === 'BANK' || g.name?.toLowerCase().includes('bank')),
-      }));
-
-      // Sort account groups alphabetically by name
-      options.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
-
       setUnderOptions(options);
 
       if (ledgerType === 'Customer' && recvId) {
-        setValue('groupId', recvId);
+        setValue('groupId', recvId, { shouldValidate: true });
       } else if (ledgerType === 'Supplier' && payId) {
-        setValue('groupId', payId);
+        setValue('groupId', payId, { shouldValidate: true });
       }
     });
   }, [companyId, ledgerType, setValue]);
@@ -682,6 +680,8 @@ export default function LedgerRegForm({
       setValue('groupId', receivablesId);
     } else if (ledgerType === 'Supplier' && payablesId) {
       setValue('groupId', payablesId);
+    } else {
+      setValue('groupId', '');
     }
     const focusLedgerInput = () => {
       if (ledgerNameInputRef.current) {
@@ -1628,14 +1628,22 @@ export default function LedgerRegForm({
                   <Autocomplete
                     size="small"
                     autoHighlight
+                    openOnFocus
                     open={underOpen}
-                    onOpen={() => setUnderOpen(true)}
+                    onOpen={() => {
+                      if (!isUnderLocked) setUnderOpen(true);
+                    }}
                     onClose={() => {
                       setUnderOpen(false);
                       highlightedUnderOptionRef.current = null;
                     }}
                     onHighlightChange={(_, option) => {
                       highlightedUnderOptionRef.current = option;
+                    }}
+                    onInputChange={(_, _value, reason) => {
+                      if (reason === 'input' && !isUnderLocked) {
+                        setUnderOpen(true);
+                      }
                     }}
                     disabled={isUnderLocked}
                     options={underOptions}
@@ -1654,6 +1662,38 @@ export default function LedgerRegForm({
                       highlightedUnderOptionRef.current = null;
                       handleGroupChange(selectedOption?._id || '');
                     }}
+                    slotProps={{
+                      paper: {
+                        sx: {
+                          boxShadow: '0 4px 16px rgba(0,0,0,0.12)',
+                          borderRadius: '6px',
+                          border: '1px solid #e2e8f0',
+                          mt: 0.5,
+                        },
+                      },
+                    }}
+                    ListboxProps={{
+                      sx: {
+                        maxHeight: 280,
+                        py: 0.5,
+                        '& .MuiAutocomplete-option': {
+                          px: 1.5,
+                          py: 0.7,
+                          fontSize: '0.8rem',
+                          '&[data-focus="true"], &.Mui-focused': {
+                            bgcolor: '#eff6ff !important',
+                            color: '#1d4ed8 !important',
+                          },
+                          '&[aria-selected="true"]': {
+                            bgcolor: '#dbeafe !important',
+                            color: '#1e40af !important',
+                          },
+                          '&:hover': {
+                            bgcolor: '#f1f5f9 !important',
+                          },
+                        },
+                      },
+                    }}
                     renderInput={(params) => (
                       <TextField
                         {...params}
@@ -1661,9 +1701,16 @@ export default function LedgerRegForm({
                         disabled={isUnderLocked}
                         placeholder={isUnderLocked ? 'Locked' : 'Type to search and select group'}
                         required
+                        onClick={() => {
+                          if (!isUnderLocked) setUnderOpen(true);
+                        }}
+                        onFocus={() => {
+                          if (!isUnderLocked) setUnderOpen(true);
+                        }}
                         inputProps={{
                           ...params.inputProps,
                           onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => {
+                            params.inputProps.onKeyDown?.(e);
                             if (e.key === 'Enter') {
                               e.preventDefault();
                               e.stopPropagation();

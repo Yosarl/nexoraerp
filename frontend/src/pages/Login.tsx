@@ -675,8 +675,11 @@ export default function Login() {
         navigate('/file/companies/create');
         return;
       }
-      if (userPayload.companyAccess.length === 1) {
-        const companyId = userPayload.companyAccess[0];
+      if (hasCompany) {
+        const savedCompany = localStorage.getItem('selectedCompanyId');
+        const companyId = (savedCompany && userPayload.companyAccess.includes(savedCompany))
+          ? savedCompany
+          : userPayload.companyAccess[0];
         dispatch(setCompany(companyId));
         try {
           const fyRes = await financialYearApi.getCurrent(companyId);
