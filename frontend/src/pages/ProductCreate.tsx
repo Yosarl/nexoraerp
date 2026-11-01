@@ -25,6 +25,7 @@ import {
   Chip,
   Snackbar,
   Alert,
+  CircularProgress,
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
@@ -3808,7 +3809,13 @@ export default function ProductCreate() {
                 }}
                 className="prod-reg-btn prod-reg-btn-primary"
               >
-                <span style={{ fontWeight: 'bold' }}>✓</span> Save
+                {saving ? (
+                  'Saving...'
+                ) : (
+                  <>
+                    <span style={{ fontWeight: 'bold' }}>✓</span> Save
+                  </>
+                )}
               </button>
 
               <button
@@ -5315,7 +5322,14 @@ export default function ProductCreate() {
               px: 2.5,
             }}
           >
-            Confirm
+            {saving ? (
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <CircularProgress size={16} color="inherit" />
+                <span>Saving...</span>
+              </Box>
+            ) : (
+              'Confirm'
+            )}
           </Button>
         </DialogActions>
       </Dialog>

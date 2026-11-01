@@ -125,18 +125,25 @@ export async function createProduct(input: CreateProductInput): Promise<IProduct
   const companyId = input.companyId;
   const codeToUse = (input.code && input.code.trim()) ? input.code.trim() : await getNextProductCode(companyId);
 
-  const existingCode = await Product.findOne({ companyId, code: new RegExp(`^${escapeRegex(codeToUse)}$`, 'i') });
+  // Parallelize duplicate checks to minimize roundtrips
+  const [existingCode, existingName] = await Promise.all([
+    Product.findOne({ companyId, code: new RegExp(`^${escapeRegex(codeToUse)}$`, 'i') }).select('_id').lean(),
+    Product.findOne({ companyId, name: new RegExp(`^${escapeRegex(input.name.trim())}$`, 'i') }).select('_id').lean(),
+  ]);
   if (existingCode) throw new AppError('Product code already in use', 400);
-  const existingName = await Product.findOne({ companyId, name: new RegExp(`^${escapeRegex(input.name.trim())}$`, 'i') });
   if (existingName) throw new AppError('Product name already in use', 400);
+
   // Auto-generate IMEI if user didn't provide one
   const imeiProvided = input.imei && input.imei.trim();
-  const mainImeiToUse = imeiProvided ? input.imei!.trim() : await getNextAutoImei(companyId);
-
+  let mainImeiToUse: string;
   if (imeiProvided) {
+    mainImeiToUse = input.imei!.trim();
     const usedByProduct = await findProductNameByImei(companyId, mainImeiToUse);
     if (usedByProduct) throw new AppError(`IMEI number already present. This IMEI is used by product: ${usedByProduct}. Main IMEI and Multi Unit IMEI must be unique across all products.`, 400);
+  } else {
+    mainImeiToUse = await getNextAutoImei(companyId);
   }
+
   const multiUnits = (input.multiUnits || []).map((u) => ({
     multiUnitId: u.multiUnitId || generateMultiUnitId(),
     imei: (u.imei || '').trim(),
@@ -172,11 +179,14 @@ export async function createProduct(input: CreateProductInput): Promise<IProduct
     if (seen.has(im)) throw new AppError(`Duplicate IMEI in Multi Unit: ${im}`, 400);
     seen.add(im);
   }
-  for (const u of multiUnits) {
-    if (u.imei) {
-      const usedByProduct = await findProductNameByImei(companyId, u.imei);
-      if (usedByProduct) throw new AppError(`IMEI number already present. This IMEI is used by product: ${usedByProduct}. Main IMEI and Multi Unit IMEI must be unique across all products (e.g. PROD1 main IMEI cannot be same as PROD2 Multi Unit IMEI).`, 400);
-    }
+
+  if (multiImeis.length > 0) {
+    await Promise.all(
+      multiImeis.map(async (im) => {
+        const usedByProduct = await findProductNameByImei(companyId, im);
+        if (usedByProduct) throw new AppError(`IMEI number already present. This IMEI is used by product: ${usedByProduct}. Main IMEI and Multi Unit IMEI must be unique across all products.`, 400);
+      })
+    );
   }
 
   const sku = input.sku || codeToUse;
@@ -224,13 +234,15 @@ export async function createProduct(input: CreateProductInput): Promise<IProduct
     status: 'active',
     createdBy: input.createdBy,
   });
-  // Populate references before returning
-  const populated = await Product.findById(product._id)
-    .populate('unitOfMeasureId', 'name shortCode')
-    .populate('categoryId', 'name code')
-    .populate('multiUnits.unitId', 'name shortCode')
-    .lean() as unknown as IProduct | null;
-  return populated || product.toObject();
+
+  // Populate references directly on document without another findById roundtrip
+  await product.populate([
+    { path: 'unitOfMeasureId', select: 'name shortCode' },
+    { path: 'categoryId', select: 'name code' },
+    { path: 'multiUnits.unitId', select: 'name shortCode' },
+  ]);
+
+  return product.toObject();
 }
 
 function escapeRegex(s: string): string {
